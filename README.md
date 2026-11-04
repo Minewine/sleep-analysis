@@ -59,6 +59,7 @@ Prerequisites:
 git clone <repo-url> && cd sleep-analysis
 ./gradlew :app:assembleDebug        # debug APK at app/build/outputs/apk/debug/
 ./gradlew :app:testDebugUnitTest    # unit tests (detector, event shaping, scoring, claim policy, report, capture stats, session logger, WAV)
+uv run pytest                       # Python tooling tests (tools/; uv-managed env, see pyproject.toml)
 ```
 
 Or open the project in Android Studio and press Run.
@@ -97,9 +98,10 @@ Key swap point for Phase 2: `di/AppModule.provideSnoreDetector()` — replace th
 - **Clip timestamps have ~0.5 s granularity** and clip retention covers the last 8 s of each event.
 - **A partial wake lock is held all night** (reliability over battery; see MonitorService docs). Quality gate: ≤ 10 %/8 h — measure in dogfood and drop the lock if the audio path alone proves sufficient.
 - **Retention settings are stored but not yet editable** — `DataStore` holds clips/sessions retention (defaults: clips 7 days, sessions 90 days) and the worker reads it; the settings UI is still pending; per-night and delete-all exist.
-- **Device/reroute handling is basic.** A mid-night audio-device change (headset unplug) is not actively detected; capture errors finalize the session as interrupted. Process death surfaces an explicit interrupted-night banner on next launch — finalization is user-confirmed, and a recovered report covers only up to the last saved event. If the system restarts the killed service (START_STICKY), the same session resumes: event timestamps use the new engine's first-sample clock, capture stats accumulate across restarts (heartbeat-persisted), and the per-night clip cap counts the whole session. Ambient noise median/p95 after a restart cover only the post-restart segment.
+- **Device/reroute handling is basic.** A mid-night audio-device change (headset unplug) is not actively detected; capture errors finalize the session as interrupted. Process death surfaces an explicit interrupted-night banner on next launch — finalization is user-confirmed, and a recovered report covers only up to the last saved event. If the system restarts the killed service (START_STICKY), capture does **not** silently auto-resume: on Android 11+ a background restart has no while-in-use microphone access (it would record silence), so the service posts a high-priority *recording interrupted* notification whose **Resume** action (a user tap — the interaction that grants mic access) restarts capture into the same session with stats carried over; if you never tap it, the Home interrupted-night banner handles finalize.
 - **Capture statistics only exist for sessions recorded after the hardening pass.** Sessions finalized as RECOVERED (engine died with the process) keep whatever progress the 15-minute heartbeat persisted; with no heartbeat saved, the report says so instead of showing warnings.
-- **Schema history.** Room schema export is on; the DB has evolved 1→6 via real migrations (raw payloads, factor log, label timestamps, event features JSON, morning notes) and upgrades in place.
+- **Schema history.** Room schema export is on; the DB has evolved 1→7 via real migrations (raw payloads, factor log, label timestamps, event features JSON, morning notes) and upgrades in place.
+- **Garmin re-import replaces per-metric.** Re-importing a night deletes and rewrites only the metrics whose endpoints succeeded in that run (a partial import never wipes previously imported metrics); duplicate rows from double-tapping Import are prevented by design.
 - **Scheduled recording is off by default and alarm-based.** Force-stopping the app cancels its alarms (they re-arm on the next app open or settings change); Android 14+ requires the exact-alarm permission to be granted, or the schedule falls back to an inexact window that Doze can stretch well beyond its ~10 minutes on some devices.
 
 ## License

@@ -67,8 +67,10 @@ class MeasurementRecorder @Inject constructor(
 
     /**
      * Writes an imported batch of Garmin device-reported values for one day window, REPLACING
-     * the day's prior GARMIN rows first so a re-import never duplicates metrics
-     * (docs/GARMIN_INTEGRATION.md §6). Same provenance as [recordGarminEstimate]. An empty
+     * the prior GARMIN rows of the batch's measurement types first so a re-import never
+     * duplicates metrics (docs/GARMIN_INTEGRATION.md §6). The replace is endpoint-scoped: a
+     * partial re-import (only some endpoints returned 2xx this run) leaves the other types'
+     * previously imported rows intact. Same provenance as [recordGarminEstimate]. An empty
      * batch is a no-op: a failed re-import must not wipe previously imported values.
      */
     suspend fun replaceGarminEstimates(

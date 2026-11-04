@@ -16,6 +16,7 @@ import com.sleepanalysis.data.db.entity.SleepSessionEntity
 import com.sleepanalysis.data.prefs.UserPreferences
 import com.sleepanalysis.data.repo.SessionRepository
 import com.sleepanalysis.monitoring.schedule.RecordingScheduler
+import com.sleepanalysis.monitoring.service.InterruptedNotification
 import com.sleepanalysis.monitoring.service.MonitorService
 import com.sleepanalysis.monitoring.service.MonitorState
 import com.sleepanalysis.monitoring.service.MonitorStateHolder
@@ -205,6 +206,9 @@ class HomeViewModel @Inject constructor(
             val finalized = sessionRepository.finalizeOpenAsRecovered()
             _interrupted.value = null
             if (finalized > 0) {
+                // The banner notification is stale now: the service only cancels it when the
+                // night is resumed through it, never when the banner's finalize wins the race.
+                InterruptedNotification.cancel(appContext)
                 sessionRepository.latestSession()?.let { onReady(it.id) }
             }
             stateHolder.set(MonitorState.Idle)

@@ -134,14 +134,26 @@ interface MeasurementDao {
     )
     suspend fun garminBetween(from: Long, to: Long): List<MeasurementEntity>
 
-    /** Deletes the GARMIN rows of one day window — a re-import replaces them (docs/GARMIN_INTEGRATION.md §6). */
-    @Query("DELETE FROM measurement WHERE sourceType = 'GARMIN' AND periodStart = :periodStart")
-    suspend fun deleteGarminForDay(periodStart: Long)
+    /**
+     * Deletes the GARMIN rows of one day window for the given measurement types ONLY — a
+     * partial re-import (an endpoint that failed this run) must not wipe the other types'
+     * previously imported rows (docs/GARMIN_INTEGRATION.md §6).
+     */
+    @Query(
+        "DELETE FROM measurement WHERE sourceType = 'GARMIN' AND periodStart = :periodStart " +
+            "AND measurementType IN (:types)"
+    )
+    suspend fun deleteGarminForTypes(periodStart: Long, types: List<String>)
 
-    /** Atomic delete-then-insert so a re-import can never duplicate the day's GARMIN rows. */
+    /**
+     * Atomic delete-then-insert so a re-import can never duplicate the day's GARMIN rows. The
+     * delete is scoped to the incoming rows' measurement types: a partial re-import leaves the
+     * other types' rows intact. An empty batch inserts nothing and deletes nothing.
+     */
     @Transaction
     suspend fun replaceGarminForDay(periodStart: Long, rows: List<MeasurementEntity>) {
-        deleteGarminForDay(periodStart)
+        if (rows.isEmpty()) return
+        deleteGarminForTypes(periodStart, rows.map { it.measurementType }.distinct())
         insertAll(rows)
     }
 }

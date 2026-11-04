@@ -22,8 +22,9 @@ import kotlinx.coroutines.flow.asStateFlow
  *
  * Failure semantics: never blocks core recording/reporting; every failure lands in [state]
  * as [GarminImportState.Error] and each endpoint fails independently. Metrics are recorded
- * only from endpoints that returned any 2xx with parseable content, and a re-import REPLACES
- * the day's GARMIN rows instead of duplicating them.
+ * only from endpoints that returned any 2xx with parseable content, and a re-import replaces
+ * the day's GARMIN rows of the endpoints that succeeded this run instead of duplicating them
+ * (a partial import never deletes the other endpoints' previously imported rows).
  */
 @Singleton
 class GarminImportManager @Inject constructor(
@@ -92,8 +93,9 @@ class GarminImportManager @Inject constructor(
                 }
                 // Body Battery: prefer the dedicated report endpoint; daily summary is the fallback.
                 val seen = mutableSetOf<MeasurementType>()
-                // Re-import replace: the day's prior GARMIN rows go first, so tapping Import
-                // twice never duplicates a vendor metric (docs/GARMIN_INTEGRATION.md §6).
+                // Re-import replace: the prior GARMIN rows of the incoming types go first, so
+                // tapping Import twice never duplicates a vendor metric, and a partial
+                // re-import never deletes the other types' rows (docs/GARMIN_INTEGRATION.md §6).
                 val deduped = metrics.filter { seen.add(it.type) }
                 recorder.replaceGarminEstimates(
                     periodStart = dayStart,

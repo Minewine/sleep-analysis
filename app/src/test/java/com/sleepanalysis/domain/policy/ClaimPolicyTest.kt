@@ -171,8 +171,10 @@ class ClaimPolicyTest {
         override suspend fun garminBetween(from: Long, to: Long): List<MeasurementEntity> =
             rows.filter { it.sourceType == "GARMIN" && it.periodStart != null && it.periodStart >= from && it.periodStart < to }
 
-        override suspend fun deleteGarminForDay(periodStart: Long) {
-            rows.removeAll { it.sourceType == "GARMIN" && it.periodStart == periodStart }
+        override suspend fun deleteGarminForTypes(periodStart: Long, types: List<String>) {
+            rows.removeAll {
+                it.sourceType == "GARMIN" && it.periodStart == periodStart && it.measurementType in types
+            }
         }
 
         override suspend fun deleteAll() = rows.clear()

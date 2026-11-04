@@ -50,8 +50,14 @@ class UserPreferences @Inject constructor(@ApplicationContext context: Context) 
 
     val retention: Flow<RetentionSettings> = dataStore.data.map { prefs ->
         RetentionSettings(
-            clipsRetentionDays = prefs[Keys.CLIPS_RETENTION_DAYS] ?: RetentionSettings.DEFAULT_CLIPS_DAYS,
-            sessionRetentionDays = prefs[Keys.SESSION_RETENTION_DAYS] ?: RetentionSettings.DEFAULT_SESSION_DAYS,
+            clipsRetentionDays = PreferenceBounds.sanitizeRetentionDaysOrDefault(
+                prefs[Keys.CLIPS_RETENTION_DAYS],
+                RetentionSettings.DEFAULT_CLIPS_DAYS,
+            ),
+            sessionRetentionDays = PreferenceBounds.sanitizeRetentionDaysOrDefault(
+                prefs[Keys.SESSION_RETENTION_DAYS],
+                RetentionSettings.DEFAULT_SESSION_DAYS,
+            ),
         )
     }
 
@@ -83,19 +89,25 @@ class UserPreferences @Inject constructor(@ApplicationContext context: Context) 
 
     /**
      * Recording controls (design: recording controls). [recordingEnabled] is the master
-     * switch — when off, the app must not start a recording session (manual or scheduled);
-     * it only gates starting, never force-stops an active night. The optional schedule is
-     * off by default and stores start/end as minutes-of-day (hour*60+min).
+     * switch — when off, the app must not start a recording session: it gates manual starts,
+     * scheduled starts AND the interrupted-notification resume (the session then stays open
+     * and the banner flow still works); it only gates starting, never force-stops an active
+     * night. The optional schedule is off by default and stores start/end as minutes-of-day
+     * (hour*60+min).
      */
     val recordingEnabled: Flow<Boolean> = dataStore.data.map { it[Keys.RECORDING_ENABLED] ?: true }
 
     val scheduleEnabled: Flow<Boolean> = dataStore.data.map { it[Keys.SCHEDULE_ENABLED] ?: false }
 
     val scheduleStartMinutes: Flow<Int> =
-        dataStore.data.map { it[Keys.SCHEDULE_START_MINUTES] ?: DEFAULT_SCHEDULE_START_MINUTES }
+        dataStore.data.map {
+            PreferenceBounds.sanitizeMinuteOfDayOrDefault(it[Keys.SCHEDULE_START_MINUTES], DEFAULT_SCHEDULE_START_MINUTES)
+        }
 
     val scheduleEndMinutes: Flow<Int> =
-        dataStore.data.map { it[Keys.SCHEDULE_END_MINUTES] ?: DEFAULT_SCHEDULE_END_MINUTES }
+        dataStore.data.map {
+            PreferenceBounds.sanitizeMinuteOfDayOrDefault(it[Keys.SCHEDULE_END_MINUTES], DEFAULT_SCHEDULE_END_MINUTES)
+        }
 
     /** Epoch day of a skipped start occurrence (0 = none); naturally expires. */
     val scheduleSkipEpochDay: Flow<Long> = dataStore.data.map { it[Keys.SCHEDULE_SKIP_EPOCH_DAY] ?: 0L }
@@ -152,10 +164,12 @@ class UserPreferences @Inject constructor(@ApplicationContext context: Context) 
 }
 
 /**
- * Pure bounds for the preference setters, mirroring StartDelayPolicy.sanitizeDelayMinutes:
- * values are clamped at the setter boundary. A non-positive retention would make the retention
- * cutoff future-dated (mass deletion on the next RetentionWorker run), and schedule minutes
- * are minutes-of-day, so they must stay on the 00:00–23:59 clock.
+ * Pure bounds for the preference values, mirroring StartDelayPolicy.sanitizeDelayMinutes:
+ * values are clamped at the setter boundary AND re-clamped at every read, so legacy
+ * out-of-range stored values (written before the clamp existed) are safe too. A non-positive
+ * retention would make the retention cutoff future-dated (mass deletion on the next
+ * RetentionWorker run), and schedule minutes are minutes-of-day, so they must stay on the
+ * 00:00–23:59 clock.
  */
 object PreferenceBounds {
     const val MIN_RETENTION_DAYS = 1
@@ -166,4 +180,9 @@ object PreferenceBounds {
     fun sanitizeRetentionDays(raw: Int): Int = raw.coerceIn(MIN_RETENTION_DAYS, MAX_RETENTION_DAYS)
 
     fun sanitizeMinuteOfDay(raw: Int): Int = raw.coerceIn(MIN_MINUTE_OF_DAY, MAX_MINUTE_OF_DAY)
+
+    /** Read-time variants: a stored (possibly legacy) value is clamped, an absent one falls back to [default]. */
+    fun sanitizeRetentionDaysOrDefault(raw: Int?, default: Int): Int = sanitizeRetentionDays(raw ?: default)
+
+    fun sanitizeMinuteOfDayOrDefault(raw: Int?, default: Int): Int = sanitizeMinuteOfDay(raw ?: default)
 }
