@@ -93,6 +93,15 @@ class CaptureStatsTest {
     }
 
     @Test
+    fun `capture start parses from capture_started_at`() {
+        val stats = CaptureStats.parse(
+            """{"schema_version":2,"windows_processed":10,"capture_started_at":1793564621686}"""
+        )!!
+        assertEquals(1_793_564_621_686L, stats.captureStartMs)
+        assertNull(CaptureStats.parse("""{"schema_version":2,"windows_processed":10}""")!!.captureStartMs)
+    }
+
+    @Test
     fun `heartbeat timestamp parses from saved_at_ms`() {
         val stats = CaptureStats.parse(
             """{"schema_version":2,"windows_processed":10,"saved_at_ms":1793564621686}"""

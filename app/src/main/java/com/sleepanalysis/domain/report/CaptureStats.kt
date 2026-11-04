@@ -32,6 +32,8 @@ data class CaptureStats(
     val skippedHopSpans: List<SkippedHopSpan> = emptyList(),
     /** When this stats object was written — heartbeat progress carries a live timestamp. */
     val savedAtMs: Long? = null,
+    /** When audio capture actually began (after the start delay); null for pre-v8 rows. */
+    val captureStartMs: Long? = null,
 ) {
     /**
      * Mic-live capture time in ms: every 0.5 s analysis hop the engine processed or
@@ -62,6 +64,7 @@ data class CaptureStats(
                 levelGateSkipped = o.optIntOrNull("level_gate_skipped"),
                 skippedHopSpans = o.optJSONArrayOrNull("thermal_skipped_hops")?.toSpans() ?: emptyList(),
                 savedAtMs = o.optLongOrNull("saved_at_ms"),
+                captureStartMs = o.optLongOrNull("capture_started_at"),
             )
         }.getOrNull()
 

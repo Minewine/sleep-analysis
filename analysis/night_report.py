@@ -5,9 +5,11 @@ Reads untrusted CSVs exported from the pulled SQLite DB and produces:
  - comparison against session 10
  - matplotlib charts (PNG)
 
-Run (data and output live outside the repo, never committed):
+Run (data, output and session timing live outside the repo, never committed):
   NIGHT_DATA=/path/to/night-data NIGHT_REPORT_OUT=/path/to/out \
   NIGHT_REPORT_CLIP=<clip filename> \
+  NIGHT_CAPTURE_START_MS=<epoch ms> NIGHT_CAPTURE_END_MS=<epoch ms> \
+  NIGHT_START_MS=<epoch ms> NIGHT_PREV_START_MS=<epoch ms> \
     uv run --with matplotlib --with numpy -- python -I night_report.py
 """
 
@@ -31,13 +33,19 @@ DATA = Path(os.environ["NIGHT_DATA"])
 OUT = Path(os.environ["NIGHT_REPORT_OUT"])
 TZ = ZoneInfo("Europe/Zurich")
 
-# Capture window of session 11 (epoch ms), from sleep_session + session_11.log
-CAPTURE_START_MS = 1793747285656  # delayed capture actually started
-CAPTURE_END_MS = 1793774521635  # manual stop, COMPLETED
-NIGHT_START_MS = 1793743685656  # user tapped start (60-min delay followed)
 
-Z_S11 = 1793743685656  # session 10/11 reference epochs for context
-Z_S10 = 1793652742902
+def _epoch_env(name: str) -> int:
+    return int(os.environ[name])
+
+
+# Capture window (epoch ms) of the night under analysis — no session-specific
+# timing is baked into the repo; everything comes from the caller's environment.
+CAPTURE_START_MS = _epoch_env("NIGHT_CAPTURE_START_MS")
+CAPTURE_END_MS = _epoch_env("NIGHT_CAPTURE_END_MS")
+NIGHT_START_MS = _epoch_env("NIGHT_START_MS")
+
+Z_S11 = _epoch_env("NIGHT_START_MS")  # session 10/11 reference epochs for context
+Z_S10 = _epoch_env("NIGHT_PREV_START_MS")
 
 
 def loc(ms: float) -> datetime:

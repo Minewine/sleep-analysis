@@ -102,6 +102,9 @@ class MonitorService : Service() {
 
     @Volatile private var activeSessionId = -1L
     @Volatile private var sessionStartEpochMs = 0L
+
+    /** When audio capture actually began (after the start delay) — persisted via capture stats. */
+    @Volatile private var captureStartAtMs = 0L
     @Volatile private var activeModelVersion = SessionRepository.MODEL_VERSION
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -265,7 +268,7 @@ class MonitorService : Service() {
                         }
                         return@withLock
                     }
-                    beginCaptureLocked(existingSessionId, sessionId)
+                    beginCaptureLocked(existingSessionId, sessionId, captureStartAt)
 
                     if (existingSessionId != null) {
                         // The session predates this engine — count the notification from its start.
@@ -288,7 +291,7 @@ class MonitorService : Service() {
      * after the delay elapses — always with [beginEndMutex] held. Re-validates the world first:
      * during the delay a Stop, the scheduled end, or a finalize may have closed the session.
      */
-    private suspend fun beginCaptureLocked(existingSessionId: Long?, sessionId: Long) {
+    private suspend fun beginCaptureLocked(existingSessionId: Long?, sessionId: Long, captureStartAtMs: Long) {
         val session = sessionRepository.session(sessionId)
         if (session == null || session.endedAt != null) {
             // A concurrent finalize (stop during delay, banner confirm) won the race —
@@ -318,6 +321,7 @@ class MonitorService : Service() {
         )
         // Visible to the capture thread before the first samples arrive (see field docs).
         engine = newEngine
+        this.captureStartAtMs = captureStartAtMs
         newEngine.start()
         // The thermal listener was registered before this engine existed, and the system does
         // not re-broadcast the current status — a phone already ≥ MODERATE would record
@@ -342,7 +346,7 @@ class MonitorService : Service() {
                 logger.log(sessionId, "capture_start_skipped", "state=${current::class.simpleName}")
                 return@withLock
             }
-            beginCaptureLocked(existingSessionId, sessionId)
+            beginCaptureLocked(existingSessionId, sessionId, expectedCaptureStartAt)
         }
     }
 
@@ -689,7 +693,9 @@ class MonitorService : Service() {
                             "clips=${s.clipCount} gateSkip=${s.levelGateSkipped} freeMB=$freeMb$warn"
                     )
                     val sessionId = activeSessionId
-                    if (sessionId > 0) sessionRepository.saveCaptureProgress(sessionId, s)
+                    if (sessionId > 0) {
+                        sessionRepository.saveCaptureProgress(sessionId, s, captureStartAtMs)
+                    }
                 }.onFailure {
                     logger.log(activeSessionId, "heartbeat_failed", "${it.javaClass.simpleName}: ${it.message}")
                 }

@@ -52,7 +52,12 @@ class GarminImportManager @Inject constructor(
     private val _state = MutableStateFlow<GarminImportState>(GarminImportState.Idle)
     val state: StateFlow<GarminImportState> = _state.asStateFlow()
 
-    suspend fun importForDate(date: LocalDate, zone: ZoneId = ZoneId.systemDefault()) {
+    /**
+     * Imports [date] into the local day window of [zone]. The zone is deliberately REQUIRED —
+     * defaulting to the device zone is what made metrics import into a window the
+     * session-timezone join never read (see ReportViewModel.importGarminForThisNight).
+     */
+    suspend fun importForDate(date: LocalDate, zone: ZoneId) {
         val dateStr = date.toString()
         _state.value = GarminImportState.Importing(dateStr)
         try {

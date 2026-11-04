@@ -251,13 +251,20 @@ class SessionRepository @Inject constructor(
      * Each write is stamped with `saved_at_ms` so a RECOVERED finalize can bound the night
      * by the last moment capture was verifiably alive.
      */
-    suspend fun saveCaptureProgress(sessionId: Long, stats: AudioEngine.NightStats) =
-        withContext(Dispatchers.IO) {
-            sessionDao.updateCaptureStats(
-                sessionId,
-                captureStatsJson(stats, savedAtMs = System.currentTimeMillis()),
-            )
-        }
+    suspend fun saveCaptureProgress(
+        sessionId: Long,
+        stats: AudioEngine.NightStats,
+        captureStartAtMs: Long? = null,
+    ) = withContext(Dispatchers.IO) {
+        sessionDao.updateCaptureStats(
+            sessionId,
+            captureStatsJson(
+                stats,
+                savedAtMs = System.currentTimeMillis(),
+                captureStartMs = captureStartAtMs,
+            ),
+        )
+    }
 
     /** Clips already saved for a session — the per-night clip cap counts the whole session. */
     suspend fun clipCountForSession(sessionId: Long): Int = withContext(Dispatchers.IO) {

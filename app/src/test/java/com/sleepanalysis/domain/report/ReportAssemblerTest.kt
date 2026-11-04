@@ -186,6 +186,20 @@ class ReportAssemblerTest {
             .healthWarnings
         assertTrue(warnings.any { it.contains("Capture gaps suspected") })
 
+        // Delayed start: capture_started_at narrows the expectation to the real capture
+        // window — 2 h of delay on an 8 h night with full coverage must NOT warn.
+        val delayed = healthy.copy(captureStartMs = t0 + 2 * 3_600_000L)
+        val noDelayWarning = ReportAssembler.assemble(session(), emptyList(), emptyList(), emptyList(), capture = delayed)!!
+            .healthWarnings
+        assertTrue("delayed start must not trip the gap warning: $noDelayWarning", noDelayWarning.none { it.contains("Capture gaps suspected") })
+
+        // ...but the same capture window with real gaps still does.
+        val delayedGappy = delayed.copy(windowsProcessed = 20_000) // 6 h window expects 43_200
+        assertTrue(
+            ReportAssembler.assemble(session(), emptyList(), emptyList(), emptyList(), capture = delayedGappy)!!
+                .healthWarnings.any { it.contains("Capture gaps suspected") },
+        )
+
         val throttled = healthy.copy(thermalThrottleEvents = 2)
         assertTrue(
             ReportAssembler.assemble(session(), emptyList(), emptyList(), emptyList(), capture = throttled)!!

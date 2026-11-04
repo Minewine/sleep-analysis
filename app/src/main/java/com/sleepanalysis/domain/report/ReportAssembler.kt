@@ -135,7 +135,7 @@ object ReportAssembler {
             }
         }
 
-        val healthWarnings = capture.healthWarnings(timeInBedSeconds)
+        val healthWarnings = capture.healthWarnings(endedAt, timeInBedSeconds)
 
         // Join clips to events via event.clipId — the authoritative link written at capture time
         // (audio_clip.eventId is back-filled, but old rows may predate that).
@@ -187,19 +187,27 @@ object ReportAssembler {
         )
     }
 
-    /** Derives human-readable health warnings from capture statistics. Never mentions clinical concepts. */
-    private fun CaptureStats?.healthWarnings(timeInBedSeconds: Long): List<String> {
+    /**
+     * Derives human-readable health warnings from capture statistics. Never mentions clinical
+     * concepts. The gap check compares processed windows against the CAPTURE window —
+     * capture_started_at when persisted (delay-aware), tap-to-stop time in bed otherwise.
+     */
+    private fun CaptureStats?.healthWarnings(endedAtMs: Long, timeInBedSeconds: Long): List<String> {
         val self = this ?: return listOf("Capture statistics unavailable for this session (recorded before health tracking or stats write failed).")
         return buildList {
             val processed = self.windowsProcessed
+            val windowSeconds = self.captureStartMs
+                ?.takeIf { endedAtMs > it }
+                ?.let { (endedAtMs - it) / 1000 }
+                ?: timeInBedSeconds
             when {
                 // Recovered/interrupted sessions finalize without engine stats: unknown ≠ failed.
                 processed == null -> { /* stats unknown — no capture-quality warnings */ }
-                processed == 0L && timeInBedSeconds > 30 -> {
+                processed == 0L && windowSeconds > 30 -> {
                     add("No analysis windows were processed — capture likely failed for most of the session.")
                 }
                 else -> {
-                    val expected = timeInBedSeconds * 2 // 0.5 s hop
+                    val expected = windowSeconds * 2 // 0.5 s hop
                     if (expected > 0 && processed < expected * 0.9) {
                         add("Capture gaps suspected: $processed of ~$expected expected analysis windows were processed.")
                     }
