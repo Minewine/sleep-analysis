@@ -3,9 +3,10 @@ package com.sleepanalysis.monitoring.detection
 import com.sleepanalysis.domain.scoring.SnoreScore
 
 /**
- * Tuning constants for the Phase 1 acoustic pipeline. The v0 detector is a documented
- * energy/band heuristic — detection QUALITY is explicitly a Phase 2 concern; the interface
- * (SnoreDetector) is the swap point (docs/MVP_SCOPE.md F4, docs/ARCHITECTURE.md §8).
+ * Tuning constants for the Phase 1 acoustic pipeline. The shipped detector is the
+ * documented energy-heuristic-v1-spectral (energy/band + spectral gates + rhythm gate); a
+ * learned model remains a Phase 2 concern — the interface (SnoreDetector) is the swap point
+ * (docs/MVP_SCOPE.md F4, docs/ARCHITECTURE.md §8).
  */
 object DetectorConfig {
     const val SAMPLE_RATE = 16_000

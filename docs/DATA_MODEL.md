@@ -68,7 +68,7 @@ One row per metric value. This is the table all longitudinal analysis (Phase 4+)
 | `value_text` | TEXT? | Non-numeric values |
 | `unit` | TEXT enum | `SECONDS` / `MINUTES` / `PERCENT` / `COUNT` / `DBFS` / `INDEX_0_100` / `INDEX_0_10` / `BPM` / `MS` |
 | `confidence` | REAL? | 0–1, nullable (user/clinical rows typically null) |
-| `model_version` | TEXT? | Model identity stamped at write time — currently the `energy-heuristic-v0` constant (`+dbg1` suffix when the debug enter-windows toggle was active). The FK to `model_registry` applies once the registry exists (§3.8, Phase 2) |
+| `model_version` | TEXT? | Model identity stamped at write time — currently the `energy-heuristic-v1-spectral` constant (`+dbg1` suffix when the debug enter-windows toggle was active). The FK to `model_registry` applies once the registry exists (§3.8, Phase 2) |
 | `period_start` / `period_end` | Long? | For period-scoped rows (e.g., per-hour, weekly) |
 | `notes` | TEXT? | |
 | `recorded_at` | Long | When the row was written |
@@ -79,9 +79,9 @@ One row per metric value. This is the table all longitudinal analysis (Phase 4+)
 
 | session_id | source | method | type | tier | value | unit | model |
 |---|---|---|---|---|---|---|---|
-| 401 | PHONE | ALGORITHM_ESTIMATED | SNORE_TIME | ESTABLISHED | 812 | SECONDS | energy-heuristic-v0 |
-| 401 | PHONE | ALGORITHM_ESTIMATED | SNORE_INTENSITY_PEAK | ESTABLISHED | -14.2 | DBFS | energy-heuristic-v0 |
-| 401 | PHONE | ALGORITHM_ESTIMATED | NOISE_MEDIAN | ESTABLISHED | -31.5 | DBFS | energy-heuristic-v0 |
+| 401 | PHONE | ALGORITHM_ESTIMATED | SNORE_TIME | ESTABLISHED | 812 | SECONDS | energy-heuristic-v1-spectral |
+| 401 | PHONE | ALGORITHM_ESTIMATED | SNORE_INTENSITY_PEAK | ESTABLISHED | -14.2 | DBFS | energy-heuristic-v1-spectral |
+| 401 | PHONE | ALGORITHM_ESTIMATED | NOISE_MEDIAN | ESTABLISHED | -31.5 | DBFS | energy-heuristic-v1-spectral |
 | 401 | GARMIN | DEVICE_REPORTED | VENDOR_HRV_RMSSD | ESTABLISHED | 48 | MS | null |
 | null | USER | USER_REPORTED | ALCOHOL_UNITS | ESTABLISHED | 2 | COUNT | null |
 
@@ -133,7 +133,7 @@ Clinical baseline values (e.g., AHI 17.6) currently live in `clinical_baseline` 
 | `clip_id` | Long? FK → audio_clip | |
 | `user_label` | TEXT? | User-corrected class from clip playback: `SNORE` / `COUGH` / `SPEECH` / `MOVEMENT` / `OTHER_NOT_SNORE` — the personal labeled dataset Phase 2 model improvement trains against; never alters scores |
 | `labeled_at` | Long? | When the user applied the label (schema v4) — distinguishes label age when curating training data |
-| `features_json` | TEXT? | The detection model's decision inputs as JSON (schema v5; for `energy-heuristic-v0`: `enter_windows`, `snr_peak_db`, `snr_mean_db`, `low_band_ratio_peak`, `low_band_ratio_mean`, `noise_floor_dbfs`). Debug visibility of v0 decisions — never a measurement, never rendered as clinical |
+| `features_json` | TEXT? | The detection model's decision inputs as JSON (schema v5; for `energy-heuristic-v1-spectral`: `enter_windows`, `exit_windows`, `open_windows`, `close_windows`, `snr_peak_db`, `snr_mean_db`, `low_band_ratio_peak`, `low_band_ratio_mean`, `noise_floor_dbfs` — the v0 rows predate `exit/open/close_windows` (added schema v7 era, 2026-11-02)). Debug visibility of detector decisions — never a measurement, never rendered as clinical |
 
 `audio_clip`:
 
@@ -176,7 +176,7 @@ Unique index `(session_id, schema_version)`; regeneration upserts. Reports never
 
 ### 3.8 `model_registry` — **documented, not yet implemented**
 
-Planned per the table below, to land when a second model exists (Phase 2 model v1). Until then the active model identity is the constant `MODEL_VERSION = "energy-heuristic-v0"` in `SessionRepository`, stamped onto events and measurements.
+Planned per the table below, to land when a second model exists (Phase 2 model v1). Until then the active model identity is the constant `MODEL_VERSION = "energy-heuristic-v1-spectral"` in `SessionRepository`, stamped onto events and measurements.
 
 | Column | Type | Notes |
 |---|---|---|

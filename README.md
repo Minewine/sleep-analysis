@@ -20,7 +20,7 @@ A reliable overnight recorder with an honest morning report ([docs/MVP_SCOPE.md]
 
 - **Overnight recording** — foreground service with persistent notification and elapsed-time chronometer, AudioRecord 16 kHz mono capture, manual start/stop, thermal throttling (analysis every 2nd hop at MODERATE+), pre-flight storage check. If the process dies overnight, the next launch shows an explicit *interrupted night* banner (with how much was saved) and finalizes only when you confirm — never silent auto-recovery.
 - **Local storage (Room)** — `SleepSession`, `Measurement` (full provenance: timestamp, source, method, type, unit, value, confidence, model version, `isClinical`), `AcousticEvent` (+ clip refs), `ClinicalBaseline` (immutable: insert-only DAO + SQL triggers), per-night and delete-all.
-- **Basic acoustic analysis** — swappable `SnoreDetector` interface; shipped v0 is a documented energy/band-ratio heuristic (relative dBFS + rolling noise floor + low-band ratio), event shaping (hysteresis, min duration, gap merging), per-event confidence and decision-input record (`features_json`, debug visibility), ≤ 8 s WAV clips for detected events. Clip persistence is budgeted (`ClipPolicy`): a relative level floor (mean must clear the rolling noise floor + 10 dB, never under a −60 dBFS hard floor — so silent-room rumble is downgraded to OTHER_NOISE and never clipped or labeled SNORE, and the gate self-calibrates to louder rooms), +6 dB stricter during the first 30 min of capture (settling window), max 8 clips/hour so bedtime noise can't starve the night, 50/night backstop (retention-controlled). Full-night audio is **never** persisted.
+- **Basic acoustic analysis** — swappable `SnoreDetector` interface; shipped `energy-heuristic-v1-spectral`: the v0 energy/band-ratio heuristic (relative dBFS + rolling noise floor + low-band ratio) plus two spectral gates (spectral flatness + harmonic ratio via the `monitoring/features/` FFT — tonal snore energy vs broadband noise) and a breath-cycle rhythm gate (adjacent windows of one periodic train are believed; isolated spikes are not), thresholds tuned offline with the fixture evaluator on dogfood clips; event shaping (hysteresis 2-in/4-out windows, min duration, gap merging), per-event confidence and decision-input record (`features_json`, debug visibility), ≤ 8 s WAV clips for detected events. Clip persistence is budgeted (`ClipPolicy`): a relative level floor (mean must clear the rolling noise floor + 10 dB, never under a −60 dBFS hard floor — so silent-room rumble is downgraded to OTHER_NOISE and never clipped or labeled SNORE, and the gate self-calibrates to louder rooms), +6 dB stricter during the first 30 min of capture (settling window), max 8 clips/hour so bedtime noise can't starve the night, 50/night backstop with a 15-clip loudness reserve so the loudest events always get a clip, (retention-controlled). Full-night audio is **never** persisted.
 - **Morning report (Compose)** — time in bed, snore score, snoring time/share/intensity breakdown, interactive night timeline (tap → clip playback), hourly snoring bars, session-integrity notes, mandatory disclaimer card, read-only clinical baseline context. A **session health** section shows capture statistics (analysis windows processed/skipped, clips saved, thermal throttling) with plain-language health warnings when the capture looks degraded, links to the per-session text log, and lets you add short **morning notes** (user context, never a measurement).
 - **Clinical baseline** — structured read-only entry of study nights (date, lab, TST, efficiency, arousal index, N3 %, AHI, notes, source-document reference); corrections are new entries, never edits.
 - **Privacy basics** — first-launch disclaimer (must accept), mic-active indicator on Home + persistent notification, `allowBackup=false`, app-private storage only.
@@ -76,20 +76,24 @@ On the device:
 ```
 sleep-analysis/
 ├── README.md                 ← you are here
-├── docs/                     # specification set + original proposal + HUG PDFs
+├── docs/                     # specification set
 └── app/src/main/java/com/sleepanalysis/
     ├── monitoring/           # service (FGS), audio engine, detectors, event shaping, scheduled recording
-    ├── domain/               # claim policy (tiers), scoring, report assembly — pure Kotlin
+    │   ├── features/         # FFT + spectral features (flatness, harmonicity) for the v1 detector
+    │   ├── replay/           # offline clip replay, feature-for-feature identical to the live loop
+    │   └── eval/             # FixtureEvaluator: labeled clips → per-class precision/recall
+    ├── domain/               # claim policy (tiers), scoring, report assembly, night-date anchoring — pure Kotlin
     ├── data/                 # Room entities/DAOs, repositories, MeasurementRecorder, clip store, session logs, prefs
     ├── ui/                   # Compose screens: onboarding, home, report (+ session log), baseline, history, factor log, settings
+    ├── di/                   # Hilt module (provides the swappable SnoreDetector)
     └── work/                 # RetentionWorker
 ```
 
-Key swap point for Phase 2: `di/AppModule.provideSnoreDetector()` — replace the energy heuristic with a TFLite-backed `SnoreDetector`; capture, storage, and reports are untouched.
+Key swap point for Phase 2: `di/AppModule.provideSnoreDetector()` — replace the v1-spectral heuristic with a TFLite-backed `SnoreDetector`; capture, storage, and reports are untouched.
 
 ## Known limitations (Phase 1, by design)
 
-- **Detection quality is v0.** The energy/band heuristic has known false-positive modes (speech near the phone, broadband household noise) and may miss distant snoring. Clip playback + event labels exist so you can verify; labels feed Phase 2 calibration. Fixture-based precision/recall targets (≥ 0.80 / ≥ 0.70) are a Phase 2 gate, not yet met/measured.
+- **Detection quality is heuristic, not learned.** `energy-heuristic-v1-spectral` adds spectral flatness/harmonicity and breath-rhythm gates on top of the v0 energy/band heuristic, which removed the broadband-household-noise false positives seen in dogfooding — but speech close to the phone is also tonal and rhythmic, and very distant snoring may be missed. Clip playback + event labels exist so you can verify; labels feed Phase 2 calibration. Fixture-based precision/recall targets (≥ 0.80 / ≥ 0.70) are a Phase 2 gate, measured so far only on the small dogfood label set, not met/formally validated.
 - **Only snoring and loud-noise events.** Cough/speech classification needs the Phase 2 model; the schema already supports them.
 - **No sleep/wake estimate.** Time in bed (session bounds) only — movement-based estimation arrives with the accelerometer in Phase 2.
 - **No breathing indicators at all** — not even experimental ones (deliberately deferred to Phase 2 behind the experimental toggle).

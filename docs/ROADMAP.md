@@ -21,7 +21,7 @@ Related: [Product vision](PRODUCT_VISION.md) · [MVP scope](MVP_SCOPE.md) (Phase
 **Goal:** a reliable nightly recorder and an honest morning report, with the clinical baseline stored immutably.
 
 - Foreground-service audio capture, ring buffer, event clips only (no full-night audio)
-- Swappable v0 snore detector *(shipped: energy/band heuristic — the YAMNet-mapped model is Phase 2)*, snore + loud-noise events (cough/speech classification arrives with the model)
+- Swappable snore detector *(shipped: `energy-heuristic-v1-spectral` — energy/band heuristic + spectral flatness/harmonicity and breath-rhythm gates; the YAMNet-mapped model is Phase 2)*, snore + loud-noise events (cough/speech classification arrives with the model)
 - Night timeline + clip playback + user labels
 - Morning report: time in bed, snoring summary (time, share, tiers, score), acoustic event counts, integrity notes, baseline context
 - Clinical baseline structured read-only entry (HUG numbers)

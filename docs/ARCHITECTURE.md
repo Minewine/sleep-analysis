@@ -65,7 +65,9 @@ app/src/main/java/com/sleepanalysis/
 │   ├── audio/       # AudioEngine (AudioRecord, ring buffer, clip slicing, NightStats)
 │   ├── detection/   # EventDetector (hysteresis, merging, tiers) + EventFeatures (decision record)
 │   ├── schedule/    # RecordingScheduler (AlarmManager) + bedtime notification + start/stop/boot receivers
-│   ├── features/    # FeatureExtractor (log-mel) — planned, Phase 2 (see §4)
+│   ├── features/    # FFT + spectral features (flatness, harmonicity) feeding the v1 detector (see §4)
+│   ├── replay/      # offline clip replay, feature-for-feature identical to the live capture loop
+│   ├── eval/        # FixtureEvaluator: labeled clips → per-class precision/recall (detector tuning)
 │   └── ml/          # ClassifierEngine interface, TFLite impl, ModelRegistry — planned, Phase 2 (see §4)
 ├── domain/
 │   ├── policy/      # ClaimPolicy, MeasurementTier — single source of claim rules
@@ -107,7 +109,7 @@ app/src/main/java/com/sleepanalysis/
 
 1. User taps Start → pre-flight checks (storage, battery, permissions) → session row created (`ended_at = null`) → service promotes to foreground with notification.
 2. AudioEngine streams PCM into the ring buffer. Nothing here touches disk for full-night audio — only clip slices ever persist.
-3. Every 0.5 s hop, a 1 s window is sliced → features → per-window snore probability. With the shipped v0 energy heuristic the features (RMS, low-band ratio, rolling noise floor) are computed inline (`EventFeatures`, persisted per event as `features_json`) and the "classifier" is the `SnoreDetector` interface; Phase 2 swaps in log-mel + TFLite (`ClassifierEngine`) without touching steps 2 or 4.
+3. Every 0.5 s hop, a 1 s window is sliced → features → per-window snore probability. With the shipped `energy-heuristic-v1-spectral` the features (RMS, low-band ratio, rolling noise floor, plus spectral flatness and harmonic ratio from `monitoring/features/`) are computed inline (`EventFeatures`, persisted per event as `features_json`) and the "classifier" is the `SnoreDetector` interface; Phase 2 swaps in log-mel + TFLite (`ClassifierEngine`) without touching steps 2 or 4.
 4. EventDetector turns probability streams into discrete AcousticEvents with intensity and confidence; qualifying events trigger a clip flush from the ring buffer to `filesDir/clips/<session>/`. Clip persistence is gated by `ClipPolicy`: events below the relative level gate (mean under the event's own rolling noise floor + `DetectorConfig.GATE_MARGIN_DB`, 10 dB — never below the hard floor `MIN_GATE_DBFS`, −60 dBFS, so near-silence stays gated; unverifiable by playback) never persist a clip; for the first 30 min of capture the margin is +6 dB stricter (settling window — bedtime noise is the night's loudest period); a per-hour budget (`MAX_CLIPS_PER_HOUR`) stops bedtime noise from spending the whole night's clips (night 1 wrote all 50 in the first 42 min); and `MAX_CLIPS_PER_NIGHT` remains the backstop. Sub-gate SNORE detections are downgraded to OTHER_NOISE at finalization, so the SNORE label only ever applies to clearly audible events.
 5. Events are written in batches (~30 s cadence, or immediately for high-confidence events); per-hour aggregates accumulate in memory.
 6. On stop: session finalized — Measurement rows written through MeasurementRecorder, the engine's `NightStats` persisted as session `capture_stats`, per-session log closed. The morning report is assembled live on open (no snapshot table yet). Notification clears.
