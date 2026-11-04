@@ -35,7 +35,7 @@ Everything else is blocked on evidence only real nights can provide: battery, 8 
 - Any integrity note in the report (interruptions) → note the cause.
 - Fill the Daily log honestly if not done the evening before.
 
-**Night 2–3 (drills, not night 1):** force-stop the app mid-night (swipe away / `adb shell am force-stop com.sleepanalysis`) → next launch must show the **interrupted-night banner** (with the saved-event count); tapping *Finalize & view report* must produce a **RECOVERED** report covering up to the kill. Then one night *without* the battery-optimization exclusion to see the real difference.
+**Night 2–3 (drills, not night 1):** force-stop the app mid-night (swipe away / `adb shell am force-stop com.sleepanalysis`) → next launch must show the **interrupted-night banner** (with the saved-event count); tapping *Finalize & view report* must produce a **RECOVERED** report covering up to the kill. Then one night *without* the battery-optimization exclusion to see the real difference. Battery %/charging state is recorded in every heartbeat and the stop log line since 2026-11-04, so the ≤ 10 %/8 h gate reads straight from the session log.
 
 **Exit criteria for P0:** 3 consecutive nights with COMPLETED (or drilled-RECOVERED) sessions, battery ≤ 10 %/night on at least one, ≥ 10 labeled events, zero data loss.
 

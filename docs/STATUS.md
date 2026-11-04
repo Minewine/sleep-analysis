@@ -38,7 +38,7 @@ Related: [Next steps](NEXT_STEPS.md) · [Roadmap](ROADMAP.md) · [MVP scope](MVP
 - **Night 3** — the night's loudest snore (peak −16.6 dBFS) missed its clip under the first-come-first-served budget. Fix: a 15-clip loudness reserve that bypasses the hourly/nightly caps for clearly-audible events (`DetectorConfig`).
 - **Session 10** — the 2 s exit hysteresis shattered one long snore train into fragments. Fix: exit-timeout/merge-gap rework; the v1-spectral gates and thresholds were then tuned offline through `FixtureEvaluator` on the labeled dogfood clips.
 
-**Still unverified on a device:** battery draw over a full night (the ≤ 10 %/8 h gate has never been measured), the thermal-throttle path (never triggered in three nights), Doze/exact-alarm behavior of the nightly schedule, the interrupted-night banner + RECOVERED finalize after a real process death (all three nights ran to completion), notification lifecycle edge cases, and report rendering with more history than three sessions.
+**Still unverified on a device:** battery draw over a full night (the ≤ 10 %/8 h gate has never been measured — every heartbeat and the stop line now record `batt=<pct>% charging=<bool>`, so the next instrumented night yields it automatically), the thermal-throttle path (never triggered in three nights), Doze/exact-alarm behavior of the nightly schedule, the interrupted-night banner + RECOVERED finalize after a real process death (all three nights ran to completion), notification lifecycle edge cases, and report rendering with more history than three sessions.
 
 ## 3. Documented but NOT implemented (deliberate gaps — do not assume they exist)
 
