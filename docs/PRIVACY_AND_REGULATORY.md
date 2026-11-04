@@ -24,7 +24,7 @@ Related: [Measurement reliability](MEASUREMENT_RELIABILITY.md) · [Architecture]
 | Data | Location | Persisted | Notes |
 |---|---|---|---|
 | Raw audio stream | Memory (8 s ring buffer) | Never | Only event-triggered slices are written |
-| Event clips (WAV) | `filesDir/clips/<session>/` (app-private) | 7 days default | ≤ 8 s each, capped ~50/night |
+| Event clips (WAV) | `filesDir/clips/<session>/` (app-private) | 7 days default | ≤ 8 s each, capped ~150/night (~13 MB per 50 clips ≈ 38 MB/night) |
 | Per-session log files (text) | `filesDir/logs/session_<id>.log` (app-private) | With their session (90 days default) | Timestamped lifecycle/diagnostic lines only — never audio, never sensor payloads |
 | Database (sessions, events, measurements, reports, baseline) | App-private Room DB | Sessions/events 90 days; measurements indefinite; baseline until delete-all | WAL mode |
 | Clinical source documents | Referenced by path only (`clinical_baseline.source_document`) | Until delete-all | The app never copies the PDF into its storage |

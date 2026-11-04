@@ -139,7 +139,7 @@ Enforcement mechanisms:
 
 | Layer | What | Persisted? | Why |
 |---|---|---|---|
-| **Raw audio** | 16 kHz PCM stream | **Never in full.** Ring buffer in memory; only event-triggered clips (WAV, ≤ 8 s, top ~50/night) written to app-private storage | Continuous 16 kHz PCM is ~115 MB/h — persisting nights is neither private-proportionate nor useful |
+| **Raw audio** | 16 kHz PCM stream | **Never in full.** Ring buffer in memory; only event-triggered clips (WAV, ≤ 8 s, top ~150/night) written to app-private storage | Continuous 16 kHz PCM is ~115 MB/h — persisting nights is neither private-proportionate nor useful |
 | **Features** | Log-mel spectrograms | **Not persisted in Phase 1** (recomputable from clips/model spec; optional cache in Phase 5 for retraining experiments) | Storage vs. recomputability tradeoff favors recompute |
 | **Events** | AcousticEvent rows (type, timing, intensity, confidence, model id, clip ref) | Yes — session-scoped, cascade-deleted with session | The verifiable substrate; user can replay every event |
 | **Measurements** | Normalized, provenance-stamped values (per-session or per-period metrics) | Yes — **survive session deletion** (session_id nulled) so longitudinal history outlives heavy raw data | The analytic substrate for trends/comparisons |

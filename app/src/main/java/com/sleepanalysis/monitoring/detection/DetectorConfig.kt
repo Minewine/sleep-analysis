@@ -15,7 +15,15 @@ object DetectorConfig {
 
     /** Clip length retained per detected event. */
     const val CLIP_MS = 8_000L
-    const val MAX_CLIPS_PER_NIGHT = 50
+
+    /**
+     * Nightly clip backstop. Raised 50 → 150 after the session-6..11 review: only ~3.4 % of
+     * detected snores got audio (50 caps bound every night, `clip_budget_skipped` entries from
+     * ~05:00) while real cost is ~256 KB/clip ≈ 13 MB per ~50 — a 150-clip night is ~38 MB and
+     * the 7-day retention window keeps steady state in the low hundreds of MB. Labels feed the
+     * Phase 2 eval gate; starving them starves the model work.
+     */
+    const val MAX_CLIPS_PER_NIGHT = 150
 
     /**
      * Relative level gate (backlog #2, self-calibrating). An absolute −55 dBFS cutoff ate real
@@ -53,8 +61,10 @@ object DetectorConfig {
      * Clip budget per wall-clock hour. Night 1 spent all 50 clips on the first 42 minutes of
      * bedtime noise, leaving nothing for the actual sleep window; this spreads the budget so
      * any burst can only claim a bounded share (MAX_CLIPS_PER_NIGHT stays as the backstop).
+     * Raised 8 → 15 alongside the nightly cap so a 150-clip night is reachable across a
+     * ~7.5 h window rather than choked at 8/hour.
      */
-    const val MAX_CLIPS_PER_HOUR = 8
+    const val MAX_CLIPS_PER_HOUR = 15
 
     /**
      * Loudness reserve (night 3 dogfood): a first-come-first-served budget starves exactly the
