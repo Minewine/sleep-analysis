@@ -18,7 +18,7 @@ Related: [Measurement reliability](MEASUREMENT_RELIABILITY.md) · [MVP scope](MV
 | Audio capture | **AudioRecord** (16 kHz mono, 16-bit PCM) | Sufficient for acoustic event models; low-latency not required; Oboe (C++) rejected as overkill |
 | ML runtime | **TensorFlow Lite / LiteRT** | YAMNet-class models available off the shelf; int8 quantization; ONNX Runtime Mobile is the fallback if a future model trains better in PyTorch — the `ClassifierEngine` interface isolates this choice |
 | Background | **Foreground Service** (`microphone` type) + **WorkManager** | Overnight capture; retention/maintenance jobs |
-| Charts | Vico (Compose) | Timeline and trend charts without View interop |
+| Charts | Custom Compose (Canvas) | Timeline, hourly bars and trend charts drawn directly — no chart library dependency |
 | Min SDK | **30 (Android 11)** | Mic foreground-service type exists since API 30 → single code path; covers the vast majority of devices. Target SDK: current Play requirement (35 at time of writing) |
 | Networking | **Garmin Personal API pull only** (Phase 3 first slice) | One host (`personal.connectapi.garmin.com`), user-triggered, read-only, stdlib `HttpURLConnection` — no third-party network dependency; rules in [GARMIN_INTEGRATION.md](GARMIN_INTEGRATION.md) §8 |
 
@@ -74,7 +74,7 @@ app/src/main/java/com/sleepanalysis/
 │   ├── scoring/     # SnoreScore, derived indices (pure functions)
 │   └── report/      # ReportAssembler, CaptureStats parsing (+ InsightRules later)
 ├── data/
-│   ├── db/          # Room entities, DAOs, migrations (schema v6)
+│   ├── db/          # Room entities, DAOs, migrations (schema v7)
 │   ├── files/       # ClipStore (app-private clip files)
 │   ├── logs/        # SessionLogger (per-session text logs)
 │   ├── garmin/      # GarminClient, parsers, import manager (Phase 3 slice)
@@ -90,11 +90,11 @@ app/src/main/java/com/sleepanalysis/
 
 | Component | Responsibility | Threading |
 |---|---|---|
-| **MonitorService** | Foreground service, `foregroundServiceType="microphone"`. Owns the session state machine `IDLE → STARTING → RECORDING → FINALIZING → DONE / ERROR` (exposed via `MonitorStateHolder`, including an explicit **Interrupted** state for open sessions without a live service); pre-flight checks; ongoing notification; heartbeat watchdog; binds to AudioEngine. Started only from user action in Phase 1 | Main + service scope |
-| **AudioEngine** | AudioRecord lifecycle, 16 kHz mono PCM into a 10 s ring buffer on a dedicated thread. Two consumers: window slicing for detection, clip flush (last N seconds) when the EventDetector marks an event. Raw audio outside events is discarded. Accumulates per-night `NightStats` (windows processed/skipped, ambient dBFS median/P95, clip count, thermal events) surfaced as session `capture_stats` | Capture thread + buffered channels |
+| **MonitorService** | Foreground service, `foregroundServiceType="microphone"`. Owns the session state machine `Idle → Starting → Recording (or Delayed during the start delay) → Finished`, with `StartError` and `Interrupted` states (exposed via `MonitorStateHolder`); pre-flight checks; ongoing notification; heartbeat watchdog; binds to AudioEngine. Started only from user action | Main + service scope |
+| **AudioEngine** | AudioRecord lifecycle, 16 kHz mono PCM into an 8 s ring buffer on a dedicated thread. Two consumers: window slicing for detection, clip flush (last ≤ 8 s) when the EventDetector marks an event. Raw audio outside events is discarded. Accumulates per-night `NightStats` (windows processed/skipped, ambient dBFS median/P95, clip count, thermal events) surfaced as session `capture_stats` | Capture thread + buffered channels |
 | **FeatureExtractor** | Window → log-mel spectrogram (model-spec driven: window 1 s, hop 0.5 s, 64 mel bins for the v0 model) | Inference dispatcher |
 | **ClassifierEngine** | Interface; TFLite implementation loads the active model from ModelRegistry. Outputs per-window class probabilities. Windows are queued and **coalesced** — if inference falls behind, drop oldest, never backlog | Single-threaded dispatcher |
-| **EventDetector** | Per-window probabilities → discrete events: EMA smoothing → hysteresis (enter ≥ 0.60 / exit ≤ 0.35) → min duration 2 s → merge gaps ≤ 2 s → intensity tiering (dBFS bands) | Same dispatcher |
+| **EventDetector** | Per-window snore/loud decisions → discrete events: window-count hysteresis (2 consecutive active 0.5 s hops to open, 4 consecutive quiet hops to close; the debug toggle relaxes the open count) → min duration 2 s → merge gaps ≤ 2 s → intensity tiering (relative dBFS bands) | Same dispatcher |
 | **MeasurementRecorder** | The only component allowed to write Measurement rows; stamps full provenance (see §6) | Caller scope |
 | **ReportAssembler** | Session + events + measurements → `MorningReport` (computed live; the §3.7 snapshot table is deferred) via Scoring and ClaimPolicy. Pure domain logic | Any |
 | **SessionLogger** | Append-only, no-throw text log per session (`filesDir/logs/session_<id>.log`) written from the service and engine; viewable in the report's Session log screen; purged by RetentionWorker with session retention | Caller scope (background dispatchers) |
@@ -107,16 +107,16 @@ app/src/main/java/com/sleepanalysis/
 
 **Overnight capture flow (the core path):**
 
-1. User taps Start → pre-flight checks (storage, battery, permissions) → session row created (`ended_at = null`) → service promotes to foreground with notification.
+1. User taps Start → pre-flight checks (storage, permissions) → session row created (`ended_at = null`) → service promotes to foreground with notification.
 2. AudioEngine streams PCM into the ring buffer. Nothing here touches disk for full-night audio — only clip slices ever persist.
 3. Every 0.5 s hop, a 1 s window is sliced → features → per-window snore probability. With the shipped `energy-heuristic-v1-spectral` the features (RMS, low-band ratio, rolling noise floor, plus spectral flatness and harmonic ratio from `monitoring/features/`) are computed inline (`EventFeatures`, persisted per event as `features_json`) and the "classifier" is the `SnoreDetector` interface; Phase 2 swaps in log-mel + TFLite (`ClassifierEngine`) without touching steps 2 or 4.
 4. EventDetector turns probability streams into discrete AcousticEvents with intensity and confidence; qualifying events trigger a clip flush from the ring buffer to `filesDir/clips/<session>/`. Clip persistence is gated by `ClipPolicy`: events below the relative level gate (mean under the event's own rolling noise floor + `DetectorConfig.GATE_MARGIN_DB`, 10 dB — never below the hard floor `MIN_GATE_DBFS`, −60 dBFS, so near-silence stays gated; unverifiable by playback) never persist a clip; for the first 30 min of capture the margin is +6 dB stricter (settling window — bedtime noise is the night's loudest period); a per-hour budget (`MAX_CLIPS_PER_HOUR`) stops bedtime noise from spending the whole night's clips (night 1 wrote all 50 in the first 42 min); and `MAX_CLIPS_PER_NIGHT` remains the backstop. Sub-gate SNORE detections are downgraded to OTHER_NOISE at finalization, so the SNORE label only ever applies to clearly audible events.
-5. Events are written in batches (~30 s cadence, or immediately for high-confidence events); per-hour aggregates accumulate in memory.
+5. Events are written immediately per finalized event (one transaction covering the event row and its clip row, so process death can never leave one without the other).
 6. On stop: session finalized — Measurement rows written through MeasurementRecorder, the engine's `NightStats` persisted as session `capture_stats`, per-session log closed. The morning report is assembled live on open (no snapshot table yet). Notification clears.
 
-**Recovery flow:** process death or reboot mid-night → next launch, the Home screen finds the open session and shows an explicit **interrupted-night banner** (with the saved-event count) → the user confirms "Finalize & view report" → `finalizeOpenAsRecovered()` finalizes every open session as RECOVERED (guard: a new recording can never start while one is open) → report generated from whatever events were durably written, with `ended_at` bounded by the last saved event (+1 min grace) so the dead gap doesn't inflate time in bed (loss bounded to the last ~30 s). When START_STICKY instead resumes the open session automatically, the session row is marked `resumed_after_interruption` (schema v7) at resume and the morning report leads its integrity notes with the discontinuity — the night was never continuously captured.
+**Recovery flow:** process death or reboot mid-night → next launch, the Home screen finds the open session and shows an explicit **interrupted-night banner** (with the saved-event count) → the user confirms "Finalize & view report" → `finalizeOpenAsRecovered()` finalizes every open session as RECOVERED (guard: a new recording can never start while one is open) → report generated from whatever events were durably written, with `ended_at` bounded by the later of the last saved event or the last heartbeat (+1 min grace) so the dead gap doesn't inflate time in bed. If the system restarts the killed service (START_STICKY), capture does **not** auto-resume — on Android 11+ a background restart has no while-in-use microphone access, so `StartIntentPolicy` ignores the null-intent restart and a high-priority interrupted notification offers a **Resume** action; when the user taps it (the interaction that grants mic access), capture restarts into the same session, the row is marked `resumed_after_interruption` (schema v7), and the morning report leads its integrity notes with the discontinuity — the night was never continuously captured.
 
-**Failure paths:** storage pressure → stop clip capture first, keep event stream, degrade report; thermal MODERATE+ → widen hop (0.5 s → 1 s) and add a cheap energy/VAD prefilter before inference; SEVERE+ → pause inference, keep recording; permission revoked mid-run → stop gracefully with a notification.
+**Failure paths:** storage pressure → stop clip capture first, keep event stream, degrade report; thermal MODERATE+ → every 2nd analysis hop is skipped (windows still captured; the skipped spans are recorded in `capture_stats` so coverage can be corrected); permission revoked mid-run → stop gracefully with a notification.
 
 **Why this shape:** the capture path is a strict pipeline with one writable sink (MeasurementRecorder + ClipStore). Nothing downstream (report, trends, future analysis) ever reads raw audio — it reads events and measurements. That is what makes models swappable and claims auditable.
 
@@ -164,7 +164,7 @@ This layering is deliberate: raw data is ephemeral and heavy; events are the aud
 - **Unit (pure Kotlin):** EventDetector on synthetic probability streams; Scoring; ReportAssembler + ClaimPolicy gating; retention logic. No Robolectric needed.
 - **Claim-policy sync test:** asserts `ClaimPolicy` == measurement table in [MEASUREMENT_RELIABILITY.md](MEASUREMENT_RELIABILITY.md) §2 (fails the build on drift).
 - **Fixture ML eval:** labeled WAV fixtures (real nights + augmented noise beds) → per-class precision/recall; thresholds asserted as unit tests on release candidates.
-- **DB:** Room in-memory tests + migration tests from exported schemas (`app/schemas`); trigger tests for clinical immutability.
+- **DB:** schema exports verified in `app/schemas/`; migration SQL hand-reviewed (automated Room migration tests are a tracked gap — see STATUS §3); trigger logic for clinical immutability exercised via `AppDatabase` on open.
 - **Robolectric:** service state machine, permission-denied paths, recovery flow.
 - **Instrumented (real devices):** overnight soak runs with battery/thermal logging before each phase release.
 

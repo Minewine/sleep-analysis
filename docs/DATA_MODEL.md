@@ -279,7 +279,7 @@ Deletion paths:
 
 ## 7. Migrations and versioning
 
-- Room schemas exported to `app/schemas/` and covered by migration tests; **shipped migrations are never edited**, only appended.
+- Room schemas exported to `app/schemas/`; **shipped migrations are never edited**, only appended. Migration SQL is hand-reviewed — automated migration tests do not exist yet (tracked gap; [STATUS.md](STATUS.md) §3).
 - JSON payloads (`capture_stats`, report payload) carry `schema_version`; readers handle older versions defensively.
 - `measurement_type`/enum growth is additive; `ClaimPolicy` is the gate, so unknown types in the DB can never render in the UI.
 - Reprocessing (Phase 4+): re-running a newer model over stored clips writes **new** Measurement rows with the new `model_id`; old rows remain — provenance history is append-only.
