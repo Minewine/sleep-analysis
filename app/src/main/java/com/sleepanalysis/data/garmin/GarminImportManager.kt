@@ -81,9 +81,10 @@ class GarminImportManager @Inject constructor(
                     }
                 }
 
-                // 2. Normalize into provenance-stamped measurements over the local day window.
-                val dayStart = date.atStartOfDay(zone).toInstant().toEpochMilli()
-                val dayEnd = date.plusDays(1).atStartOfDay(zone).toInstant().toEpochMilli()
+                // 2. Normalize into provenance-stamped measurements over the LOCAL day window
+                //    of the session's zone (ReportViewModel passes session.timeZone) — never
+                //    the device default zone, or DST/travel offsets shift every timestamp.
+                val (dayStart, dayEnd) = dayWindowMs(date, zone)
                 val metrics = buildList {
                     result.ok(EP_DAILY_SLEEP)?.let { addAll(GarminJsonParsers.parseDailySleep(it.json!!, dayStart)) }
                     result.ok(EP_HRV)?.let { addAll(GarminJsonParsers.parseHrv(it.json!!, dayStart)) }
@@ -130,5 +131,14 @@ class GarminImportManager @Inject constructor(
         const val EP_BODY_BATTERY = "/wellness-service/wellness/bodyBattery/reports/daily"
         const val EP_DAILY_SUMMARY = "/usersummary-service/v2/dailysummaries"
         const val EP_STRESS = "/usersummary-service/stats/stress/daily"
+
+        /**
+         * Epoch window of [date] in [zone] — the bracket every imported metric's timestamp
+         * must fall in. Pure so the DST behavior is testable: a 23 h / 25 h day around a
+         * clock change yields a 23 h / 25 h window, not a fixed 24 h.
+         */
+        fun dayWindowMs(date: LocalDate, zone: ZoneId): Pair<Long, Long> =
+            date.atStartOfDay(zone).toInstant().toEpochMilli() to
+                date.plusDays(1).atStartOfDay(zone).toInstant().toEpochMilli()
     }
 }
