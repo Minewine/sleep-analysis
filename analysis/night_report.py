@@ -16,6 +16,7 @@ import os
 import wave
 from collections import defaultdict
 from datetime import UTC, datetime
+from itertools import pairwise
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -44,7 +45,7 @@ def loc(ms: float) -> datetime:
 
 
 def hms(s: float) -> str:
-    s = int(round(s))
+    s = round(s)  # round(x) with no ndigits already returns int
     return f"{s // 3600}h{s % 3600 // 60:02d}m{s % 60:02d}s"
 
 
@@ -161,12 +162,12 @@ def main() -> None:
     )
     print(f"snore events >30s (likely merged bouts): {len(long_ev)}")
     # overlap within type
-    ov = sum(1 for a, b in zip(snore11, snore11[1:]) if b["start"] < a["end"])
+    ov = sum(1 for a, b in pairwise(snore11) if b["start"] < a["end"])
     print(f"adjacent SNORE pairs overlapping: {ov}")
     # gaps in capture
     gaps = [
         (a["end"], b["start"])
-        for a, b in zip(s11, s11[1:])
+        for a, b in pairwise(s11)
         if b["start"] - a["end"] > 600_000
     ]
     print("quiet gaps >10 min:")
@@ -266,7 +267,6 @@ def main() -> None:
 
     print("\n=== COMPARISON s10 vs s11 ===")
     snore10 = [e for e in s10 if e["type"] == "SNORE"]
-    w10 = (1793681418271 - 1793652742902) / 1000
     print(
         f"s10: {len(snore10)} snores, union {hms(union_time(snore10))}, avgPeak {np.mean([e['peak'] for e in snore10]):.1f}"
     )
