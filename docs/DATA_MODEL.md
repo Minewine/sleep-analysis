@@ -279,7 +279,8 @@ Deletion paths:
 
 ## 7. Migrations and versioning
 
-- Room schemas exported to `app/schemas/`; **shipped migrations are never edited**, only appended. Migration SQL is hand-reviewed — automated migration tests do not exist yet (tracked gap; [STATUS.md](STATUS.md) §3).
+- Room schemas exported to `app/schemas/`; **shipped migrations are never edited**, only appended. Migration SQL is hand-reviewed and covered end-to-end by the instrumented `MigrationTest` (androidTest): seeds rows at v1, migrates to the latest version with `MigrationTestHelper`, verifies the rows survive and the clinical-immutability triggers exist and enforce.
 - JSON payloads (`capture_stats`, report payload) carry `schema_version`; readers handle older versions defensively.
 - `measurement_type`/enum growth is additive; `ClaimPolicy` is the gate, so unknown types in the DB can never render in the UI.
+- Schema history: 1→8 via seven real migrations; v8 is declaration-only (`@ColumnInfo(defaultValue = "0")` on `sleep_session.resumedAfterInterruption`, matching the `DEFAULT 0` the column has carried since v7).
 - Reprocessing (Phase 4+): re-running a newer model over stored clips writes **new** Measurement rows with the new `model_id`; old rows remain — provenance history is append-only.

@@ -54,10 +54,13 @@ Prerequisites:
 - Android Studio (current stable) with bundled JDK 17+, **or** JDK 17+ + Android SDK with platform 35 and build-tools 35
 - A real device with a microphone on **Android 11+** — overnight capture cannot be tested on an emulator
 
+CI (GitHub Actions) runs the same gates on every PR: assemble, unit tests, Android lint, permission/forbidden-terms/hygiene/network-host checks, ruff, pytest.
+
 ```bash
 git clone <repo-url> && cd sleep-analysis
 ./gradlew :app:assembleDebug        # debug APK at app/build/outputs/apk/debug/
 ./gradlew :app:testDebugUnitTest    # unit tests (detector, event shaping, scoring, claim policy, report, capture stats, session logger, WAV)
+./gradlew :app:connectedDebugAndroidTest  # Room migration test (needs a device or emulator)
 uv run pytest                       # Python tooling tests (tools/; uv-managed env, see pyproject.toml)
 ```
 
@@ -103,7 +106,7 @@ Key swap point for Phase 2: `di/AppModule.provideSnoreDetector()` — replace th
 - **Retention settings are stored but not yet editable** — `DataStore` holds clips/sessions retention (defaults: clips 7 days, sessions 90 days) and the worker reads it; the settings UI is still pending; per-night and delete-all exist.
 - **Device/reroute handling is basic.** A mid-night audio-device change (headset unplug) is not actively detected; capture errors finalize the session as interrupted. Process death surfaces an explicit interrupted-night banner on next launch — finalization is user-confirmed, and a recovered report covers only up to the last saved event. If the system restarts the killed service (START_STICKY), capture does **not** silently auto-resume: on Android 11+ a background restart has no while-in-use microphone access (it would record silence), so the service posts a high-priority *recording interrupted* notification whose **Resume** action (a user tap — the interaction that grants mic access) restarts capture into the same session with stats carried over; if you never tap it, the Home interrupted-night banner handles finalize.
 - **Capture statistics only exist for sessions recorded after the hardening pass.** Sessions finalized as RECOVERED (engine died with the process) keep whatever progress the 15-minute heartbeat persisted; with no heartbeat saved, the report says so instead of showing warnings.
-- **Schema history.** Room schema export is on; the DB has evolved 1→7 via real migrations (raw payloads, factor log, label timestamps, event features JSON, morning notes) and upgrades in place.
+- **Schema history.** Room schema export is on; the DB has evolved 1→8 via real migrations (raw payloads, factor log, label timestamps, event features JSON, morning notes, interruption flag) and upgrades in place, covered by an instrumented `MigrationTest`.
 - **Garmin re-import replaces per-metric.** Re-importing a night deletes and rewrites only the metrics whose endpoints succeeded in that run (a partial import never wipes previously imported metrics); duplicate rows from double-tapping Import are prevented by design.
 - **Scheduled recording is off by default and alarm-based.** Force-stopping the app cancels its alarms (they re-arm on the next app open or settings change); Android 14+ requires the exact-alarm permission to be granted, or the schedule falls back to an inexact window that Doze can stretch well beyond its ~10 minutes on some devices.
 

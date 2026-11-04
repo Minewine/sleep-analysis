@@ -43,7 +43,7 @@ Everything else is blocked on evidence only real nights can provide: battery, 8 
 
 1. **30-night dogfood** with a tiny nightly log (battery %, anomalies) — Phase 1's definition-of-done gate ([MVP_SCOPE](MVP_SCOPE.md) §7).
 2. **Garmin live import** (same period): enter the rotated key, import a date, check the four endpoint HTTP statuses in Settings — validates the `?date=` assumption and real payload shapes against the parsers; raw JSON makes remapping lossless.
-3. **CI + lint rules** (finally build what MVP_SCOPE F10 promised): GitHub Actions (build + unit tests), a check that the merged manifest requests only the six expected permissions, and a lint rule flagging forbidden clinical terms ("AHI", "apnea", "arousal", "sleep stage") outside approved disclaimer strings.
+3. ~~**CI + lint rules**~~ — **done (2026-11-04)**: GitHub Actions runs build + unit tests + Android lint + the four policy gates (merged-manifest permission allowlist — now 9 declared permissions + 2 documented library additions, forbidden-terms check, repo-hygiene check, network-host allowlist) plus ruff/pytest; see `.github/workflows/ci.yml` and [ARCHITECTURE.md](ARCHITECTURE.md) §6.6.
 4. **Report snapshot persistence** (DATA_MODEL §3.7) + retention decision for `raw_payload` (currently indefinite; rows are small but the doc's storage-limitation story should cover them).
 5. **DB trigger test** for clinical immutability (in-memory Room test against the `clinical_baseline` triggers) — the only Phase 1 safety mechanism with no automated coverage.
 6. **Retention-settings UI** — the plumbing exists (`UserPreferences.setRetention`, worker already reads it); only the Settings screen section is missing.

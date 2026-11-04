@@ -74,7 +74,7 @@ app/src/main/java/com/sleepanalysis/
 │   ├── scoring/     # SnoreScore, derived indices (pure functions)
 │   └── report/      # ReportAssembler, CaptureStats parsing (+ InsightRules later)
 ├── data/
-│   ├── db/          # Room entities, DAOs, migrations (schema v7)
+│   ├── db/          # Room entities, DAOs, migrations (schema v8)
 │   ├── files/       # ClipStore (app-private clip files)
 │   ├── logs/        # SessionLogger (per-session text logs)
 │   ├── garmin/      # GarminClient, parsers, import manager (Phase 3 slice)
@@ -133,7 +133,7 @@ Enforcement mechanisms:
 3. **Clinical immutability.** Baseline entries are insert-only (no update/delete DAO methods for clinical rows) plus a SQL trigger that aborts `UPDATE`/`DELETE` on `method = 'CLINICAL_MEASURED'` rows outside the explicit delete-all maintenance path ([DATA_MODEL.md](DATA_MODEL.md) §4).
 4. **Model binding.** Every algorithmic event/measurements stores `model_id`/`model_version` resolved from ModelRegistry at write time, so reprocessing or recalibration can be traced and re-run later.
 5. **Report gating.** ReportAssembler includes a measurement in the report payload only if `ClaimPolicy` allows that tier in the current UI mode; Tier-2 values additionally require the experimental toggle. Exports inherit the same filter.
-6. **CI checks.** *(Specified, not yet built — tracked in NEXT_STEPS P1.)* (a) merged manifest must not contain unexpected permissions; (b) lint rule flags forbidden clinical terms ("AHI", "apnea", "arousal index", "sleep stage") in `strings.xml` outside the approved disclaimer strings.
+6. **CI checks — shipped** (GitHub Actions, `.github/workflows/ci.yml`; the same four gates run locally as Gradle tasks in `:app:check`): (a) **`checkPermissionAllowlist`** — the merged debug manifest must match `ci/permission-allowlist.txt` exactly; (b) **`checkForbiddenTerms`** — forbidden clinical terms ("AHI", "apnea", "arousal index", "sleep stage", "desaturation") fail the build outside the approved disclaimer and clinical-baseline label strings; (c) **`checkRepoHygiene`** — no tracked file matches the personal-data patterns (mirrors `.githooks/pre-commit`); (d) **`checkNetworkHosts`** — URL hosts in main sources are limited to the single Garmin host.
 
 ## 7. Separation of raw audio, features, and derived summaries
 
@@ -164,7 +164,7 @@ This layering is deliberate: raw data is ephemeral and heavy; events are the aud
 - **Unit (pure Kotlin):** EventDetector on synthetic probability streams; Scoring; ReportAssembler + ClaimPolicy gating; retention logic. No Robolectric needed.
 - **Claim-policy sync test:** asserts `ClaimPolicy` == measurement table in [MEASUREMENT_RELIABILITY.md](MEASUREMENT_RELIABILITY.md) §2 (fails the build on drift).
 - **Fixture ML eval:** labeled WAV fixtures (real nights + augmented noise beds) → per-class precision/recall; thresholds asserted as unit tests on release candidates.
-- **DB:** schema exports verified in `app/schemas/`; migration SQL hand-reviewed (automated Room migration tests are a tracked gap — see STATUS §3); trigger logic for clinical immutability exercised via `AppDatabase` on open.
+- **DB:** schema exports verified in `app/schemas/`; migration SQL hand-reviewed, and the instrumented `MigrationTest` (androidTest, `MigrationTestHelper`) replays 1→latest against exported schemas, checks seeded rows survive, and asserts the clinical-immutability triggers exist and enforce.
 - **Robolectric:** service state machine, permission-denied paths, recovery flow.
 - **Instrumented (real devices):** overnight soak runs with battery/thermal logging before each phase release.
 
