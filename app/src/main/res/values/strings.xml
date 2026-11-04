@@ -1,0 +1,241 @@
+<resources>
+    <string name="app_name">SleepAnalysis</string>
+
+    <!-- Shared -->
+    <string name="action_back">Back</string>
+
+    <!-- Onboarding / disclaimer (docs/PRIVACY_AND_REGULATORY.md §5.1) -->
+    <string name="onboarding_title">Before you start</string>
+    <string name="onboarding_disclaimer">
+        SleepAnalysis is a personal wellness and research tool — not a medical device.\n\n
+        It does not diagnose, treat, or prevent any disease, including sleep apnea. It estimates
+        simple measures like snoring from microphone sound; these estimates can be wrong and are
+        not a substitute for a sleep study (polysomnography) or advice from a qualified clinician.\n\n
+        If you regularly experience loud snoring, witnessed breathing pauses, gasping during sleep,
+        or excessive daytime sleepiness, speak to a doctor.
+    </string>
+    <string name="onboarding_what_we_record">What this app records</string>
+    <string name="onboarding_what_body">
+        • Microphone audio is processed on this device only — nothing is uploaded (the app has no
+        internet permission at all).\n\n
+        • Full-night audio is never saved. Short clips (a few seconds) are kept for detected events
+        so you can verify them, and are deleted automatically after your retention period.\n\n
+        • All data stays in this app\'s private storage. You can delete a single night or everything
+        at any time.
+    </string>
+    <string name="onboarding_placement_title">Placement matters</string>
+    <string name="onboarding_placement_body">
+        Put the phone on your nightstand, roughly 0.5–1 m from your head, with the microphone
+        unobstructed. Keep it plugged in. Results vary with distance and background noise.
+    </string>
+    <string name="onboarding_accept">I understand — accept</string>
+    <string name="onboarding_mic_rationale">The microphone is used only while a recording session is running, and the ongoing notification shows you when it is active.</string>
+
+    <!-- Home -->
+    <string name="home_title">SleepAnalysis</string>
+    <string name="home_start_recording">Start night recording</string>
+    <string name="home_stop_recording">Stop and build report</string>
+    <string name="home_status_idle">Not recording</string>
+    <string name="home_status_recording">Recording… microphone active</string>
+    <string name="home_status_starting">Starting…</string>
+    <string name="home_status_delayed">Waiting — audio capture starts in %1$s</string>
+    <string name="home_mic_indicator">Microphone active</string>
+    <string name="home_last_night">Last morning report</string>
+    <string name="home_no_sessions">No recorded nights yet.</string>
+    <string name="home_view_report">Open report</string>
+    <string name="home_history">History</string>
+    <string name="home_baseline">Clinical baseline</string>
+    <string name="home_settings">Settings</string>
+    <string name="home_battery_hint_title">Battery optimization is on</string>
+    <string name="home_battery_hint_body">Android may stop overnight recording to save power. For reliable all-night capture, exclude SleepAnalysis from battery optimization.</string>
+    <string name="home_battery_hint_button">Open battery settings</string>
+    <string name="home_error_prefix">Could not start: %1$s</string>
+    <string name="home_recording_disabled_hint">Recording is disabled in Settings.</string>
+    <string name="home_schedule_next_tonight">Scheduled start tonight at %1$s</string>
+    <string name="home_schedule_next">Next scheduled start: %1$s</string>
+    <string name="home_schedule_skip">Skip tonight</string>
+
+    <!-- Report -->
+    <string name="report_title">Morning report</string>
+    <string name="report_disclaimer">Estimates from on-device microphone analysis. Not a diagnostic device. For sleep-health questions, talk to a clinician.</string>
+    <string name="report_time_in_bed">Time in bed</string>
+    <string name="report_snore_time">Snoring time</string>
+    <string name="report_snore_share">% of night</string>
+    <string name="report_snore_score">Snore score</string>
+    <string name="report_snore_events">Snoring spells</string>
+    <string name="report_intensity_breakdown">Intensity breakdown</string>
+    <string name="report_timeline">Night timeline</string>
+    <string name="report_hourly">Snoring per hour</string>
+    <string name="report_loudest_title">Loudest sounds</string>
+    <string name="report_loudest_note">Top episodes by peak loudness — tap a row for details and labeling.</string>
+    <string name="report_episode_summary">%1$d snoring spells · peak %2$s</string>
+    <string name="report_events_title">Acoustic events</string>
+    <string name="report_tap_event">Tap the timeline or an event to play its clip.</string>
+    <string name="report_no_events">No acoustic events were detected this night.</string>
+    <string name="report_baseline_section">Your clinical baseline (PSG, read-only)</string>
+    <string name="report_baseline_note">Values below were clinically measured during sleep studies and are never compared one-to-one with the phone estimates above — the two are different kinds of measurement.</string>
+    <string name="report_interrupted_note">This session was interrupted and recovered; the report covers only what was recorded.</string>
+    <string name="report_no_clip">No clip stored for this event.</string>
+    <string name="report_play">Play clip</string>
+    <string name="report_stop_playback">Stop playback</string>
+    <string name="report_peak_intensity">Peak intensity</string>
+
+    <!-- Baseline -->
+    <string name="baseline_title">Clinical baseline</string>
+    <string name="baseline_note">Enter the summary numbers from your sleep study reports (e.g. HUG, January 2026). These are stored read-only as your reference: corrections are made by adding a new entry, never by editing.</string>
+    <string name="baseline_add">Add study night</string>
+    <string name="baseline_empty">No clinical baseline stored yet.</string>
+    <string name="baseline_dialog_title">Add clinical study night</string>
+    <string name="baseline_field_date">Study date (YYYY-MM-DD)</string>
+    <string name="baseline_field_lab">Lab</string>
+    <string name="baseline_field_night">Night label</string>
+    <string name="baseline_field_tst">Total sleep time (minutes)</string>
+    <string name="baseline_field_efficiency">Sleep efficiency (%)</string>
+    <string name="baseline_field_arousal">Arousal index (/h)</string>
+    <string name="baseline_field_n3">N3 deep sleep (%)</string>
+    <string name="baseline_field_ahi">AHI (/h)</string>
+    <string name="baseline_field_notes">Notes</string>
+    <string name="baseline_field_source_doc">Source document reference</string>
+    <string name="baseline_save">Save (permanent)</string>
+    <string name="baseline_invalid_date">Study date must be YYYY-MM-DD.</string>
+    <string name="baseline_clinically_measured">Clinically measured</string>
+
+    <!-- History -->
+    <string name="history_title">Recorded nights</string>
+    <string name="history_empty">No nights recorded yet.</string>
+    <string name="history_delete_night">Delete</string>
+    <string name="history_delete_all">Delete all data</string>
+    <string name="history_delete_confirm_title">Delete this night?</string>
+    <string name="history_delete_confirm_body">Deletes the session, its events and its audio clips. Derived measurements are kept for trends.</string>
+    <string name="history_delete_all_confirm_title">Delete ALL data?</string>
+    <string name="history_delete_all_confirm_body">This removes every recording, event, clip, measurement AND your clinical baseline. This cannot be undone.</string>
+    <string name="history_in_progress">in progress</string>
+    <string name="history_cancel">Cancel</string>
+    <string name="history_deleted_toast">Night deleted</string>
+    <string name="history_delete_all_done">All data deleted</string>
+
+    <!-- Home: pre-flight checklist + interrupted night (P0 hardening) -->
+    <string name="home_preflight_title">Before tonight</string>
+    <string name="home_preflight_mic">Microphone access</string>
+    <string name="home_preflight_notifications">Notification permission</string>
+    <string name="home_preflight_battery">Battery optimization exempt</string>
+    <string name="home_preflight_storage">Free storage: %1$s (need ≥ 500 MB)</string>
+    <string name="home_preflight_fix">Fix</string>
+    <string name="home_interrupted_title">Previous night was interrupted</string>
+    <string name="home_interrupted_body">Recording stopped unexpectedly (session started %1$s). %2$d acoustic events were saved up to that point. You can finalize them into a report now.</string>
+    <string name="home_interrupted_action">Finalize &amp; view report</string>
+
+    <!-- Notification -->
+    <string name="notif_channel_name">Night recording</string>
+    <string name="notif_channel_desc">Shown while overnight audio monitoring is active</string>
+    <string name="notif_recording_title">Recording sleep audio</string>
+    <string name="notif_recording_text">Microphone active — estimates only, not a medical device</string>
+    <string name="notif_stop_action">Stop</string>
+    <string name="notif_channel_scheduled">Scheduled recording</string>
+    <string name="notif_scheduled_title">Time to record your night</string>
+    <string name="notif_scheduled_text">Ready to record — one tap needed so Android grants the microphone.</string>
+    <string name="notif_scheduled_start">Start recording</string>
+    <string name="notif_scheduled_skip">Skip tonight</string>
+    <string name="notif_delay_title">Sleep recording starting soon</string>
+    <string name="notif_delay_text">Audio capture begins at %1$s — time to fall asleep. Tap Stop to cancel.</string>
+    <string name="notif_channel_interrupted">Interrupted recording</string>
+    <string name="notif_interrupted_title">Night recording was interrupted</string>
+    <string name="notif_interrupted_text">Recording stopped overnight — tap to reopen the app and resume or finalize the recording.</string>
+    <string name="notif_interrupted_resume">Resume recording</string>
+
+    <!-- Monitor service start errors (surfaced via the Home error row) -->
+    <string name="service_error_low_storage">Not enough free storage (need ~500 MB)</string>
+    <string name="service_error_session_missing">Session row missing</string>
+
+    <!-- Retention -->
+    <string name="retention_worker_note">Retention: clips are deleted after 7 days, sessions after 90 days (settings in a later phase).</string>
+
+    <!-- Settings -->
+    <string name="settings_title">Settings</string>
+    <string name="settings_recording_title">Recording</string>
+    <string name="settings_recording_enabled">Recording enabled</string>
+    <string name="settings_recording_enabled_subtitle">Master switch — when off, the app will not start a recording, schedule included.</string>
+    <string name="settings_schedule_enabled">Scheduled nightly recording</string>
+    <string name="settings_schedule_enabled_subtitle">Off by default — manual start stays the primary method.</string>
+    <string name="settings_schedule_start">Start time</string>
+    <string name="settings_schedule_end">End time</string>
+    <string name="settings_schedule_equal_times">Start and end time must differ.</string>
+    <string name="settings_schedule_time_set">Set</string>
+    <string name="settings_schedule_time_cancel">Cancel</string>
+    <string name="settings_schedule_next">Next scheduled start: %1$s</string>
+    <string name="settings_schedule_off">Scheduling is off — recording starts manually.</string>
+    <string name="settings_schedule_skip_tonight">Skip tonight</string>
+    <string name="settings_schedule_exact_alarm_missing">Exact alarms are not permitted — the inexact fallback can be delayed by Doze, sometimes well beyond its ~10-minute window.</string>
+    <string name="settings_schedule_exact_alarm_fix">Allow exact alarms</string>
+    <string name="settings_schedule_notifications_missing">Notifications are turned off — the bedtime notification that starts a scheduled recording cannot be shown, so scheduled starts will not appear.</string>
+    <string name="settings_schedule_notifications_fix">Allow notifications</string>
+    <string name="settings_schedule_timing_note">Timing uses exact system alarms (not WorkManager) for a precise bedtime; without exact-alarm permission it falls back to an inexact window that Doze can stretch beyond ~10 minutes on some devices.</string>
+    <string name="settings_schedule_battery_note">Aggressive OEM battery managers can kill scheduled alarms — exclude SleepAnalysis from battery optimization.</string>
+    <string name="settings_delay_title">Start delay</string>
+    <string name="settings_delay_subtitle">Audio capture begins this many minutes after you tap start — time to fall asleep first. Time in bed still counts from the tap.</string>
+    <string name="settings_delay_off">Off</string>
+    <string name="settings_delay_minutes">%1$d min</string>
+    <string name="settings_garmin_title">Garmin Personal API</string>
+    <string name="settings_garmin_privacy_note">Your key is stored encrypted with the Android Keystore and never leaves this device except in requests to Garmin\'s API (personal.connectapi.garmin.com). Imports run only when you tap Import. No other network access exists in this app.</string>
+    <string name="settings_key_stored">API key stored (%1$s) — tap Save to replace, Clear to remove.</string>
+    <string name="settings_key_missing">No API key stored yet. Create one in Garmin Connect → Account Settings → Personal API Key.</string>
+    <string name="settings_key_label">Garmin Personal API key</string>
+    <string name="settings_key_save">Save key</string>
+    <string name="settings_key_clear">Clear key</string>
+    <string name="settings_key_store_error">Could not store key: %1$s</string>
+    <string name="settings_import_title">Import data for one date</string>
+    <string name="settings_import_date">Date (YYYY-MM-DD)</string>
+    <string name="settings_import_action">Import from Garmin</string>
+    <string name="settings_import_running">Importing %1$s…</string>
+    <string name="settings_import_done">Imported %1$d metrics from %2$d endpoints. Raw responses stored.</string>
+
+    <!-- Report: Garmin section -->
+    <string name="report_garmin_section">Garmin (device-reported estimates)</string>
+    <string name="report_garmin_note">Vendor algorithms, shown as context next to the acoustic estimates above — never compared numerically with clinical data.</string>
+    <string name="report_garmin_empty">No Garmin data imported for this night yet.</string>
+    <string name="report_garmin_import">Import from Garmin</string>
+
+    <!-- Report: event labeling -->
+    <string name="report_label_caption">What was this? Tap to label (tap again to clear) — builds your personal dataset for better detection.</string>
+    <string name="report_labeled_prefix">Your label:</string>
+
+    <!-- Report: session health / observability -->
+    <string name="report_health_title">Session health</string>
+    <string name="report_health_recording">Recording time</string>
+    <string name="report_health_windows">Analysis windows</string>
+    <string name="report_health_clips">Clips saved</string>
+    <string name="report_health_view_log">View session log</string>
+    <string name="log_title">Session log</string>
+    <string name="log_share">Export</string>
+    <string name="log_empty">No log file exists for this session (recorded before health tracking, or logging failed silently).</string>
+
+    <!-- Settings: debug -->
+    <string name="settings_debug_title">Debug: relax event opening</string>
+    <string name="settings_debug_body">Open an event after a single loud window instead of two consecutive ones. Debug aid for quiet testing only — takes effect on the next recording, which is marked \"dbg1\" in its data.</string>
+
+    <!-- Report: event features (debug visibility) -->
+    <string name="report_features_title">Detector inputs</string>
+    <string name="report_features_snr">SNR (peak/mean): %1$s / %2$s dB</string>
+    <string name="report_features_ratio">Low-band ratio (peak/mean): %1$s / %2$s (threshold 0.55)</string>
+    <string name="report_features_floor">Noise floor estimate: %1$s dBFS</string>
+    <string name="report_features_enter">Opened after %1$d window(s)</string>
+
+    <!-- Report: morning notes -->
+    <string name="report_notes_title">Morning notes</string>
+    <string name="report_notes_placeholder">e.g. woke at 3am, phone on nightstand, partner snoring</string>
+    <string name="report_notes_edit">Edit</string>
+    <string name="report_notes_save">Save</string>
+    <string name="report_notes_cancel">Cancel</string>
+
+    <!-- Report: daily factors -->
+    <string name="report_factors_section">Daily factors (self-logged)</string>
+    <string name="report_factors_note">You logged these for the day of this recording. User-entered context, not measurements.</string>
+
+    <!-- Daily factor log -->
+    <string name="factor_title">Daily log</string>
+    <string name="factor_date">Date (YYYY-MM-DD)</string>
+    <string name="factor_note">Log the day behind tonight\'s recording. Only what you set is stored; entries for a date are replaced when you save again.</string>
+    <string name="factor_alcohol_units">Units (optional)</string>
+    <string name="factor_save">Save</string>
+    <string name="factor_saved">Saved</string>
+</resources>

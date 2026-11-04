@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- Privacy posture (docs/PRIVACY_AND_REGULATORY.md §1): audio never leaves the device.
+         INTERNET is added in Phase 3 for exactly one purpose: on-demand pulls from the Garmin
+         Personal API (personal.connectapi.garmin.com) when the user taps Import. No telemetry,
+         no analytics, no other hosts. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- Scheduled recording (design: recording controls): exact bedtime alarms with an inexact
+         ~10-minute fallback when the permission is not granted (Android 12+). -->
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+    <!-- Re-arms the nightly schedule after a reboot or a timezone/clock change
+         (receivers never record from boot). -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!-- Lets the app show the system "allow battery optimization exemption?" dialog directly
+         (sideloaded personal app; docs/PRIVACY_AND_REGULATORY.md — no data implications). -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+
+    <application
+        android:name=".SleepAnalysisApp"
+        android:allowBackup="false"
+        android:icon="@drawable/ic_app"
+        android:label="@string/app_name"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.SleepAnalysis">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:showWhenLocked="true"
+            android:turnScreenOn="false">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <service
+            android:name=".monitoring.service.MonitorService"
+            android:exported="false"
+            android:foregroundServiceType="microphone" />
+
+        <!-- Scheduled recording: receivers only post the bedtime notification / stop the
+             running service / re-arm alarms — starting the mic FGS from the background would
+             get no while-in-use mic access (docs/ARCHITECTURE.md §10). -->
+        <receiver
+            android:name=".monitoring.schedule.ScheduledStartReceiver"
+            android:exported="false" />
+        <receiver
+            android:name=".monitoring.schedule.ScheduledStopReceiver"
+            android:exported="false" />
+        <receiver
+            android:name=".monitoring.schedule.BootReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.TIMEZONE_CHANGED" />
+                <action android:name="android.intent.action.TIME_SET" />
+            </intent-filter>
+        </receiver>
+
+        <!-- WorkManager: Hilt injects workers, so replace the default initializer. -->
+        <provider
+            android:name="androidx.startup.InitializationProvider"
+            android:authorities="${applicationId}.androidx-startup"
+            android:exported="false"
+            tools:node="merge">
+            <meta-data
+                android:name="androidx.work.WorkManagerInitializer"
+                android:value="androidx.startup"
+                tools:node="remove" />
+        </provider>
+    </application>
+</manifest>

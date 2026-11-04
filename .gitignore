@@ -1,0 +1,28 @@
+*.iml
+.gradle
+/local.properties
+/.idea
+.DS_Store
+/build
+/app/build
+/captures
+.externalNativeBuild
+.cxx
+*.apk
+*.aab
+*.keystore
+!debug.keystore
+
+# Python tooling (tools/)
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.venv/
+
+# Kotlin/Native & build tool caches
+.kotlin/
+.zcode/
+
+# Labeled sleep-audio fixtures: real sleep audio, never commit (docs/PRIVACY_AND_REGULATORY.md)
+fixtures/
