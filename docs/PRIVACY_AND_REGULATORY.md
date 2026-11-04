@@ -42,6 +42,8 @@ Storage security posture: app sandbox + Android file-based encryption (device lo
 | `FOREGROUND_SERVICE` + `FOREGROUND_SERVICE_MICROPHONE` | Manifest | Monitor service | Mic FGS type declared (API 30+; runtime type enforcement API 34+) |
 | `POST_NOTIFICATIONS` | Runtime (API 33+) | Ongoing recording notification | Part of start flow |
 | `WAKE_LOCK` | Manifest | Partial wake lock held for the recording session | Reliability over battery for overnight capture; quality gate ≤ 10 %/8 h |
+| `SCHEDULE_EXACT_ALARM` | Manifest | Scheduled nightly recording: exact bedtime/end alarms | Inexact ~10-minute fallback when not granted (Android 12+ can withhold it); no data implications |
+| `RECEIVE_BOOT_COMPLETED` | Manifest | Re-arm the nightly schedule after reboot or timezone/clock changes | Receivers never record from boot — they only post the bedtime notification / re-arm alarms |
 | `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` | Manifest | Lets the system battery-exemption dialog open directly from the app | No data implications; sideloaded personal app |
 | `INTERNET` | Manifest (Phase 3 amendment) | Garmin Personal API pulls, user-triggered only | Single host, read-only, no telemetry — rules in [GARMIN_INTEGRATION.md](GARMIN_INTEGRATION.md) §8 |
 | *(nothing else — no location, no storage beyond defaults, no contacts, etc.)* | | | |

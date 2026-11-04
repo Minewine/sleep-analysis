@@ -64,7 +64,7 @@ Related: [Product vision](PRODUCT_VISION.md) · [MVP scope](MVP_SCOPE.md) (Phase
 
 **Effort:** 4–8 weeks.
 
-**Success criteria:** a wearable + factors timeline for 14+ consecutive nights; export opens correctly in Sheets/LibreOffice with provenance intact; comparison view copy passes the wording rules; still no INTERNET permission.
+**Success criteria:** a wearable + factors timeline for 14+ consecutive nights; export opens correctly in Sheets/LibreOffice with provenance intact; comparison view copy passes the wording rules; network traffic still limited to the single Garmin host allowlist.
 
 **Defers:** associations/insight ranking (Phase 4), any score combining phone + wearable data numerically.
 
@@ -91,7 +91,7 @@ Related: [Product vision](PRODUCT_VISION.md) · [MVP scope](MVP_SCOPE.md) (Phase
 - **Validation plan for breathing indicators (M7/M8):** prospective comparison window against a follow-up HUG sleep study — run the app nightly around the study, compare indicator vs. PSG-scored events with agreement statistics (sensitivity/specificity at personal thresholds); promotion only if the numbers justify it, otherwise demote or keep experimental indefinitely
 - **Sonar evaluation (M9):** device-specific bench test (accuracy across distances/positions), pet/hearing safety review, battery impact — ship only behind an experimental opt-in, or reject
 - **Optional feature cache / on-device personalization research:** feature-store experiments for future model work; per-user fine-tuning beyond thresholds stays research-grade until proven
-- **Clinician share links / networked anything:** only if a concrete need arrives — this is the first feature that would require the INTERNET permission; must pass a full privacy review against [PRIVACY_AND_REGULATORY.md](PRIVACY_AND_REGULATORY.md) before design starts
+- **Clinician share links / networked anything:** only if a concrete need arrives — this would be the first feature to add a networked host beyond the Garmin allowlist; it must pass a full privacy review against [PRIVACY_AND_REGULATORY.md](PRIVACY_AND_REGULATORY.md) before design starts
 
 **Effort:** open-ended, research-paced.
 
@@ -100,7 +100,7 @@ Related: [Product vision](PRODUCT_VISION.md) · [MVP scope](MVP_SCOPE.md) (Phase
 ## Cross-phase gates (every release)
 
 1. Measurement tiers unchanged or changed only via §7 change control.
-2. No INTERNET permission (until an approved Phase 5 feature changes that deliberately).
+2. No networked host beyond the single Garmin Personal API allowlist (`personal.connectapi.garmin.com`), until an approved feature deliberately changes that through privacy review.
 3. Battery ≤ 10%/night and thermal gates still pass on the reference device.
 4. Disclaimer copy audit: forbidden terms ([MEASUREMENT_RELIABILITY.md](MEASUREMENT_RELIABILITY.md) §3) absent from non-disclaimer strings.
 5. Data-loss drill: forced process-death recovery still works.

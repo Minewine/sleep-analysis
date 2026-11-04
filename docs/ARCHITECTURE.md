@@ -26,7 +26,7 @@ Pin exact versions in `gradle/libs.versions.toml` at scaffold time.
 
 ## 2. Design principles
 
-1. **On-device or nothing.** The app has no network code path; CI fails if `INTERNET` appears in the merged manifest.
+1. **On-device or nothing.** Audio and health data never leave the device; the **only** network code path is the user-triggered Garmin Personal API pull to a single allowlisted host (`personal.connectapi.garmin.com`, read-only — [GARMIN_INTEGRATION.md](GARMIN_INTEGRATION.md) §8). Any new networked host or background transfer requires a privacy review and a deliberate amendment first; the planned CI permission check fails if the merged manifest gains anything unexpected.
 2. **Provenance by construction.** There is exactly one write path for measurements ([§6](#6-provenance-enforcement-on-every-measurement)); provenance fields are constructor-required, not optional.
 3. **Claims are gated, not self-policed.** UI renders only what `ClaimPolicy` (domain layer, mirrors [MEASUREMENT_RELIABILITY.md](MEASUREMENT_RELIABILITY.md) §2) permits. Tier-3 measurements have no code path at all.
 4. **Degrade, don't fail.** A partial night reported honestly beats a crashed session; every failure mode has a defined partial-data outcome.
