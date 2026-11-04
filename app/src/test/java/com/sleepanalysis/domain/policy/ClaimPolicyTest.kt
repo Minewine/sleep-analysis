@@ -4,6 +4,7 @@ import com.sleepanalysis.data.db.dao.MeasurementDao
 import com.sleepanalysis.data.db.entity.MeasurementEntity
 import com.sleepanalysis.data.recorder.MeasurementRecorder
 import com.sleepanalysis.domain.scoring.SnoreScore
+import java.io.File
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -152,6 +153,48 @@ class ClaimPolicyTest {
             SnoreScore.IntensityTiers.EPIC,
             com.sleepanalysis.monitoring.detection.DetectorConfig.intensityTier(-5.0),
         )
+    }
+
+    @Test
+    fun `tier table in MEASUREMENT_RELIABILITY matches the code enum`() {
+        val docTiers = tierTableFromDoc()
+        val codeTiers = MeasurementType.entries.associate { it.name to it.tier.name }
+        // No type may exist on only one side, and no tier may drift between them — this is
+        // the enforced form of "the code mirror of the binding classification table" (§7(4)).
+        assertEquals(
+            "types in code but missing from the doc's §8 table",
+            emptySet<String>(),
+            codeTiers.keys - docTiers.keys,
+        )
+        assertEquals(
+            "types in the doc's §8 table but not in code",
+            emptySet<String>(),
+            docTiers.keys - codeTiers.keys,
+        )
+        docTiers.forEach { (name, tier) ->
+            assertEquals("tier drift for $name", codeTiers[name], tier)
+        }
+    }
+
+    /**
+     * Parses the §8 machine-readable tier table from docs/MEASUREMENT_RELIABILITY.md
+     * (rows like `` | `TYPE_NAME` | TIER | ... ``). The doc lives in the repo on purpose:
+     * documentation drift is a build failure, not a review comment.
+     */
+    private fun tierTableFromDoc(): Map<String, String> {
+        var dir: File? = File(System.getProperty("user.dir")!!)
+        while (dir != null) {
+            val candidate = File(dir, "docs/MEASUREMENT_RELIABILITY.md")
+            if (candidate.exists()) {
+                val row = Regex(
+                    "^\\|\\s*`([A-Z][A-Z0-9_]+)`\\s*\\|\\s*(ESTABLISHED|EXPERIMENTAL|OUT_OF_SCOPE_FOR_CLAIMS)\\s*\\|",
+                    RegexOption.MULTILINE,
+                )
+                return row.findAll(candidate.readText()).associate { it.groupValues[1] to it.groupValues[2] }
+            }
+            dir = dir.parentFile
+        }
+        error("docs/MEASUREMENT_RELIABILITY.md not found from ${System.getProperty("user.dir")}")
     }
 
     private class FakeDao : MeasurementDao {

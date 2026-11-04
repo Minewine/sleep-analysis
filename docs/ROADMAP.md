@@ -55,7 +55,7 @@ Related: [Product vision](PRODUCT_VISION.md) · [MVP scope](MVP_SCOPE.md) (Phase
 
 **Goal:** bring the other data layers in — wearables, factors, clinical comparison, export.
 
-- **Health Connect integration:** import sleep sessions (device-reported), nocturnal HR/HRV (M10/M11), vendor SpO₂ (M12, Tier 2 display rules), vendor sleep stages (M13, context-only) — all land as Measurement rows via `WearableSource`, `method = DEVICE_REPORTED`; Health Connect is on-device IPC (no INTERNET)
+- **Health Connect integration:** import sleep sessions (device-reported), nocturnal HR/HRV (M10/M11), vendor SpO₂ levels (M12, device-reported levels only), vendor sleep stages (M13, context-only) — all land as Measurement rows via `WearableSource`, `method = DEVICE_REPORTED`; Health Connect is on-device IPC (no INTERNET)
 - **Garmin import — SHIPPED EARLY (first slice of this phase):** Personal API key in Android Keystore, on-demand pull of sleep/HRV/Body Battery/resting HR for one date, raw JSON in `raw_payload`, report labeled "Garmin estimate" (docs/GARMIN_INTEGRATION.md). Still open from this item: Health Connect, FIT/CSV file-import fallback
 - **Lifestyle factor logging UI:** weight, tirzepatide dose, alcohol, caffeine, exercise, stress, pain, notes ([DATA_MODEL.md](DATA_MODEL.md) §3.6)
 - **Clinical comparison view:** baseline metrics side by side with longitudinal trends under the §4 framing ("correlation and context — not equivalence")
