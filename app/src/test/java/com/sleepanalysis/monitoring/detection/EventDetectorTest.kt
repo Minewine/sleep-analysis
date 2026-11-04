@@ -215,7 +215,7 @@ class EventDetectorTest {
             )
         }
         var i = levels.size
-        while (out.isEmpty() && i < levels.size + 8) {
+        while (out.isEmpty() && i < levels.size + 16) {
             out += detector.update(
                 timestampMs = 1000L + i * 500,
                 features = features(1000L + i * 500, dbfs = -90.0, floor = floor),
@@ -334,17 +334,17 @@ class EventDetectorTest {
 
     @Test
     fun `same-type events separated by more than mergeGapMs stay separate`() {
-        // Event B starts at 5000 (first pending window 6000): gap 2500 > MERGE_GAP_MS. The
-        // held final is emitted at ts 6000, the moment both machines are idle past its bound.
-        val events = feed(detector, pattern = snore(4) + quiet(6) + snore(4) + quiet(4)) +
+        // Event B starts at 7000 (first pending window 8000): gap 4500 > MERGE_GAP_MS. The
+        // held final is emitted at ts 8000, the moment both machines are idle past its bound.
+        val events = feed(detector, pattern = snore(4) + quiet(10) + snore(4) + quiet(4)) +
             detector.flush()
         assertEquals(2, events.size)
         assertEquals("SNORE", events[0].type)
         assertEquals(0L, events[0].startMs)
         assertEquals(2500L, events[0].endMs)
         assertEquals("SNORE", events[1].type)
-        assertEquals(5000L, events[1].startMs)
-        assertEquals(7500L, events[1].endMs)
+        assertEquals(7000L, events[1].startMs)
+        assertEquals(9500L, events[1].endMs)
     }
 
     @Test
@@ -360,14 +360,14 @@ class EventDetectorTest {
     @Test
     fun `deferred final emits exactly one hop past its expiry bound`() {
         // Event A: 0..2500, closed at 4500 and held. Idle expiry bound =
-        // endMs + MERGE_GAP_MS + WINDOW_MS = 5500: the ts-5500 window sits exactly on the
-        // bound (strictly greater required — no emission); ts 6000 must emit.
+        // endMs + MERGE_GAP_MS + WINDOW_MS = 7500: the ts-7500 window sits exactly on the
+        // bound (strictly greater required — no emission); ts 8000 must emit.
         var ts = 1000L
         repeat(4) {
             detector.update(ts, features(ts), result(snore = true))
             ts += 500
         }
-        repeat(6) { // quiet: closes at 4500 (held), then 5000 and 5500 stay inside the bound
+        repeat(10) { // quiet: closes at 4500 (held); stamps 3000..7500 stay inside the bound
             assertTrue(detector.update(ts, features(ts), result(snore = false, loud = false)).isEmpty())
             ts += 500
         }
@@ -505,13 +505,12 @@ class EventDetectorTest {
 
     @Test
     fun `non-mergeable successor arriving while its predecessor is still held is not dropped`() {
-        // Event A: SNORE 0..2500, closed at 4500 and held. Five quiet hops leave both machines
-        // idle, but a single loud-eligible window at 5500 leaves the loud machine pending — so
-        // expiry at 6000 sees a busy machine and applies the 7 s hard cap instead of the 3 s
-        // idle bound, keeping A held. The successor burst (SNORE 5000..7500, gap 2.5 s > 2 s)
-        // then keeps the snore machine busy through its own close at 9500: deferOrFold observes
-        // A still held with a non-mergeable gap. The successor must be stored as the new
-        // deferred final, not silently dropped.
+        // Event A: SNORE 0..2500, closed at 4500 and held. A loud-eligible window at 5500
+        // leaves the loud machine pending — expiry sees a busy machine and applies the 9 s
+        // hard cap instead of the 5 s idle bound, keeping A held. The successor burst (SNORE
+        // 7000..9500, gap 4.5 s > 4 s) then keeps the snore machine busy through its own close
+        // at 11500: deferOrFold observes A still held with a non-mergeable gap. The successor
+        // must be stored as the new deferred final, not silently dropped.
         var ts = 1000L
         val drafts = mutableListOf<EventDetector.EventDraft>()
         fun step(snore: Boolean, loud: Boolean) {
@@ -521,10 +520,11 @@ class EventDetectorTest {
         repeat(4) { step(snore = true, loud = true) }    // A opens: 1000..2500
         repeat(5) { step(snore = false, loud = false) }  // quiet 3000..5000: A closes at 4500 (held)
         step(snore = false, loud = true)                 // 5500: pins loudMachine.pending = 1
-        repeat(4) { step(snore = true, loud = false) }   // successor 6000..7500 (opens at 6500)
-        repeat(4) { step(snore = false, loud = false) }  // 8000..9500: closes at 9500
+        repeat(4) { step(snore = false, loud = false) }  // 6000..7500: quiet past the idle bound
+        repeat(4) { step(snore = true, loud = false) }   // successor 8000..9500 (start 7000: gap 4.5 s)
+        repeat(4) { step(snore = false, loud = false) }  // 10000..11500: closes at 11500
 
-        // Nothing was emitted while A was held; its emission happens at the successor's close.
+        // A emits one stamp after the successor closes (both idle, bound long past).
         assertEquals(1, drafts.size)
         val held = drafts.single()
         assertEquals("SNORE", held.type)
@@ -532,12 +532,12 @@ class EventDetectorTest {
         assertEquals(2500L, held.endMs)
 
         // The successor becomes the new deferred final and is emitted one idle bound later.
-        repeat(3) { step(snore = false, loud = false) }  // 10000, 10500, 11000
+        repeat(7) { step(snore = false, loud = false) }  // 12000..15000: bound 9500 + 5000
         assertEquals(2, drafts.size)
         val successor = drafts.last()
         assertEquals("SNORE", successor.type)
-        assertEquals(5000L, successor.startMs)
-        assertEquals(7500L, successor.endMs)
+        assertEquals(7000L, successor.startMs)
+        assertEquals(9500L, successor.endMs)
 
         // Exactly two events total, each emitted exactly once.
         assertTrue(detector.flush().isEmpty())
@@ -549,9 +549,9 @@ class EventDetectorTest {
     fun `hard hold cap shrinks under a 1 s stamp stride so the clip keeps event audio`() {
         // Thermal throttling halves the analysis rate: consecutive update stamps advance
         // 1000 ms. With an unshrunk cap the emission overshoots by that stride: endMs +
-        // 7000 + 1000 = the 8 s clip ring horizon exactly — a snapshot with zero event
+        // 9000 + 1000 = the 10 s clip ring horizon exactly — a snapshot with zero event
         // audio (AudioEngine.deliver). The stride-aware cap emits one stamp past
-        // endMs + 6500 instead, keeping the event's tail inside the ring.
+        // endMs + 8500 instead, keeping the event's tail inside the ring.
         val throttled = EventDetector()
         var ts = 1000L
         val drafts = mutableListOf<EventDetector.EventDraft>()
@@ -560,7 +560,7 @@ class EventDetectorTest {
             ts += 1000
         }
         repeat(4) { step(snore = false, loud = true) }  // OTHER_NOISE opens: 1000..4000
-        repeat(7) { step(snore = true, loud = false) }  // 5000..11000: snore spell force-closes the
+        repeat(9) { step(snore = true, loud = false) }  // 5000..13000: snore spell force-closes the
         // loud event at 5000 (held), then keeps the snore machine busy so only the cap can emit it.
         assertEquals(1, drafts.size)
         val held = drafts.single()
@@ -577,7 +577,7 @@ class EventDetectorTest {
     fun `hard hold cap emission timing is unchanged at the normal 500 ms stride`() {
         // Same shape as the throttled variant at hopMs stride: the cap slack is zero, so the
         // emission stamp is exactly the historical first stamp past endMs + maxHoldMs
-        // (2500 + 7000 = 9500, strictly greater → 10000 on the 500 ms grid).
+        // (2500 + 9000 = 11500, strictly greater → 12000 on the 500 ms grid).
         var ts = 1000L
         val drafts = mutableListOf<EventDetector.EventDraft>()
         fun step(snore: Boolean, loud: Boolean) {
@@ -585,9 +585,9 @@ class EventDetectorTest {
             ts += 500
         }
         repeat(4) { step(snore = false, loud = true) }   // OTHER_NOISE 0..2500 opens
-        repeat(14) { step(snore = true, loud = false) }  // 3000..9500: force-closed and held
+        repeat(18) { step(snore = true, loud = false) }  // 3000..11500: force-closed and held
         assertTrue(drafts.isEmpty())
-        step(snore = true, loud = false)                 // 10000: first stamp past the cap
+        step(snore = true, loud = false)                 // 12000: first stamp past the cap
         assertEquals(1, drafts.size)
         val held = drafts.single()
         assertEquals("OTHER_NOISE", held.type)

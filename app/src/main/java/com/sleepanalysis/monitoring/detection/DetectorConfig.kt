@@ -13,8 +13,12 @@ object DetectorConfig {
     const val WINDOW_MS = 1_000L
     const val HOP_MS = 500L
 
-    /** Clip length retained per detected event. */
-    const val CLIP_MS = 8_000L
+    /**
+     * Clip length retained per detected event. 10 s (was 8 s) so the widened 4 s merge
+     * window's busy-hold bound (maxHoldMs = mergeGapMs + hold slack ≈ 9 s at defaults) still
+     * emits with the event's tail inside the clip ring — see the EventDetector KDoc.
+     */
+    const val CLIP_MS = 10_000L
 
     /**
      * Nightly clip backstop. Raised 50 → 150 after the session-6..11 review: only ~3.4 % of
@@ -120,7 +124,10 @@ object DetectorConfig {
     const val ENTER_WINDOWS = 2       // 2 consecutive active hops (1.0 s) to open an event
     const val EXIT_WINDOWS = 4        // 4 consecutive quiet hops (2.0 s) to close it
     const val MIN_DURATION_MS = 2_000L
-    const val MERGE_GAP_MS = 2_000L
+    // Breath-pause cadence within a snore train is ~3-6 s; a 2 s gap shattered trains into
+    // 997 sub-5 s events on session 11 (avg 5.9 s) — 4 s merges the train, keeps separate
+    // episodes apart. Union-based metrics are merge-invariant; counts/labels get saner.
+    const val MERGE_GAP_MS = 4_000L
 
     /** Relative intensity bands (docs/MEASUREMENT_RELIABILITY.md M2 — relative, not SPL). */
     const val EPIC_DBFS = -10.0

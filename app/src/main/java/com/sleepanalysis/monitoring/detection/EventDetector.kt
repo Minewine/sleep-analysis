@@ -46,25 +46,25 @@ import com.sleepanalysis.data.db.entity.EventType
  *
  *    "Provably closed" needs care: a successor draft only EXISTS at its close, which is at
  *    least (enterWindows − 1 + exitWindows) hops after its first pending window. With
- *    MERGE_GAP_MS (2 s) equal to EXIT_WINDOWS×HOP_MS (2 s), comparing the current timestamp
+ *    MERGE_GAP_MS (4 s) vs EXIT_WINDOWS×HOP_MS (2 s), comparing the current timestamp
  *    against deferred.endMs + mergeGapMs alone would expire every held final one hop after
  *    its close — before any successor draft could exist — and no same-type merge would ever
  *    fire. The hold therefore lasts until BOTH machines are idle (no pending and no active
  *    windows — while either is busy a draft may still arrive and merge, checked at absorb
  *    time) AND the timestamp exceeds deferred.endMs + mergeGapMs + [windowMs] (the +windowMs
  *    accounts for event starts being backdated one window from the first pending stamp).
- *    With the defaults this emits ≤ ~3.5 s after the event's last active window — inside the
- *    live ring buffer's 8 s clip horizon (see AudioEngine.deliver).
+ *    With the defaults this emits ≤ ~5 s after the event's last active window — inside the
+ *    live ring buffer's 10 s clip horizon (see AudioEngine.deliver).
  *
  *    The idle condition alone could pin a held final indefinitely behind an unrelated open
  *    event (a continuously-open snore spell suppressing the OTHER_NOISE bucket), so a hard
  *    hold cap applies independent of machine-busy: held finals are emitted once the timestamp
- *    exceeds deferred.endMs + [maxHoldMs] (7 s at defaults). A merging successor's draft
+ *    exceeds deferred.endMs + [maxHoldMs] (9 s at defaults). A merging successor's draft
  *    closes at gap + successorSpan + exitSpan after the held final's end, so the cap covers
  *    every successor with span ≤ (exitWindows + 2) hops (3 s — the observed fragment span);
  *    longer downgrade-ambiguous successors are sacrificed by the cap rather than pinning the
  *    held final past the live ring buffer's 8 s clip horizon: emission happens ≤ endMs +
- *    maxHoldMs + one hop = 7.5 s after the tail, 0.5 s inside the ring (AudioEngine.deliver).
+ *    maxHoldMs + one hop = 9.5 s after the tail, 0.5 s inside the 10 s ring (AudioEngine.deliver).
  *
  *    A later same-type draft that does not merge CAN arrive while its predecessor is still
  *    held — expiry uses the hard cap whenever EITHER machine is busy, so e.g. a single
@@ -187,7 +187,7 @@ class EventDetector(
      * (exitWindows + 2) hops (3 s — the observed session-10 fragment span) the fold lands
      * at ≤ 7 s and survives the cap; longer successors are sacrificed rather than pinning
      * the held final behind a downgrade-ambiguous open event. Delivery stays 0.5 s inside
-     * the live clip ring: emission at ≤ endMs + maxHoldMs + one hop = 7.5 s after the tail
+     * the live clip ring: emission at ≤ endMs + maxHoldMs + one hop = 9.5 s after the tail
      * (ring horizon 8 s — see AudioEngine.deliver; delivery is synchronous on the capture
      * thread, so the bound is exact).
      *

@@ -91,10 +91,10 @@ app/src/main/java/com/sleepanalysis/
 | Component | Responsibility | Threading |
 |---|---|---|
 | **MonitorService** | Foreground service, `foregroundServiceType="microphone"`. Owns the session state machine `Idle → Starting → Recording (or Delayed during the start delay) → Finished`, with `StartError` and `Interrupted` states (exposed via `MonitorStateHolder`); pre-flight checks; ongoing notification; heartbeat watchdog; binds to AudioEngine. Started only from user action | Main + service scope |
-| **AudioEngine** | AudioRecord lifecycle, 16 kHz mono PCM into an 8 s ring buffer on a dedicated thread. Two consumers: window slicing for detection, clip flush (last ≤ 8 s) when the EventDetector marks an event. Raw audio outside events is discarded. Accumulates per-night `NightStats` (windows processed/skipped, ambient dBFS median/P95, clip count, thermal events) surfaced as session `capture_stats` | Capture thread + buffered channels |
+| **AudioEngine** | AudioRecord lifecycle, 16 kHz mono PCM into a 10 s ring buffer on a dedicated thread. Two consumers: window slicing for detection, clip flush (last ≤ 10 s) when the EventDetector marks an event. Raw audio outside events is discarded. Accumulates per-night `NightStats` (windows processed/skipped, ambient dBFS median/P95, clip count, thermal events) surfaced as session `capture_stats` | Capture thread + buffered channels |
 | **FeatureExtractor** | Window → log-mel spectrogram (model-spec driven: window 1 s, hop 0.5 s, 64 mel bins for the v0 model) | Inference dispatcher |
 | **ClassifierEngine** | Interface; TFLite implementation loads the active model from ModelRegistry. Outputs per-window class probabilities. Windows are queued and **coalesced** — if inference falls behind, drop oldest, never backlog | Single-threaded dispatcher |
-| **EventDetector** | Per-window snore/loud decisions → discrete events: window-count hysteresis (2 consecutive active 0.5 s hops to open, 4 consecutive quiet hops to close; the debug toggle relaxes the open count) → min duration 2 s → merge gaps ≤ 2 s → intensity tiering (relative dBFS bands) | Same dispatcher |
+| **EventDetector** | Per-window snore/loud decisions → discrete events: window-count hysteresis (2 consecutive active 0.5 s hops to open, 4 consecutive quiet hops to close; the debug toggle relaxes the open count) → min duration 2 s → merge gaps ≤ 4 s (breath-pause cadence) → intensity tiering (relative dBFS bands) | Same dispatcher |
 | **MeasurementRecorder** | The only component allowed to write Measurement rows; stamps full provenance (see §6) | Caller scope |
 | **ReportAssembler** | Session + events + measurements → `MorningReport` (computed live; the §3.7 snapshot table is deferred) via Scoring and ClaimPolicy. Pure domain logic | Any |
 | **SessionLogger** | Append-only, no-throw text log per session (`filesDir/logs/session_<id>.log`) written from the service and engine; viewable in the report's Session log screen; purged by RetentionWorker with session retention | Caller scope (background dispatchers) |
@@ -139,7 +139,7 @@ Enforcement mechanisms:
 
 | Layer | What | Persisted? | Why |
 |---|---|---|---|
-| **Raw audio** | 16 kHz PCM stream | **Never in full.** Ring buffer in memory; only event-triggered clips (WAV, ≤ 8 s, top ~150/night) written to app-private storage | Continuous 16 kHz PCM is ~115 MB/h — persisting nights is neither private-proportionate nor useful |
+| **Raw audio** | 16 kHz PCM stream | **Never in full.** Ring buffer in memory; only event-triggered clips (WAV, ≤ 10 s, top ~150/night) written to app-private storage | Continuous 16 kHz PCM is ~115 MB/h — persisting nights is neither private-proportionate nor useful |
 | **Features** | Log-mel spectrograms | **Not persisted in Phase 1** (recomputable from clips/model spec; optional cache in Phase 5 for retraining experiments) | Storage vs. recomputability tradeoff favors recompute |
 | **Events** | AcousticEvent rows (type, timing, intensity, confidence, model id, clip ref) | Yes — session-scoped, cascade-deleted with session | The verifiable substrate; user can replay every event |
 | **Measurements** | Normalized, provenance-stamped values (per-session or per-period metrics) | Yes — **survive session deletion** (session_id nulled) so longitudinal history outlives heavy raw data | The analytic substrate for trends/comparisons |

@@ -405,7 +405,7 @@ class AudioEngine(
                     ClipPolicy.Decision.WRITE, ClipPolicy.Decision.WRITE_LOUD_RESERVE -> {
                         // Gap merging defers delivery: drafts arrive ~3.5 s after endMs (hold
                         // bound endMs + MERGE_GAP_MS + WINDOW_MS + one hop, capped at ~6 s),
-                        // so the 8 s snapshot covers ~4.5 s of the event head — 1.5 s less
+                        // so the 10 s snapshot covers ~6.5 s of the event head
                         // of the event than the pre-merge immediate delivery; acceptable.
                         // Horizon guard (defense in depth): if the event's tail has slid past
                         // the ring horizon anyway (thermally-delayed emission, or a config
