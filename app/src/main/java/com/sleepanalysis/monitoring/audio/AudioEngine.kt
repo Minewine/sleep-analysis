@@ -479,7 +479,12 @@ class AudioEngine(
         }
     }
 
-    /** Builds an AudioRecord for [source]; null if the source fails to initialize on this device. */
+    /**
+     * Builds an AudioRecord for [source]; null if the source fails to initialize on this device.
+     * The constructor needs RECORD_AUDIO — MonitorService verifies it (and bails with a
+     * user-visible error) before the engine is ever started.
+     */
+    @SuppressLint("MissingPermission") // MonitorService verifies RECORD_AUDIO before start().
     private fun tryInitRecord(source: Int, bufferSize: Int): AudioRecord? {
         val record = AudioRecord(
             source,
