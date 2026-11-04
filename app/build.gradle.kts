@@ -58,6 +58,12 @@ android {
     packaging {
         resources.excludes += "/META-INF/{AL2.0,LGPL2.1}"
     }
+
+    sourceSets {
+        // Exported Room schemas as androidTest assets: MigrationTestHelper replays the real
+        // 1.json…8.json history for the migration test (docs/DATA_MODEL.md §7).
+        getByName("androidTest").assets.srcDir("$projectDir/schemas")
+    }
 }
 
 ksp {
@@ -114,4 +120,10 @@ dependencies {
     testImplementation(libs.kotlinx.coroutines.test)
     // Real org.json for JVM unit tests (android.jar stubs would throw "not mocked").
     testImplementation(libs.json)
+
+    androidTestImplementation(libs.junit)
+    androidTestImplementation(libs.androidx.test.junit)
+    androidTestImplementation(libs.androidx.test.runner)
+    androidTestImplementation(libs.room.testing)
+    androidTestImplementation(libs.kotlinx.coroutines.test)
 }

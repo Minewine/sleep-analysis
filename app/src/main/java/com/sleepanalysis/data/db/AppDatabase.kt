@@ -97,12 +97,6 @@ abstract class AppDatabase : RoomDatabase() {
                 )
                 .build()
 
-        /** All schema migrations in order — shared with the instrumented migration test. */
-        val MIGRATIONS: Array<Migration> = arrayOf(
-            MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5,
-            MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8,
-        )
-
         /** v2 adds raw_payload for vendor JSON storage (docs/GARMIN_INTEGRATION.md). */
         private val MIGRATION_1_2 = object : Migration(1, 2) {
             override fun migrate(db: SupportSQLiteDatabase) {
@@ -175,5 +169,11 @@ abstract class AppDatabase : RoomDatabase() {
                 // No-op: nothing to change on disk (see KDoc).
             }
         }
+
+        /** All schema migrations in order — shared with the instrumented migration test. */
+        val MIGRATIONS: Array<Migration> = arrayOf(
+            MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5,
+            MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8,
+        )
     }
 }
