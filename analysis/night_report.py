@@ -5,10 +5,13 @@ Reads untrusted CSVs exported from the pulled SQLite DB and produces:
  - comparison against session 10
  - matplotlib charts (PNG)
 
-Run: uv run --with matplotlib --with numpy -- python -I night_report.py
+Run (data and output live outside the repo, never committed):
+  NIGHT_DATA=/path/to/night-data NIGHT_REPORT_OUT=/path/to/out \
+    uv run --with matplotlib --with numpy -- python -I night_report.py
 """
 
 import csv
+import os
 import wave
 from collections import defaultdict
 from datetime import UTC, datetime
@@ -22,8 +25,8 @@ import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 import numpy as np
 
-DATA = Path("/home/mick/Projects/sleep-analysis/night-data")
-OUT = Path("/home/mick/Projects/sleep-analysis/analysis")
+DATA = Path(os.environ["NIGHT_DATA"])
+OUT = Path(os.environ["NIGHT_REPORT_OUT"])
 TZ = ZoneInfo("Europe/Zurich")
 
 # Capture window of session 11 (epoch ms), from sleep_session + session_11.log
