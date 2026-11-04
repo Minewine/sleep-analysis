@@ -30,7 +30,7 @@ Related: [Measurement reliability](MEASUREMENT_RELIABILITY.md) · [Architecture]
 | Clinical source documents | Referenced by path only (`clinical_baseline.source_document`) | Until delete-all | The app never copies the PDF into its storage |
 | Preferences (retention settings, disclaimer acceptance, detection debug toggle; experimental toggle arrives in Phase 2) | DataStore | Until cleared | |
 
-Storage security posture: app sandbox + Android file-based encryption (device lock screen required). `android:allowBackup="false"` and no data-extraction rules — nothing syncs to Google's device backup. App-level clip encryption (SQLCipher or AES for clip files) is an evaluated option in Phase 2 ([Architecture](ARCHITECTURE.md) §10); the DB never contains audio bytes.
+Storage security posture: app sandbox + Android file-based encryption (device lock screen required). `android:allowBackup="false"` **and** `res/xml/data_extraction_rules.xml`, which excludes the `root`, `file`, `database` and `sharedpref` domains from both **cloud backup** and **device-to-device transfer** — no app data syncs to Google's device backup or migrates to a new device (the rules are belt-and-braces alongside `allowBackup`, keeping the exclusion explicit if the flag is ever revisited). App-level clip encryption (SQLCipher or AES for clip files) is an evaluated option in Phase 2 ([Architecture](ARCHITECTURE.md) §10); the DB never contains audio bytes.
 
 **Repo hygiene:** this repository must never contain real sleep audio, device databases, Garmin API responses, or personal reports. Such data lives outside the repo and is passed into analysis tooling by path (e.g. `NIGHT_DATA`, `NIGHT_REPORT_OUT` env vars for `analysis/night_report.py`). `.gitignore` blocks `night-data/`, `analysis/chart_*.png`, `*.wav`, `*.db`, `*.db-wal`, `*.db-shm`, `*.preferences_pb`, and `session_*.log`; a pre-commit guard (`.githooks/pre-commit`, enable with `git config core.hooksPath .githooks`) fails commits that stage those patterns. Clinical PDFs and any document containing real names are out of scope for the repo as well.
 
@@ -134,7 +134,7 @@ A lint rule flags forbidden clinical terms in `strings.xml` outside approved dis
 | **INTERNET added for Garmin Personal API pull only** | **3 (first slice)** | User-requested wearable data source; single host, user-triggered, read-only; audio still never leaves the device. Full rules: GARMIN_INTEGRATION.md §8 |
 | API key stored in Android Keystore (AES-GCM), never in code/config | 3 | No secrets in source; key material never leaves the hardware keystore |
 | Event clips only, never full-night audio | 1 | Data minimization; storage math (~115 MB/h raw) |
-| `allowBackup = false` | 1 | Keep audio-derived data and the Garmin ciphertext out of cloud device backups |
+| `allowBackup = false` + `data_extraction_rules.xml` (root/file/database/sharedpref excluded from cloud-backup and device-transfer) | 1 | Keep audio-derived data and the Garmin ciphertext out of cloud device backups and cross-device migration |
 | No analytics/crash SDKs | 1 | Single user; local `capture_stats` suffice |
 | Clinical rows insert-only + trigger | 1 | Audit integrity of the platform's anchor data |
 | Clinical rows removable only via delete-all | 1 | Erasure right without weakening immutability in normal use |
