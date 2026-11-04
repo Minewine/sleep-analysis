@@ -191,6 +191,9 @@ interface RawPayloadDao {
     @Query("SELECT * FROM raw_payload WHERE source = :source AND date = :date ORDER BY endpoint")
     suspend fun forDate(source: String, date: String): List<RawPayloadEntity>
 
+    @Query("DELETE FROM raw_payload WHERE fetchedAt < :cutoff")
+    suspend fun deleteOlderThan(cutoff: Long): Int
+
     @Query("DELETE FROM raw_payload")
     suspend fun deleteAll()
 }

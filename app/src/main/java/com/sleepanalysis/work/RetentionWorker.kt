@@ -57,6 +57,11 @@ class RetentionWorker @AssistedInject constructor(
         // 3. Session logs follow session retention.
         logger.purgeOlderThan(now - retention.sessionRetentionDays * DAY_MS)
 
+        // 3b. Raw Garmin payloads follow session retention too — the one otherwise-unbounded
+        //     store (a real dailySleep/HRV response is ~10-20 KB/day). Vendor metrics
+        //     themselves survive in `measurement`; only the verbatim debug payloads age out.
+        db.rawPayloadDao().deleteOlderThan(now - retention.sessionRetentionDays * DAY_MS)
+
         // 4. Orphan sweep: clip files with no DB row. Guarded (OrphanSweepPolicy): while a
         // session is recording there is a window between writeClip() and the audio_clip insert,
         // so sweep only when no session is open and only for files older than an hour.

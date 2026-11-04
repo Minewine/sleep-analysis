@@ -197,7 +197,7 @@ Planned per the table below, to land when a second model exists (Phase 2 model v
 
 ### 3.9 `raw_payload` — vendor JSON storage (schema v2)
 
-One row per `(source, endpoint, date)` (unique index), storing external API responses verbatim so field mappings can be corrected without data loss. Written by the Garmin import ([GARMIN_INTEGRATION.md](GARMIN_INTEGRATION.md) §5); re-import upserts. No retention expiry yet (rows are small); deletion happens with delete-all.
+One row per `(source, endpoint, date)` (unique index), storing external API responses verbatim so field mappings can be corrected without data loss. Written by the Garmin import ([GARMIN_INTEGRATION.md](GARMIN_INTEGRATION.md) §5); re-import upserts. Retention: rows follow **session retention** (default 90 days) — `RetentionWorker` deletes `fetchedAt` older than the cutoff; the mapped vendor metrics themselves survive in `measurement`; delete-all purges the rest.
 
 ## 4. Clinical immutability
 
