@@ -7,6 +7,7 @@ Reads untrusted CSVs exported from the pulled SQLite DB and produces:
 
 Run (data and output live outside the repo, never committed):
   NIGHT_DATA=/path/to/night-data NIGHT_REPORT_OUT=/path/to/out \
+  NIGHT_REPORT_CLIP=<clip filename> \
     uv run --with matplotlib --with numpy -- python -I night_report.py
 """
 
@@ -275,7 +276,7 @@ def main() -> None:
 
     # WAV sanity check: DB peak vs decoded PCM peak
     print("\n=== WAV CROSS-CHECK ===")
-    wav_p = DATA / "clips" / "evt_redacted.wav"
+    wav_p = DATA / "clips" / os.environ["NIGHT_REPORT_CLIP"]
     with wave.open(str(wav_p)) as w:
         pcm = (
             np.frombuffer(w.readframes(w.getnframes()), dtype=np.int16).astype(

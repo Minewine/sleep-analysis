@@ -42,7 +42,6 @@ A reliable overnight recorder with an honest morning report ([docs/MVP_SCOPE.md]
 | [docs/NEXT_STEPS.md](docs/NEXT_STEPS.md) | Prioritized plan; P0 = first overnight test checklist |
 | [docs/PRIVACY_AND_REGULATORY.md](docs/PRIVACY_AND_REGULATORY.md) | On-device rules, deletion controls, disclaimer copy, Swiss/EU MDR notes |
 | [docs/GARMIN_INTEGRATION.md](docs/GARMIN_INTEGRATION.md) | Garmin Personal API: auth, endpoints, mapping, security, verification checklist |
-| `docs/Sleep_App_Proposal_Michael_the app author.docx` | Original proposal — refined by the docs above |
 
 ## Tech stack
 
