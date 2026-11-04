@@ -48,6 +48,8 @@ Storage security posture: app sandbox + Android file-based encryption (device lo
 | `INTERNET` | Manifest (Phase 3 amendment) | Garmin Personal API pulls, user-triggered only | Single host, read-only, no telemetry — rules in [GARMIN_INTEGRATION.md](GARMIN_INTEGRATION.md) §8 |
 | *(nothing else — no location, no storage beyond defaults, no contacts, etc.)* | | | |
 
+The merged manifest (library manifests merged in) contains two additional entries this app never declares: `ACCESS_NETWORK_STATE` (network connectivity state only — pulled in by WorkManager; grants no data access) and the app-namespace `DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION` (signature-protected placeholder androidx core generates for non-exported receivers). Both are allowlisted in `ci/permission-allowlist.txt` and enforced by the `checkPermissionAllowlist` CI gate: any merged permission outside that file fails the build.
+
 Battery-optimization exemption is requested with an in-app rationale (sideloaded personal app; Play's exemption policy not applicable, the rationale UX is kept anyway).
 
 ## 4. Retention controls and deletion

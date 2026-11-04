@@ -127,3 +127,142 @@ dependencies {
     androidTestImplementation(libs.room.testing)
     androidTestImplementation(libs.kotlinx.coroutines.test)
 }
+
+// ---------------------------------------------------------------------------
+// CI policy gates (docs/ARCHITECTURE.md §6.6, docs/PRIVACY_AND_REGULATORY.md §8).
+// All four run as part of `./gradlew :app:check` — locally and in GitHub Actions —
+// and fail the build on drift, so a policy change can never land silently.
+// ---------------------------------------------------------------------------
+
+tasks.register("checkPermissionAllowlist") {
+    group = "verification"
+    description =
+        "Fails when the merged debug manifest's permissions differ from ci/permission-allowlist.txt."
+    dependsOn("processDebugMainManifest")
+    doLast {
+        val allowlist = rootProject.file("ci/permission-allowlist.txt").readLines()
+            .map { it.substringBefore('#').trim() }
+            .filter { it.isNotEmpty() }
+            .toSortedSet()
+        val mergedManifests = fileTree(layout.buildDirectory.dir("intermediates/merged_manifests"))
+            .matching { include("**/debug/**/AndroidManifest.xml") }
+            .sortedBy { it.path }
+        val merged = mergedManifests.lastOrNull()
+            ?: throw GradleException("checkPermissionAllowlist: merged debug manifest not found.")
+        val requested = Regex("""<uses-permission\s+android:name="([^"]+)"""")
+            .findAll(merged.readText())
+            .map { it.groupValues[1] }
+            .toSortedSet()
+        val unexpected = requested - allowlist
+        val missing = allowlist - requested
+        if (unexpected.isNotEmpty() || missing.isNotEmpty()) {
+            throw GradleException(
+                "Merged manifest permissions differ from ci/permission-allowlist.txt:\n" +
+                    "  unexpected: $unexpected\n  missing: $missing\n" +
+                    "Any new permission needs a PRIVACY_AND_REGULATORY.md §3 amendment + allowlist entry."
+            )
+        }
+    }
+}
+
+tasks.register("checkForbiddenTerms") {
+    group = "verification"
+    description =
+        "Fails on forbidden claim terms in strings.xml (MEASUREMENT_RELIABILITY §3) outside approved strings."
+    doLast {
+        // Approved: the mandatory disclaimer and the clinical-baseline field labels, which
+        // describe the user's own clinical study, never a phone-derived claim.
+        val approved = setOf("onboarding_disclaimer", "baseline_field_arousal", "baseline_field_ahi")
+        val forbidden = listOf(
+            Regex("""\bahi\b""", RegexOption.IGNORE_CASE),
+            Regex("""\bapneas?\b""", RegexOption.IGNORE_CASE),
+            Regex("""\barousal index(es)?\b""", RegexOption.IGNORE_CASE),
+            Regex("""\bsleep stages?\b""", RegexOption.IGNORE_CASE),
+            Regex("""\bdesaturations?\b""", RegexOption.IGNORE_CASE),
+        )
+        val offenders = fileTree("src/main/res")
+            .matching { include("**/strings.xml") }
+            .flatMap { file ->
+                val text = file.readText()
+                Regex("""<string\s+name="([^"]+)"[^>]*>(.*?)</string>""", RegexOption.DOT_MATCHES_ALL)
+                    .findAll(text)
+                    .flatMap { m ->
+                        val name = m.groupValues[1]
+                        if (name in approved) emptyList()
+                        else forbidden.mapNotNull { re ->
+                            if (re.containsMatchIn(m.groupValues[2])) "${file.name}:$name → ${re.pattern}" else null
+                        }
+                    }
+            }
+        if (offenders.isNotEmpty()) {
+            throw GradleException(
+                "Forbidden claim terms found (docs/MEASUREMENT_RELIABILITY.md §3):\n  " +
+                    offenders.joinToString("\n  ")
+            )
+        }
+    }
+}
+
+tasks.register("checkRepoHygiene") {
+    group = "verification"
+    description = "Fails when a tracked file matches the personal-data patterns (mirrors .githooks/pre-commit)."
+    doLast {
+        // Keep in sync with .githooks/pre-commit and .gitignore (docs/PRIVACY_AND_REGULATORY.md §2).
+        val hygiene = Regex(
+            """(^night-data/)|(\.wav$)|(\.db$)|(\.db-wal$)|(\.db-shm$)|(\.preferences_pb$)|(session_.*\.log$)|(chart_.*\.png$)"""
+        )
+        val tracked = ProcessBuilder("git", "ls-files")
+            .directory(rootProject.projectDir)
+            .start()
+            .inputStream.bufferedReader().readText()
+            .lines()
+            .filter { it.isNotBlank() }
+        val offenders = tracked.filter { hygiene.containsMatchIn(it) }
+        if (offenders.isNotEmpty()) {
+            throw GradleException(
+                "Personal-data files are tracked in git (docs/PRIVACY_AND_REGULATORY.md §2):\n  " +
+                    offenders.joinToString("\n  ")
+            )
+        }
+    }
+}
+
+tasks.register("checkNetworkHosts") {
+    group = "verification"
+    description =
+        "Fails when a Kotlin URL host in main sources is outside the Garmin single-host allowlist."
+    doLast {
+        // Single-host allowlist (docs/GARMIN_INTEGRATION.md §8): the only network path is the
+        // user-triggered Garmin Personal API pull. Comments are stripped first so doc links
+        // don't trip the gate — the (?<!:) lookbehind keeps "://" URLs intact.
+        val allowedHosts = setOf("personal.connectapi.garmin.com")
+        val urlHost = Regex("""https?://([A-Za-z0-9.\-]+)""")
+        val offenders = fileTree("src/main/java")
+            .matching { include("**/*.kt") }
+            .flatMap { file ->
+                val code = file.readText()
+                    .replace(Regex("/\\*.*?\\*/", RegexOption.DOT_MATCHES_ALL), "")
+                    .replace(Regex("(?<!:)//.*"), "")
+                urlHost.findAll(code)
+                    .map { it.groupValues[1].trimEnd('.').lowercase() }
+                    .filter { it !in allowedHosts }
+                    .map { "${file.toRelativeString(projectDir)} → $it" }
+                    .toList()
+            }
+        if (offenders.isNotEmpty()) {
+            throw GradleException(
+                "Non-allowlisted URL host(s) in code (docs/ARCHITECTURE.md §2.1):\n  " +
+                    offenders.joinToString("\n  ") + "\nNew hosts need a privacy review + allowlist update."
+            )
+        }
+    }
+}
+
+tasks.named("check") {
+    dependsOn(
+        "checkPermissionAllowlist",
+        "checkForbiddenTerms",
+        "checkRepoHygiene",
+        "checkNetworkHosts",
+    )
+}
