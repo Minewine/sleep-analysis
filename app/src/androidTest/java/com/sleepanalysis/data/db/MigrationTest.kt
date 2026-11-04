@@ -1,6 +1,5 @@
 package com.sleepanalysis.data.db
 
-import androidx.room.Room
 import androidx.room.testing.MigrationTestHelper
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
@@ -64,9 +63,10 @@ class MigrationTest {
         // 2. Migrate 1 → latest, validating every step against the exported schemas.
         helper.runMigrationsAndValidate(TEST_DB, LATEST_VERSION, true, *AppDatabase.MIGRATIONS).close()
 
-        // 3. Reopen through the real builder — the app's onOpen callback (re)creates the
-        //    immutability triggers, exactly like a real launch after an upgrade.
-        val db = Room.databaseBuilder(context, AppDatabase::class.java, TEST_DB).build()
+        // 3. Reopen the SAME file through the app's own builder (AppDatabase.build registers
+        //    the onOpen callback that (re)creates the immutability triggers — a raw
+        //    Room.databaseBuilder here would test a database the app never runs).
+        val db = AppDatabase.build(context, TEST_DB)
         try {
             val sql = db.openHelper.writableDatabase
 
@@ -89,12 +89,12 @@ class MigrationTest {
             }
 
             // Triggers exist (recreated on open) and enforce immutability.
-            sql.query(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' AND name IN " +
-                    "('${AppDatabase.TRIGGER_UPDATE}', '${AppDatabase.TRIGGER_DELETE}')"
-            ).use { c ->
-                c.moveToFirst()
-                assertEquals(2, c.getInt(0))
+            sql.query("SELECT name FROM sqlite_master WHERE type = 'trigger'").use { c ->
+                val found = buildList { while (c.moveToNext()) add(c.getString(0)) }
+                assertTrue(
+                    "expected both immutability triggers, found: $found",
+                    found.containsAll(listOf(AppDatabase.TRIGGER_UPDATE, AppDatabase.TRIGGER_DELETE)),
+                )
             }
             try {
                 sql.execSQL("UPDATE clinical_baseline SET lab = 'FORGED' WHERE id = 1")

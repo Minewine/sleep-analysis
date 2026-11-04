@@ -86,8 +86,8 @@ abstract class AppDatabase : RoomDatabase() {
             )
         }
 
-        fun build(context: Context): AppDatabase =
-            Room.databaseBuilder(context, AppDatabase::class.java, NAME)
+        fun build(context: Context, name: String = NAME): AppDatabase =
+            Room.databaseBuilder(context, AppDatabase::class.java, name)
                 .addMigrations(*MIGRATIONS)
                 .addCallback(
                     object : RoomDatabase.Callback() {
