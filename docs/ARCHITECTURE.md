@@ -124,7 +124,7 @@ app/src/main/java/com/sleepanalysis/
 
 Every Measurement row carries (see [DATA_MODEL.md](DATA_MODEL.md) for the full schema):
 
-`source_type` (CLINICAL / PHONE / WEARABLE / USER) · `method` (CLINICAL_MEASURED / ALGORITHM_ESTIMATED / DEVICE_REPORTED / USER_REPORTED) · `measurement_type` + `unit` · `value` · `confidence` (nullable) · `tier` (ESTABLISHED / EXPERIMENTAL) · `model_id` + `model_version` (for algorithmic values) · timestamps.
+`source_type` (CLINICAL / PHONE / WEARABLE / USER) · `method` (CLINICAL_MEASURED / ALGORITHM_ESTIMATED / DEVICE_REPORTED / USER_REPORTED) · `measurement_type` + `unit` · `value` · `confidence` (nullable) · `tier` (ESTABLISHED / EXPERIMENTAL) · `model_version` (for algorithmic values) · timestamps.
 
 Enforcement mechanisms:
 

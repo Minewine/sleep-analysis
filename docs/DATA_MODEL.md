@@ -45,6 +45,11 @@ Two write paths exist, both through `MeasurementRecorder` ([ARCHITECTURE.md](ARC
 | `lab` | TEXT | `"HUG"` |
 | `study_type` | TEXT | `"PSG"` |
 | `night_label` | TEXT? | `"Night 1"`, user-entered |
+| `total_sleep_time_minutes` | Int? | TST |
+| `sleep_efficiency_percent` | Double? | |
+| `arousal_index_per_hour` | Double? | Clinical arousal index (context — never compared to phone-derived anything) |
+| `n3_percent` | Double? | |
+| `ahi_per_hour` | Double? | Clinical AHI (context — M15 forbids a phone-derived counterpart) |
 | `source_document` | TEXT? | Path/note pointing at the PDF report the numbers came from |
 | `notes` | TEXT? | e.g. "hypopnea-dominant; technical artifacts noted" |
 | `entered_at` | Long | When the user typed it in |
@@ -66,12 +71,14 @@ One row per metric value. This is the table all longitudinal analysis (Phase 4+)
 | `tier` | TEXT enum | `ESTABLISHED` / `EXPERIMENTAL` — validated against `ClaimPolicy` at write time; Tier 3 types are rejected |
 | `value_num` | REAL? | Numeric value |
 | `value_text` | TEXT? | Non-numeric values |
-| `unit` | TEXT enum | `SECONDS` / `MINUTES` / `PERCENT` / `COUNT` / `DBFS` / `INDEX_0_100` / `INDEX_0_10` / `BPM` / `MS` |
+| `unit` | TEXT enum | `SECONDS` / `MINUTES` / `PERCENT` / `COUNT` / `PER_HOUR` / `DBFS` / `INDEX_0_100` / `INDEX_0_10` / `MS` / `BPM` / `BREATHS_PER_MINUTE` |
+| `is_clinical` | Bool | True only for clinical-source rows — SQL triggers + recorder logic key on it |
 | `confidence` | REAL? | 0–1, nullable (user/clinical rows typically null) |
 | `model_version` | TEXT? | Model identity stamped at write time — currently the `energy-heuristic-v1-spectral` constant (`+dbg1` suffix when the debug enter-windows toggle was active). The FK to `model_registry` applies once the registry exists (§3.8, Phase 2) |
 | `period_start` / `period_end` | Long? | For period-scoped rows (e.g., per-hour, weekly) |
 | `notes` | TEXT? | |
-| `recorded_at` | Long | When the row was written |
+| `timestamp` | Long | When the value occurred (event/measurement time — not row-write time) |
+| `created_at` | Long | When the row was written |
 
 **Indices (implemented):** `(measurement_type, period_start)`, `(session_id)`, `(source_type, method)`.
 
@@ -95,7 +102,7 @@ Clinical baseline values (e.g., AHI 17.6) currently live in `clinical_baseline` 
 
 **Clinical:** `TST`, `SLEEP_EFFICIENCY`, `AROUSAL_INDEX`, `N3_PERCENT`, `AHI`, plus free-text hypnogram summary via `notes`/`value_text`.
 
-**Wearable (Phase 3, Garmin slice implemented):** `VENDOR_SLEEP_DURATION`, `VENDOR_SLEEP_SCORE`, `VENDOR_HRV_RMSSD`, `VENDOR_BODY_BATTERY`, `VENDOR_RESTING_HEART_RATE` — all `ESTABLISHED` as device-reported pass-through (M10–M13/M18). `HEART_RATE`, `HRV`, `SPO2`, `VENDOR_SLEEP_STAGES` are reserved for the Health Connect slice.
+**Wearable (Phase 3, Garmin slice implemented — all `ESTABLISHED` device-reported pass-through, tiers per [MEASUREMENT_RELIABILITY.md](MEASUREMENT_RELIABILITY.md) §8):** `VENDOR_SLEEP_DURATION`, `VENDOR_SLEEP_SCORE`, `VENDOR_HRV_RMSSD`, `VENDOR_BODY_BATTERY`, `VENDOR_RESTING_HEART_RATE`, stage totals as four per-stage types (`VENDOR_DEEP_SLEEP` / `VENDOR_LIGHT_SLEEP` / `VENDOR_REM_SLEEP` / `VENDOR_AWAKE_SLEEP`; there is no `VENDOR_SLEEP_STAGES` row type), overnight heart rate (`VENDOR_AVG_HEART_RATE_SLEEP`), respiration (`VENDOR_RESPIRATION_AVG_SLEEP`), stress composites (`VENDOR_SLEEP_STRESS_AVG`, `VENDOR_STRESS_DAILY_AVG`), SpO₂ levels (`VENDOR_SPO2_AVG_SLEEP`, `VENDOR_SPO2_LOWEST_SLEEP`), `VENDOR_SLEEP_AWAKENINGS`, `VENDOR_NAP_TIME`, `VENDOR_SLEEP_NEED`, and the four sleep-score factor sub-scores (`VENDOR_SLEEP_FACTOR_{DURATION,QUALITY,STRESS,TIMING}`). `WEARABLE`-source rows arrive with the Health Connect slice.
 
 **User:** factor keys (§3.6).
 
@@ -113,8 +120,6 @@ Clinical baseline values (e.g., AHI 17.6) currently live in `clinical_baseline` 
 | `morning_notes` | TEXT (schema v6) | Short user note added after the night. User-entered context, never a measurement; **included in exports** |
 | `resumed_after_interruption` | Bool (schema v7) | Set when START_STICKY resumed an open session after mid-night process death: capture was **not** continuous. The morning report leads its integrity notes with it. `RECOVERED` status covers the opposite outcome (death with no resume) |
 
-**Index:** `started_at DESC`.
-
 ### 3.5 `acoustic_event` and `audio_clip`
 
 `acoustic_event` — raw detections (session-scoped, cascade-deleted):
@@ -129,7 +134,7 @@ Clinical baseline values (e.g., AHI 17.6) currently live in `clinical_baseline` 
 | `peak_dbfs`, `mean_dbfs` | REAL | Relative intensity only ([MEASUREMENT_RELIABILITY.md](MEASUREMENT_RELIABILITY.md) M2) |
 | `intensity_tier` | TEXT enum | `QUIET` / `LIGHT` / `LOUD` / `EPIC` |
 | `confidence` | REAL | Model probability at peak |
-| `model_id` | TEXT FK | |
+| `model_version` | TEXT | Detector identity (e.g. `energy-heuristic-v1-spectral`); no model_id/registry FK yet (§3.8) |
 | `clip_id` | Long? FK → audio_clip | |
 | `user_label` | TEXT? | User-corrected class from clip playback: `SNORE` / `COUGH` / `SPEECH` / `MOVEMENT` / `OTHER_NOT_SNORE` — the personal labeled dataset Phase 2 model improvement trains against; never alters scores |
 | `labeled_at` | Long? | When the user applied the label (schema v4) — distinguishes label age when curating training data |
