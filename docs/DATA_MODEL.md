@@ -206,7 +206,9 @@ One row per `(source, endpoint, date)` (unique index), storing external API resp
 
 ### 5.1 `capture_stats` (session) — implemented shape
 
-Written at session finalize and at every heartbeat (progress persistence for START_STICKY carry) by `SessionRepository` from `AudioEngine.NightStats`; `null` for sessions finalized as RECOVERED (the engine died with the process, so stats are unknowable). Parsed tolerantly by `domain/report/CaptureStats` — missing/malformed fields become null — and rendered in the report's "Session health" section, where `ReportAssembler` derives plain-language health warnings (suspected capture gaps when windows processed fall > 10 % below the 0.5 s-hop expectation, thermal throttling).
+Written at session finalize and at every heartbeat (progress persistence for START_STICKY carry) by `SessionRepository` from `AudioEngine.NightStats`. For sessions finalized as RECOVERED the final write is skipped — heartbeat-saved stats (if any) are kept as-is, so the row carries the last live counters plus `saved_at_ms`; only when the engine died before any heartbeat does the row fall back to `{"schema_version":1}`. Parsed tolerantly by `domain/report/CaptureStats` — missing/malformed fields become null — and rendered in the report's "Session health" section, where `ReportAssembler` derives plain-language health warnings (suspected capture gaps when windows processed fall > 10 % below the 0.5 s-hop expectation, thermal throttling).
+
+Snore share and score (measurements and report) use **captured analysis time** — `(windows_processed + windows_skipped) × 0.5 s`, cumulative across engine restarts — as their denominator, not tap-to-end time in bed: the latter counts the start delay, process-death gaps and pre-capture wall time as "night". A RECOVERED session with no events records no time-in-bed, share or score at all.
 
 ```json
 {
@@ -218,6 +220,7 @@ Written at session finalize and at every heartbeat (progress persistence for STA
   "clip_count": 47,
   "thermal_throttle_events": 1,
   "level_gate_skipped": 231,
+  "saved_at_ms": 1793564621686,
   "thermal_skipped_hops": [[1793564621686, 1793564624686, 3], [1793564629686, 1793564630686, 1]]
 }
 ```

@@ -30,8 +30,24 @@ data class CaptureStats(
     val thermalThrottleEvents: Int?,
     val levelGateSkipped: Int? = null,
     val skippedHopSpans: List<SkippedHopSpan> = emptyList(),
+    /** When this stats object was written — heartbeat progress carries a live timestamp. */
+    val savedAtMs: Long? = null,
 ) {
+    /**
+     * Mic-live capture time in ms: every 0.5 s analysis hop the engine processed or
+     * thermally skipped, summed across all engines of the session (the heartbeat carry makes
+     * the counters cumulative). Excludes the start delay, process-death gaps and
+     * pre/post-capture wall time — the denominator snore share and score are meant to use
+     * (docs/DATA_MODEL.md §5.1). Null when the session has no capture stats; 0 when stats
+     * exist but nothing was processed.
+     */
+    fun capturedAnalysisMs(hopMs: Long = HOP_MS): Long? =
+        windowsProcessed?.let { processed -> (processed + (windowsSkipped ?: 0L)) * hopMs }
+
     companion object {
+        /** The analysis hop grid (DetectorConfig.HOP_MS); duplicated here to keep domain pure. */
+        const val HOP_MS = 500L
+
         fun parse(json: String?): CaptureStats? = runCatching {
             if (json.isNullOrBlank()) return@runCatching null
             val o = JSONObject(json)
@@ -45,6 +61,7 @@ data class CaptureStats(
                 thermalThrottleEvents = o.optIntOrNull("thermal_throttle_events"),
                 levelGateSkipped = o.optIntOrNull("level_gate_skipped"),
                 skippedHopSpans = o.optJSONArrayOrNull("thermal_skipped_hops")?.toSpans() ?: emptyList(),
+                savedAtMs = o.optLongOrNull("saved_at_ms"),
             )
         }.getOrNull()
 

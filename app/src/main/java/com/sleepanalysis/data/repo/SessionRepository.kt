@@ -150,12 +150,20 @@ class SessionRepository @Inject constructor(
             val session = sessionDao.byId(sessionId) ?: return@withTransaction false
             if (session.endedAt != null) return@withTransaction false
             val events = eventDao.bySession(sessionId)
-            // For recovered sessions the true death time is unknowable — bound it by the last
-            // captured event (+1 min grace) so time-in-bed isn't inflated by the dead gap.
-            val endedAt = if (status == SessionStatus.RECOVERED && events.isNotEmpty()) {
-                minOf(System.currentTimeMillis(), events.maxOf { it.endMs } + 60_000)
+            val now = System.currentTimeMillis()
+            val capture = com.sleepanalysis.domain.report.CaptureStats.parse(session.captureStats)
+            // True end bound for recovered sessions: the last captured event, or the last
+            // heartbeat-saved progress write — whichever is later — plus a small grace.
+            // Bounding by it keeps a mid-night process death from inflating the night with
+            // the dead gap instead of "now" (tap-to-stop time) (docs/DATA_MODEL.md §5.1).
+            val lastAliveMs = maxOf(
+                events.maxOfOrNull { it.endMs } ?: Long.MIN_VALUE,
+                capture?.savedAtMs ?: Long.MIN_VALUE,
+            ).takeIf { it != Long.MIN_VALUE }
+            val endedAt = if (status == SessionStatus.RECOVERED && lastAliveMs != null) {
+                minOf(now, lastAliveMs + RECOVERY_END_GRACE_MS)
             } else {
-                System.currentTimeMillis()
+                now
             }
 
             // Clip counts/bytes come from the table, not the engine counters: the table spans all
@@ -164,22 +172,45 @@ class SessionRepository @Inject constructor(
             val dbClipBytes = clipDao.sumBytesForSession(sessionId)
 
             val timeInBedSeconds = ((endedAt - session.startedAt).coerceAtLeast(0)) / 1000
-            val snoreEvents = events.filter { it.type == EventType.SNORE }
-            val snoreSeconds = snoreEvents.sumOf { it.durationMs } / 1000
-            val sharePercent = if (timeInBedSeconds > 0) snoreSeconds * 100.0 / timeInBedSeconds else 0.0
-            val tierCounts = snoreEvents.groupingBy { it.intensityTier }.eachCount()
-            val score = SnoreScore.compute(snoreSeconds, timeInBedSeconds.toLong(), tierCounts)
 
-            recorder.recordPhoneEstimate(sessionId, MeasurementType.TIME_IN_BED, timeInBedSeconds.toDouble())
+            // Denominator: mic-live captured time (processed + thermally-skipped 0.5 s hops,
+            // cumulative across engine restarts) — NOT tap-to-end time in bed, which counts
+            // the start delay, dead gaps and pre-capture wall time as "night". Falls back to
+            // time-in-bed only when the session has no capture stats at all.
+            val capturedSeconds = (
+                nightStats?.let {
+                    (it.windowsProcessed + it.windowsSkipped) *
+                        com.sleepanalysis.domain.report.CaptureStats.HOP_MS / 1000
+                }
+                    ?: capture?.capturedAnalysisMs()?.div(1000)
+                )?.takeIf { it > 0 } ?: timeInBedSeconds
+
+            val snoreEvents = events.filter { it.type == EventType.SNORE }
+            // Union, not sum: overlapping merged-window events must count their audio once
+            // (docs/DATA_MODEL.md §5.1; com.sleepanalysis.domain.scoring.SnoreMath).
+            val snoreSeconds = com.sleepanalysis.domain.scoring.SnoreMath
+                .unionDurationMs(snoreEvents.map { it.startMs to it.endMs }) / 1000
+            val sharePercent = if (capturedSeconds > 0) snoreSeconds * 100.0 / capturedSeconds else 0.0
+            val tierCounts = snoreEvents.groupingBy { it.intensityTier }.eachCount()
+            val score = SnoreScore.compute(snoreSeconds, capturedSeconds, tierCounts)
+
+            // A recovered session with no events has no verifiable capture: recording time in
+            // bed, share or score would present tap-to-stop wall time as sleep data.
+            val recoveredWithNoEvents = status == SessionStatus.RECOVERED && events.isEmpty()
+            if (!recoveredWithNoEvents) {
+                recorder.recordPhoneEstimate(sessionId, MeasurementType.TIME_IN_BED, timeInBedSeconds.toDouble())
+            }
             recorder.recordPhoneEstimate(sessionId, MeasurementType.SNORE_EVENT_COUNT, snoreEvents.size.toDouble())
             recorder.recordPhoneEstimate(sessionId, MeasurementType.SNORE_TIME, snoreSeconds.toDouble())
-            if (timeInBedSeconds > 0) {
+            if (!recoveredWithNoEvents && capturedSeconds > 0) {
                 recorder.recordPhoneEstimate(sessionId, MeasurementType.SNORE_SHARE_OF_NIGHT, sharePercent)
             }
-            recorder.recordPhoneEstimate(
-                sessionId, MeasurementType.SNORE_SCORE, score.toDouble(),
-                modelVersion = modelVersion,
-            )
+            if (!recoveredWithNoEvents) {
+                recorder.recordPhoneEstimate(
+                    sessionId, MeasurementType.SNORE_SCORE, score.toDouble(),
+                    modelVersion = modelVersion,
+                )
+            }
             snoreEvents.maxOfOrNull { it.peakDbfs }?.let {
                 recorder.recordPhoneEstimate(sessionId, MeasurementType.SNORE_INTENSITY_PEAK, it)
             }
@@ -217,10 +248,15 @@ class SessionRepository @Inject constructor(
      * Heartbeat-time persistence of cumulative capture stats. If the process dies and
      * START_STICKY resumes the same session, beginRecording carries these counters forward
      * instead of the finalizer silently shrinking the night's stats to the last segment.
+     * Each write is stamped with `saved_at_ms` so a RECOVERED finalize can bound the night
+     * by the last moment capture was verifiably alive.
      */
     suspend fun saveCaptureProgress(sessionId: Long, stats: AudioEngine.NightStats) =
         withContext(Dispatchers.IO) {
-            sessionDao.updateCaptureStats(sessionId, captureStatsJson(stats))
+            sessionDao.updateCaptureStats(
+                sessionId,
+                captureStatsJson(stats, savedAtMs = System.currentTimeMillis()),
+            )
         }
 
     /** Clips already saved for a session — the per-night clip cap counts the whole session. */
@@ -339,5 +375,8 @@ class SessionRepository @Inject constructor(
     companion object {
         /** Detector identity — stored on every event/estimate for traceability. */
         const val MODEL_VERSION = "energy-heuristic-v1-spectral"
+
+        /** Grace added after the last verifiably-alive moment when bounding a recovered night. */
+        const val RECOVERY_END_GRACE_MS = 60_000L
     }
 }

@@ -103,15 +103,21 @@ object ReportAssembler {
         val timeInBedSeconds = ((endedAt - session.startedAt).coerceAtLeast(0)) / 1000
 
         val snoreEvents = events.filter { it.type == EventType.SNORE }
-        val snoreSeconds = snoreEvents.sumOf { it.durationMs } / 1000
-        val sharePercent = if (timeInBedSeconds > 0) {
-            snoreSeconds.toDouble() / timeInBedSeconds * 100.0
-        } else 0.0
+        // Union, not sum — the same math as the stored measurements (SnoreMath): merged
+        // overlapping event windows must count their audio once.
+        val snoreSeconds = com.sleepanalysis.domain.scoring.SnoreMath
+            .unionDurationMs(snoreEvents.map { it.startMs to it.endMs }) / 1000
+        // Same denominator as the measurements: mic-live captured analysis time, not
+        // tap-to-end time in bed (docs/DATA_MODEL.md §5.1). Falls back to time in bed only
+        // when the session has no capture stats at all.
+        val capturedSeconds = capture?.capturedAnalysisMs()?.div(1000)?.takeIf { it > 0 }
+            ?: timeInBedSeconds
+        val sharePercent = if (capturedSeconds > 0) snoreSeconds * 100.0 / capturedSeconds else 0.0
 
         val tierCounts = snoreEvents.groupingBy { it.intensityTier }.eachCount()
         val score = SnoreScore.compute(
             snoreSeconds = snoreSeconds,
-            nightSeconds = timeInBedSeconds,
+            nightSeconds = capturedSeconds,
             tierCounts = tierCounts,
         )
 
