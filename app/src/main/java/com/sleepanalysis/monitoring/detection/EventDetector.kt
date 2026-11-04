@@ -169,6 +169,9 @@ class EventDetector(
         val lowBandRatioSum: Double,
         val noiseFloorDbfsSum: Double,
         val openWindows: Int,
+        val flatSum: Double,
+        val flatCount: Int,
+        val harmSum: Double,
     )
 
     /** Deferred finals by post-gate-downgrade type — at most one held final per type. */
@@ -291,6 +294,9 @@ class EventDetector(
         val ratioPeak = maxOf(sA.lowBandRatioPeak, sB.lowBandRatioPeak)
         val ratioSum = sA.lowBandRatioSum + sB.lowBandRatioSum
         val floorSum = sA.noiseFloorDbfsSum + sB.noiseFloorDbfsSum
+        val flatSum = sA.flatSum + sB.flatSum
+        val flatCount = sA.flatCount + sB.flatCount
+        val harmSum = sA.harmSum + sB.harmSum
         val fA = a.features
         val fB = incoming.features
         val openWindows = fA.openWindows + fB.openWindows
@@ -312,11 +318,13 @@ class EventDetector(
                 lowBandRatioPeak = ratioPeak,
                 lowBandRatioMean = if (windows > 0) ratioSum / windows else fA.lowBandRatioMean,
                 noiseFloorDbfsMean = if (windows > 0) floorSum / windows else fA.noiseFloorDbfsMean,
+                spectralFlatnessMean = if (flatCount > 0) flatSum / flatCount else null,
+                harmonicRatioMean = if (flatCount > 0) harmSum / flatCount else null,
             ),
         )
         return Deferred(
             merged,
-            WindowSums(windows, peakDbfs, sumDbfs, sumConfidence, snrPeakDb, snrSumDb, ratioPeak, ratioSum, floorSum, openWindows),
+            WindowSums(windows, peakDbfs, sumDbfs, sumConfidence, snrPeakDb, snrSumDb, ratioPeak, ratioSum, floorSum, openWindows, flatSum, flatCount, harmSum),
         )
     }
 
@@ -340,6 +348,9 @@ class EventDetector(
         var ratioPeak = 0.0
         var ratioSum = 0.0
         var floorSum = 0.0
+        var flatSum = 0.0
+        var flatCount = 0
+        var harmSum = 0.0
 
         /**
          * Raw sums of the event closed by the most recent [close] call — read (via the
@@ -375,6 +386,9 @@ class EventDetector(
                         ratioPeak = 0.0
                         ratioSum = 0.0
                         floorSum = 0.0
+                        flatSum = 0.0
+                        flatCount = 0
+                        harmSum = 0.0
                     }
                 }
                 if (active) {
@@ -388,6 +402,8 @@ class EventDetector(
                     ratioPeak = maxOf(ratioPeak, features.lowBandRatio)
                     ratioSum += features.lowBandRatio
                     floorSum += features.noiseFloorDbfs
+                    features.spectralFlatness?.let { flatSum += it; flatCount++ }
+                    features.harmonicRatio?.let { harmSum += it }
                 }
                 return null
             }
@@ -422,6 +438,9 @@ class EventDetector(
                 peakDbfs = peak,
                 sumDbfs = sumDbfs,
                 sumConfidence = sumConfidence,
+                flatSum = flatSum,
+                flatCount = flatCount,
+                harmSum = harmSum,
                 snrPeakDb = snrPeak,
                 snrSumDb = snrSum,
                 lowBandRatioPeak = ratioPeak,
@@ -447,6 +466,8 @@ class EventDetector(
                     lowBandRatioPeak = ratioPeak,
                     lowBandRatioMean = if (windows > 0) ratioSum / windows else 0.0,
                     noiseFloorDbfsMean = floorMean,
+                    spectralFlatnessMean = if (flatCount > 0) flatSum / flatCount else null,
+                    harmonicRatioMean = if (flatCount > 0) harmSum / flatCount else null,
                 ),
             )
         }

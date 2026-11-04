@@ -69,6 +69,41 @@ class EventDetectorTest {
     }
 
     @Test
+    fun `spectral features persist into event features json`() {
+        val det = EventDetector()
+        val out = mutableListOf<EventDetector.EventDraft>()
+        (snore(4) + quiet(4)).forEachIndexed { i, (sn, loud) ->
+            val ts = 1000L + i * 500L
+            out += det.update(
+                timestampMs = ts,
+                features = AudioFeatures(
+                    windowDbfs = -15.0,
+                    noiseFloorDbfs = -40.0,
+                    lowBandRatio = 0.8,
+                    timestampMs = ts,
+                    spectralFlatness = 0.42,
+                    harmonicRatio = 0.77,
+                ),
+                result = result(sn, loud),
+            )
+        }
+        val f = (out + det.flush()).single().features
+        assertEquals(0.42, f.spectralFlatnessMean!!, 0.0001)
+        assertEquals(0.77, f.harmonicRatioMean!!, 0.0001)
+        assertEquals(f, EventFeatures.fromJson(f.toJson())!!)
+    }
+
+    @Test
+    fun `legacy rows without spectral keys parse to null means`() {
+        val legacy = EventFeatures.fromJson(
+            """{"enter_windows":2,"snr_peak_db":25.0,"snr_mean_db":25.0,""" +
+                """"low_band_ratio_peak":0.8,"low_band_ratio_mean":0.8,"noise_floor_dbfs":-40.0}"""
+        )!!
+        assertNull(legacy.spectralFlatnessMean)
+        assertNull(legacy.harmonicRatioMean)
+    }
+
+    @Test
     fun `features parse tolerantly for legacy rows without window counts`() {
         val legacy = EventFeatures.fromJson(
             """{"enter_windows":2,"snr_peak_db":25.0,"snr_mean_db":25.0,""" +
