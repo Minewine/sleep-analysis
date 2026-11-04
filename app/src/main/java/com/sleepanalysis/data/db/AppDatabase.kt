@@ -34,7 +34,7 @@ import kotlinx.coroutines.withContext
         RawPayloadEntity::class,
         UserFactorEntity::class,
     ],
-    version = 7,
+    version = 8,
     exportSchema = true,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -88,7 +88,7 @@ abstract class AppDatabase : RoomDatabase() {
 
         fun build(context: Context): AppDatabase =
             Room.databaseBuilder(context, AppDatabase::class.java, NAME)
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7)
+                .addMigrations(*MIGRATIONS)
                 .addCallback(
                     object : RoomDatabase.Callback() {
                         override fun onCreate(db: SupportSQLiteDatabase) = createImmutabilityTriggers(db)
@@ -96,6 +96,12 @@ abstract class AppDatabase : RoomDatabase() {
                     }
                 )
                 .build()
+
+        /** All schema migrations in order — shared with the instrumented migration test. */
+        val MIGRATIONS: Array<Migration> = arrayOf(
+            MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5,
+            MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8,
+        )
 
         /** v2 adds raw_payload for vendor JSON storage (docs/GARMIN_INTEGRATION.md). */
         private val MIGRATION_1_2 = object : Migration(1, 2) {
@@ -156,6 +162,17 @@ abstract class AppDatabase : RoomDatabase() {
                     "ALTER TABLE `sleep_session` ADD COLUMN `resumedAfterInterruption` " +
                         "INTEGER NOT NULL DEFAULT 0"
                 )
+            }
+        }
+
+        /**
+         * v8 is declaration-only: the column has carried `DEFAULT 0` in the actual database
+         * since v7 — the entity now declares `@ColumnInfo(defaultValue = "0")` so the exported
+         * schema matches reality (and seeded/pre-v7 rows default to false). No SQL changes.
+         */
+        private val MIGRATION_7_8 = object : Migration(7, 8) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                // No-op: nothing to change on disk (see KDoc).
             }
         }
     }
