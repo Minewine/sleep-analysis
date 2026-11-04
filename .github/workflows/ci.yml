@@ -1,0 +1,42 @@
+# CI (docs/ARCHITECTURE.md §6.6): every PR runs the Android build + unit tests +
+# Android lint + the four policy gates (permissions allowlist, forbidden claim
+# terms, repo hygiene, network-host allowlist) — all wired into :app:check — and
+# the Python tooling under uv (ruff + pytest).
+#
+# The instrumented Room migration test (app/src/androidTest) is compiled here but
+# executed on real devices/emulators only (./gradlew :app:connectedDebugAndroidTest).
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  android:
+    name: Gradle assemble · unit tests · lint · policy gates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Build, test, lint, policy gates
+        # :app:check = unit tests + Android lint (abortOnError) + checkPermissionAllowlist
+        # + checkForbiddenTerms + checkRepoHygiene + checkNetworkHosts
+        run: ./gradlew :app:check :app:assembleDebug :app:assembleDebugAndroidTest
+
+  python:
+    name: ruff · pytest (tools + analysis)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: Ruff lint
+        run: uv run ruff check .
+      - name: Pytest
+        run: uv run pytest
