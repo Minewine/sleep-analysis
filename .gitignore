@@ -26,3 +26,14 @@ __pycache__/
 
 # Labeled sleep-audio fixtures: real sleep audio, never commit (docs/PRIVACY_AND_REGULATORY.md)
 fixtures/
+
+# Personal health data: real recordings, device DBs, exports — keep OUTSIDE the repo
+# and pass in by path (docs/PRIVACY_AND_REGULATORY.md §2)
+night-data/
+analysis/chart_*.png
+*.wav
+*.db
+*.db-wal
+*.db-shm
+*.preferences_pb
+session_*.log

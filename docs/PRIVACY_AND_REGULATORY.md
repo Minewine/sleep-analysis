@@ -32,6 +32,8 @@ Related: [Measurement reliability](MEASUREMENT_RELIABILITY.md) · [Architecture]
 
 Storage security posture: app sandbox + Android file-based encryption (device lock screen required). `android:allowBackup="false"` and no data-extraction rules — nothing syncs to Google's device backup. App-level clip encryption (SQLCipher or AES for clip files) is an evaluated option in Phase 2 ([Architecture](ARCHITECTURE.md) §10); the DB never contains audio bytes.
 
+**Repo hygiene:** this repository must never contain real sleep audio, device databases, Garmin API responses, or personal reports. Such data lives outside the repo and is passed into analysis tooling by path (e.g. `NIGHT_DATA`, `NIGHT_REPORT_OUT` env vars for `analysis/night_report.py`). `.gitignore` blocks `night-data/`, `analysis/chart_*.png`, `*.wav`, `*.db`, `*.db-wal`, `*.db-shm`, `*.preferences_pb`, and `session_*.log`; a pre-commit guard (`.githooks/pre-commit`, enable with `git config core.hooksPath .githooks`) fails commits that stage those patterns. Clinical PDFs and any document containing real names are out of scope for the repo as well.
+
 ## 3. Permissions
 
 | Permission | Type | Why | Notes |
