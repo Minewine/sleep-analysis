@@ -247,6 +247,15 @@ v2 adds `level_gate_skipped` (events the relative level gate rejected — kept f
 
 Every value carries (or inherits) `method` and `tier`; `ClaimPolicy` filtered what was allowed in.
 
+### 5.3 Night ↔ calendar-day anchoring
+
+Two different calendar days attach to one session, deliberately distinct:
+
+- **Wake date — the Garmin join key.** Garmin keys a night's payload by its `calendarDate`, which is the morning the night *ends*: a session starting 21:52 on day D and ending 07:10 on day D+1 is Garmin's "day D+1" sleep entry. Every Garmin query (`SessionRepository` report join) and every session-triggered import (`ReportViewModel.importGarminForThisNight`) anchors on the local wake date — `endedAt` in the session timezone, or `startedAt + 12 h` for open sessions (`domain/report/NightDates`).
+- **Start date — the self-logged factor key.** User-logged lifestyle factors are context about the evening the night began; they key on the day the session started (`NightDates.factorDay`).
+
+Manual imports from Settings import the user-picked date as-is, so a manual import for an overnight session must target the wake date to be visible in that night's report.
+
 ## 6. Retention and deletion rules
 
 | Data | Default retention | Rationale |

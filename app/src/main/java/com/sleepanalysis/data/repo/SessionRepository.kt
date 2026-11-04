@@ -294,8 +294,7 @@ class SessionRepository @Inject constructor(
 
     /** Self-logged factors for the calendar day the session started in (user context, not measurements). */
     private suspend fun factorsForSessionDay(session: SleepSessionEntity): List<com.sleepanalysis.domain.report.FactorEntry> {
-        val zone = java.time.ZoneId.of(session.timeZone)
-        val day = java.time.Instant.ofEpochMilli(session.startedAt).atZone(zone).toLocalDate()
+        val day = com.sleepanalysis.domain.report.NightDates.factorDay(session.startedAt, session.timeZone)
         return db.userFactorDao().forDate(day.toString()).map {
             com.sleepanalysis.domain.report.FactorEntry(
                 factorKey = it.factorKey,
@@ -305,12 +304,17 @@ class SessionRepository @Inject constructor(
         }
     }
 
-    /** Garmin device-reported metrics for the calendar day the session started in. */
+    /**
+     * Garmin device-reported metrics for the night's WAKE calendar day. Garmin keys a night by
+     * its morning (calendarDate = wake date), not by the evening it started — a 21:52→07:10
+     * session is Garmin's "tomorrow" (docs/DATA_MODEL.md §5.3, [NightDates]).
+     */
     private suspend fun garminMetricsForSessionDay(
         session: SleepSessionEntity,
     ): List<com.sleepanalysis.domain.report.GarminMetric> {
         val zone = java.time.ZoneId.of(session.timeZone)
-        val day = java.time.Instant.ofEpochMilli(session.startedAt).atZone(zone).toLocalDate()
+        val day = com.sleepanalysis.domain.report.NightDates
+            .garminWakeDate(session.startedAt, session.endedAt, session.timeZone)
         val from = day.atStartOfDay(zone).toInstant().toEpochMilli()
         val to = day.plusDays(1).atStartOfDay(zone).toInstant().toEpochMilli()
         return measurementDao.garminBetween(from, to).map {

@@ -49,11 +49,11 @@ class ReportViewModel @Inject constructor(
     val garminImportState: StateFlow<GarminImportManager.GarminImportState> =
         garminImportManager.state
 
-    /** Manual import for the calendar day this session started in. */
+    /** Manual import for this night's WAKE date — the day Garmin keys the night under. */
     fun importGarminForThisNight() {
         val r = report.value ?: return
-        val date = Instant.ofEpochMilli(r.startedAt)
-            .atZone(ZoneId.of(r.timeZone)).toLocalDate()
+        val date = com.sleepanalysis.domain.report.NightDates
+            .garminWakeDate(r.startedAt, r.endedAt, r.timeZone)
         viewModelScope.launch {
             garminImportManager.importForDate(date)
             reload() // pick up re-imported Garmin metrics
