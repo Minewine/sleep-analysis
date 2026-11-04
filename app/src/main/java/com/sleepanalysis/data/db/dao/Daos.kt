@@ -78,6 +78,14 @@ interface AcousticEventDao {
     @Query("UPDATE acoustic_event SET userLabel = :label, labeledAt = :labeledAt WHERE id = :eventId")
     suspend fun setUserLabel(eventId: Long, label: String?, labeledAt: Long?)
 
+    /**
+     * Retention: clears the clip link of events whose clip rows are being deleted, in the
+     * same transaction as the row deletion (RetentionWorker) — belt-and-braces alongside the
+     * FK's ON DELETE SET_NULL, keeping the clip↔event invariant explicit (DATA_MODEL.md §3.5).
+     */
+    @Query("UPDATE acoustic_event SET clipId = NULL WHERE clipId IN (:clipIds)")
+    suspend fun clearClipIds(clipIds: List<Long>)
+
     @Query("DELETE FROM acoustic_event")
     suspend fun deleteAll()
 }

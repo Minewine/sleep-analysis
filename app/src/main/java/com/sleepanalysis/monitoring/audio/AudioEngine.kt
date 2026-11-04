@@ -423,7 +423,7 @@ class AudioEngine(
                             if (samples.isNotEmpty()) {
                                 runCatching {
                                     val file: File = clipStore.writeClip(
-                                        sessionId, eventStartEpochMs, samples, config.sampleRate
+                                        sessionId, draft.type, eventStartEpochMs, samples, config.sampleRate
                                     )
                                     clipRelPath = clipStore.relativePath(file)
                                     clipDuration = samples.size * 1000L / config.sampleRate

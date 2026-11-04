@@ -3,6 +3,7 @@ package com.sleepanalysis.data.files
 import java.io.File
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -76,5 +77,43 @@ class ClipStoreTest {
         assertFalse(orphan.exists())
         assertFalse(File(tmp.root, "session_1").exists())
         assertTrue(File(tmp.root, "session_2").exists())
+    }
+
+    // --- collision-safe clip naming (writeClip) ---
+
+    @Test
+    fun `two events with the same start ms produce distinct files`() {
+        val store = store()
+        val first = store.writeClip(10, "SNORE", 1_793_747_290_769, shortArrayOf(0, 0), 16_000)
+        val second = store.writeClip(10, "SNORE", 1_793_747_290_769, shortArrayOf(0, 0), 16_000)
+        assertNotEquals(first.name, second.name)
+        assertTrue(first.exists())
+        assertTrue(second.exists())
+    }
+
+    @Test
+    fun `event type is part of the filename`() {
+        val store = store()
+        val snore = store.writeClip(10, "SNORE", 1_000, shortArrayOf(0), 16_000)
+        val cough = store.writeClip(10, "COUGH", 1_000, shortArrayOf(0), 16_000)
+        assertTrue(snore.name.startsWith("evt_snore_"))
+        assertTrue(cough.name.startsWith("evt_cough_"))
+        assertNotEquals(snore.name, cough.name)
+    }
+
+    @Test
+    fun `relative paths of written clips are session-scoped and resolvable`() {
+        val store = store()
+        val file = store.writeClip(7, "SNORE", 1_000, shortArrayOf(0), 16_000)
+        val rel = store.relativePath(file)
+        assertTrue(rel.startsWith("session_7/"))
+        assertEquals(file, store.absolutePath(rel))
+    }
+
+    @Test
+    fun `written clip is a readable RIFF wave file`() {
+        val store = store()
+        val file = store.writeClip(10, "SNORE", 1_000, shortArrayOf(1, -1, 2, -2), 16_000)
+        assertEquals("RIFF", file.readBytes().copyOfRange(0, 4).decodeToString())
     }
 }
