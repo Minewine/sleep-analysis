@@ -115,6 +115,10 @@ class GarminImportManager @Inject constructor(
             )
         } catch (e: GarminClient.GarminException) {
             _state.value = GarminImportState.Error(dateStr, e.message ?: "Garmin import failed.")
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            // Scope cancelled mid-import — propagate so structured concurrency holds;
+            // swallowing this as an import error would break the caller's cancellation.
+            throw e
         } catch (e: Exception) {
             client.invalidateToken()
             _state.value = GarminImportState.Error(dateStr, "Garmin import failed: ${e.message ?: e.javaClass.simpleName}")
