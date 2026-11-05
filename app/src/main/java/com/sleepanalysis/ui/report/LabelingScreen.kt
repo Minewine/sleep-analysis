@@ -55,8 +55,6 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import kotlinx.coroutines.Dispatchers
 
 /**
  * Bulk clip labeling: every clip-backed event of the session in one scrollable list —
@@ -128,11 +126,12 @@ class LabelingViewModel @Inject constructor(
     }
 
     fun label(eventId: Long, label: EventUserLabel?) {
+        // Optimistic: the chip must stick INSTANTLY. Updating only after the DB write left a
+        // window where the chip still looked unselected — a second tap then hit the toggle
+        // and cleared the label ("it doesn't stick"). The write trails the state.
+        _state.value = _state.value.withLabel(eventId, label)
         viewModelScope.launch {
             sessionRepository.labelEvent(eventId, label?.name)
-            withContext(Dispatchers.Main) {
-                _state.value = _state.value.withLabel(eventId, label)
-            }
         }
     }
 

@@ -7,7 +7,7 @@ labeled clips only; `fixtures/` is gitignored (real audio never enters the repo 
 ## 1. Label clips (in the app, after each night)
 
 Report → tap an event → play the clip → apply one of
-`SNORE / COUGH / SPEECH / MOVEMENT / OTHER_NOT_SNORE`. Unlabeled clips are exported but
+`SNORE / COUGH / SPEECH / MOVEMENT / OTHER_NOT_SNORE / SILENCE` (nothing real on the clip — these anchor the false-positive side of the eval). Unlabeled clips are exported but
 excluded from metrics. Aim: every clip labeled before exporting.
 
 ## 2. Export labeled fixtures (phone connected)

@@ -136,7 +136,7 @@ Clinical baseline values (e.g., AHI 17.6) currently live in `clinical_baseline` 
 | `confidence` | REAL | Model probability at peak |
 | `model_version` | TEXT | Detector identity (e.g. `energy-heuristic-v1-spectral`); no model_id/registry FK yet (§3.8) |
 | `clip_id` | Long? FK → audio_clip | |
-| `user_label` | TEXT? | User-corrected class from clip playback: `SNORE` / `COUGH` / `SPEECH` / `MOVEMENT` / `OTHER_NOT_SNORE` — the personal labeled dataset Phase 2 model improvement trains against; never alters scores |
+| `user_label` | TEXT? | User-corrected class from clip playback: `SNORE` / `COUGH` / `SPEECH` / `MOVEMENT` / `OTHER_NOT_SNORE` / `SILENCE` (nothing real on the clip) — the personal labeled dataset Phase 2 model improvement trains against; never alters scores |
 | `labeled_at` | Long? | When the user applied the label (schema v4) — distinguishes label age when curating training data |
 | `features_json` | TEXT? | The detection model's decision inputs as JSON (schema v5; for `energy-heuristic-v1-spectral`: `enter_windows`, `exit_windows`, `open_windows`, `close_windows`, `snr_peak_db`, `snr_mean_db`, `low_band_ratio_peak`, `low_band_ratio_mean`, `noise_floor_dbfs`, `spectral_flatness_mean`, `harmonic_ratio_mean` — the v0 rows predate `exit/open/close_windows` (added schema v7 era, 2026-11-02), and rows recorded before 2026-11-05 lack the two spectral means (absent key = null on parse)). Debug visibility of detector decisions — never a measurement, never rendered as clinical |
 
