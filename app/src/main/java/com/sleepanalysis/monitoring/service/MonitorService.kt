@@ -384,7 +384,10 @@ class MonitorService : Service() {
                     )
                 }
                 val finalized = try {
-                    sessionRepository.finalizeSession(sessionId, status, stats, activeModelVersion)
+                    sessionRepository.finalizeSession(
+                        sessionId, status, stats, activeModelVersion,
+                        captureStartAtMs = captureStartAtMs,
+                    )
                 } catch (t: Throwable) {
                     logger.log(sessionId, "finalize_failed", "${t.javaClass.simpleName}: ${t.message}")
                     false

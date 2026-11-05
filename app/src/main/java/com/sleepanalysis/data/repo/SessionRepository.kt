@@ -145,6 +145,7 @@ class SessionRepository @Inject constructor(
         status: String,
         nightStats: AudioEngine.NightStats?,
         modelVersion: String = MODEL_VERSION,
+        captureStartAtMs: Long? = null,
     ): Boolean = withContext(Dispatchers.IO) {
         db.withTransaction {
             val session = sessionDao.byId(sessionId) ?: return@withTransaction false
@@ -227,7 +228,16 @@ class SessionRepository @Inject constructor(
                 recorder.recordPhoneEstimate(sessionId, MeasurementType.NOISE_P95, it)
             }
 
-            val statsJson = nightStats?.let { captureStatsJson(it, clipCountOverride = dbClipCount) }
+            val statsJson = nightStats?.let {
+                captureStatsJson(
+                    it,
+                    clipCountOverride = dbClipCount,
+                    // The final write must carry capture_started_at forward — the heartbeat
+                    // writes had it, and overwriting with bare final stats would drop the
+                    // delay-awareness the health warnings rely on.
+                    captureStartMs = captureStartAtMs,
+                )
+            }
                 // Engine stats are gone (process death) — keep whatever progress the heartbeat saved
                 // rather than overwriting it with an empty stats object.
                 ?: session.captureStats.takeUnless { it.isNullOrBlank() }
