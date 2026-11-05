@@ -43,11 +43,12 @@ changelog (MEASUREMENT_RELIABILITY §7.1).
 
 ## Current status
 
-- **2026-11-05 — first measured eval** (session 1, night 2026-11-04→05; 17 labeled clips,
-  floor pre-roll −84.12 dBFS): SNORE precision **0.50**, recall **0.43** (3 TP / 3 FP / 4 FN);
-  COUGH 0.33/0.50; OTHER 0.17/0.50; MOVEMENT 0/0. Gate 0.80/0.70 **unmet** — expected at this
-  label count. Known FPs: coughs called snoring (no cough class until Phase 2) and creaky-bed
-  movement (harmonic ratio 0.14–0.70 — two creaks separable, two inside the snore band).
+- **2026-11-05 — eval, 37 labeled clips** (session 1, night 2026-11-04→05; floor pre-roll
+  −84.12 dBFS): SNORE precision **0.43**, recall **0.35** (6 TP / 8 FP / 11 FN); COUGH
+  0.14/0.50; MOVEMENT 0.07/0.14; OTHER 0.36/0.56. Gate 0.80/0.70 **unmet** — expected at this
+  label count. FP pattern: creaky-bed movement and coughs called snoring (several at clip
+  snore-ratio 1.0 — the detector has no cough/movement classes until Phase 2); misses are
+  quiet snores (clip ratios 0.11–0.47). (17-label interim: P 0.50 / R 0.43.)
 - **Do not tune below ~30 labels per class**: the distributions above overlap; a threshold
   change fitting 7 snores would overfit. Label first, re-run, then retune.
 - Harness fidelity fix shipped today: replay's noise-floor ring is pre-rolled with the

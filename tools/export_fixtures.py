@@ -30,6 +30,7 @@ import json
 import sqlite3
 import subprocess
 import sys
+import time
 import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
@@ -77,25 +78,61 @@ def detect_serial() -> str | None:
 
 
 def pull_db(serial: str | None, work_dir: Path) -> Path:
-    """Copies the app database (+ WAL) from the phone into [work_dir]; returns the db path."""
+    """Copies the app database (+ WAL) from the phone into [work_dir]; returns the db path.
+
+    Validates every copy (quick_check + a sanity row count) and retries — a USB flap mid
+    `cat` yields a truncated file that SQLite still opens, silently exporting garbage
+    (observed 2026-11-05: 8 of 148 clips, floor −64 dBFS instead of −84).
+    """
     args = adb_device_args(serial)
     db_path = work_dir / DB_NAME
     wal_path = work_dir / (DB_NAME + "-wal")
-    with db_path.open("wb") as f:
-        # exec-out: raw binary stdout — `adb shell` runs a pty that would CRLF-mangle the db.
-        subprocess.run(
-            [*args, "exec-out", "run-as", APP_PACKAGE, "cat", f"databases/{DB_NAME}"],
-            check=True,
-            stdout=f,
-        )
-    wal = subprocess.run(
-        [*args, "exec-out", "run-as", APP_PACKAGE, "cat", f"databases/{DB_NAME}-wal"],
-        capture_output=True,
-        check=False,  # WAL may not exist; absence is fine
-    )
-    if wal.returncode == 0 and wal.stdout:
-        wal_path.write_bytes(wal.stdout)
-    return db_path
+    last_error: Exception | None = None
+    for attempt in range(1, 4):
+        try:
+            with db_path.open("wb") as f:
+                # exec-out: raw binary stdout — `adb shell` runs a pty that would CRLF-mangle
+                # the db.
+                subprocess.run(
+                    [*args, "exec-out", "run-as", APP_PACKAGE, "cat", f"databases/{DB_NAME}"],
+                    check=True,
+                    stdout=f,
+                    timeout=60,
+                )
+            # The WAL is NOT optional (Room runs WAL mode; on-device it holds most of the
+            # recent writes — 445 KB WAL vs 381 KB main on session 1). A silent failure here
+            # opens a stale main-file snapshot that passes quick_check but is missing the
+            # night's rows. Failure to copy it retries the whole pull.
+            wal = subprocess.run(
+                [*args, "exec-out", "run-as", APP_PACKAGE, "cat", f"databases/{DB_NAME}-wal"],
+                capture_output=True,
+                check=True,
+                timeout=60,
+            )
+            if not wal.stdout:
+                raise RuntimeError("empty WAL copy from device")
+            wal_path.write_bytes(wal.stdout)
+            _validate_db(db_path)
+            return db_path
+        except (subprocess.SubprocessError, sqlite3.DatabaseError) as e:
+            last_error = e
+            print(f"warning: db pull attempt {attempt} failed ({e}); retrying", file=sys.stderr)
+            time.sleep(2)
+    raise RuntimeError(f"db pull failed after 3 attempts: {last_error}")
+
+
+def _validate_db(db_path: Path) -> None:
+    """Rejects truncated/garbage pulls: quick_check must pass and the schema must be ours."""
+    conn = sqlite3.connect(db_path)
+    try:
+        check = conn.execute("PRAGMA quick_check").fetchone()[0]
+        if check != "ok":
+            raise sqlite3.DatabaseError(f"quick_check: {check}")
+        sessions = conn.execute("SELECT COUNT(*) FROM sleep_session").fetchone()[0]
+        if sessions < 1:
+            raise sqlite3.DatabaseError("no sleep_session rows — truncated pull?")
+    finally:
+        conn.close()
 
 
 def fetch_rows(conn: sqlite3.Connection, session_id: int) -> list[dict]:
