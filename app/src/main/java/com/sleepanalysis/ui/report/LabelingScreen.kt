@@ -72,14 +72,20 @@ data class LabelingItem(
 
 data class LabelingUiState(
     val items: List<LabelingItem> = emptyList(),
-    val showUnlabeledOnly: Boolean = true,
+    val hideLabeled: Boolean = false,
 ) {
     val labeledCount: Int get() = items.count { it.label != null }
     val totalCount: Int get() = items.size
 
-    /** The work queue: unlabeled first when filtering, oldest first otherwise. */
-    fun visible(): List<LabelingItem> =
-        if (showUnlabeledOnly) items.filter { it.label == null } else items
+    /**
+     * Unlabeled first (oldest first within each group) — a tap must visibly change the row
+     * (chip selects + 'Labeled:' appears) or labeling feels broken. [hideLabeled] optionally
+     * drops labeled rows once they no longer need attention.
+     */
+    fun visible(): List<LabelingItem> {
+        val sorted = items.sortedBy { (it.label != null).compareTo(false) }
+        return if (hideLabeled) sorted.filter { it.label == null } else sorted
+    }
 
     fun withLabel(eventId: Long, label: EventUserLabel?): LabelingUiState = copy(
         items = items.map {
@@ -128,10 +134,15 @@ class LabelingViewModel @Inject constructor(
     fun label(eventId: Long, label: EventUserLabel?) {
         // Optimistic: the chip must stick INSTANTLY. Updating only after the DB write left a
         // window where the chip still looked unselected — a second tap then hit the toggle
-        // and cleared the label ("it doesn't stick"). The write trails the state.
-        _state.value = _state.value.withLabel(eventId, label)
+        // and cleared the label ("it doesn't stick"). The write trails the state; a failed
+        // write reverts so the UI never lies.
+        val previous = _state.value
+        _state.value = previous.withLabel(eventId, label)
         viewModelScope.launch {
-            sessionRepository.labelEvent(eventId, label?.name)
+            runCatching { sessionRepository.labelEvent(eventId, label?.name) }
+                .onFailure {
+                    _state.value = previous.withLabel(eventId, null)
+                }
         }
     }
 
@@ -183,8 +194,8 @@ fun LabelingScreen(
 ) {
     val state by viewModel.state.collectAsState()
     val playingEventId by viewModel.playingEventId.collectAsState()
-    var showUnlabeledOnly by remember { mutableStateOf(true) }
-    val visible = if (showUnlabeledOnly) state.visible() else state.items
+    var hideLabeled by remember { mutableStateOf(false) }
+    val visible = state.copy(hideLabeled = hideLabeled).visible()
 
     Scaffold(topBar = {
         TopAppBar(
@@ -212,13 +223,13 @@ fun LabelingScreen(
                 )
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
-                        stringResource(R.string.labeling_unlabeled_only),
+                        stringResource(R.string.labeling_hide_labeled),
                         style = MaterialTheme.typography.bodySmall,
                     )
                     Spacer(Modifier.height(0.dp))
                     Switch(
-                        checked = showUnlabeledOnly,
-                        onCheckedChange = { showUnlabeledOnly = it },
+                        checked = hideLabeled,
+                        onCheckedChange = { hideLabeled = it },
                     )
                 }
             }
@@ -294,7 +305,10 @@ private fun LabelingRow(
                 Button(onClick = onPlay) { Text(stringResource(R.string.report_play)) }
             }
         }
-        Row(
+        // FlowRow: six chips exceed one screen width — a plain Row pushed the last labels
+        // (Other / Not snore, Silence) off-screen and unreachable.
+        @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+        androidx.compose.foundation.layout.FlowRow(
             Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {

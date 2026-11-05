@@ -24,22 +24,22 @@ class LabelingUiStateTest {
     }
 
     @Test
-    fun `unlabeled-only filter hides labeled rows`() {
+    fun `unlabeled rows sort first`() {
         val state = LabelingUiState(
-            items = listOf(item(1), item(2, EventUserLabel.SNORE), item(3, EventUserLabel.COUGH)),
-            showUnlabeledOnly = true,
+            items = listOf(item(1, EventUserLabel.SNORE), item(2), item(3, EventUserLabel.COUGH), item(4)),
+            hideLabeled = false,
         )
-        assertTrue(state.visible().all { it.label == null })
-        assertEquals(listOf(1L), state.visible().map { it.eventId })
+        assertEquals(listOf(2L, 4L, 1L, 3L), state.visible().map { it.eventId })
     }
 
     @Test
-    fun `filter off shows everything`() {
+    fun `hide-labeled filter drops labeled rows`() {
         val state = LabelingUiState(
-            items = listOf(item(1), item(2, EventUserLabel.SNORE)),
-            showUnlabeledOnly = false,
+            items = listOf(item(1), item(2, EventUserLabel.SNORE), item(3, EventUserLabel.COUGH)),
+            hideLabeled = true,
         )
-        assertEquals(2, state.visible().size)
+        assertTrue(state.visible().all { it.label == null })
+        assertEquals(listOf(1L), state.visible().map { it.eventId })
     }
 
     @Test
