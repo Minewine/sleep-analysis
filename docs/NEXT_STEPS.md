@@ -50,7 +50,7 @@ Everything else is blocked on evidence only real nights can provide: battery, 8 
 
 ## P2 — Phase 2 proper (acoustic intelligence; ~3–6 weeks)
 
-1. **Fixture eval harness** (labeled WAV set → precision/recall asserted in tests) — needed before any model claim; your labeled events from P0 dogfood are the seed.
+1. **Fixture eval harness** (labeled WAV set → precision/recall asserted in tests) — needed before any model claim; your labeled events from P0 dogfood are the seed. The harness is shipped (`evalFixtures` task, `tools/export_fixtures.py`); the loop is documented in [EVAL_RUNBOOK.md](EVAL_RUNBOOK.md).
 2. **Detector v1**: TFLite model (YAMNet-mapped first, custom CNN later) behind the existing `SnoreDetector` interface + `model_registry` table (already specced, DATA_MODEL §3.8).
 3. **Movement (accelerometer)** → Tier-1 sleep/wake estimate (M5/M6) — biggest report upgrade.
 4. **Experimental breathing indicators** (M7/M8) behind the Settings toggle, exactly per MEASUREMENT_RELIABILITY §2/§7.
