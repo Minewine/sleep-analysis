@@ -146,13 +146,35 @@ fun ReportScreen(
                         )
                     } else {
                         r.loudestEpisodes.forEach { ep ->
+                            val head = ep.events.first()
                             LoudEpisodeRow(
                                 episode = ep,
                                 playing = ep.clip?.eventId != null && ep.clip.eventId == playingEventId,
                                 onPlay = { ep.clip?.let(viewModel::playClip) },
                                 onStop = viewModel::stopPlayback,
-                                onSelect = { selectedEventId = ep.events.first().id },
+                                onSelect = {
+                                    // Expand in place; tapping the open episode collapses it.
+                                    selectedEventId = if (selectedEventId == head.id) null else head.id
+                                },
                             )
+                            if (selectedEventId == head.id) {
+                                // The row's own detail/labeling card — directly beneath the row
+                                // so it is never rendered off-screen.
+                                val selected = r.events.firstOrNull { it.id == head.id } ?: head
+                                SelectedEventCard(
+                                    selected = selected,
+                                    playing = selected.id == playingEventId,
+                                    hasClip = r.clips.containsKey(selected.id),
+                                    onPlay = { sel -> r.clips[sel.id]?.let(viewModel::playClip) },
+                                    onStop = viewModel::stopPlayback,
+                                    onLabel = { label ->
+                                        viewModel.labelEvent(
+                                            selected.id,
+                                            if (selected.userLabel == label.name) null else label,
+                                        )
+                                    },
+                                )
+                            }
                         }
                     }
                 }
@@ -183,7 +205,11 @@ fun ReportScreen(
 
             item {
                 val selected = r.events.firstOrNull { it.id == selectedEventId }
-                SelectedEventCard(
+                // Episode selections expand inline under their row; this card is the detail
+                // surface for TIMELINE selections only — never both at once.
+                val shownInEpisode = selected != null &&
+                    r.loudestEpisodes.any { it.events.first().id == selected.id }
+                if (selected != null && !shownInEpisode) SelectedEventCard(
                     selected = selected,
                     playing = selected != null && selected.id == playingEventId,
                     hasClip = selected != null && r.clips.containsKey(selected.id),
