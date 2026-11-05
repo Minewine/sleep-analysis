@@ -45,6 +45,11 @@ Two write paths exist, both through `MeasurementRecorder` ([ARCHITECTURE.md](ARC
 | `lab` | TEXT | `"HUG"` |
 | `study_type` | TEXT | `"PSG"` |
 | `night_label` | TEXT? | `"Night 1"`, user-entered |
+| `total_sleep_time_minutes` | Int? | TST |
+| `sleep_efficiency_percent` | Double? | |
+| `arousal_index_per_hour` | Double? | Clinical arousal index (context — never compared to phone-derived anything) |
+| `n3_percent` | Double? | |
+| `ahi_per_hour` | Double? | Clinical AHI (context — M15 forbids a phone-derived counterpart) |
 | `source_document` | TEXT? | Path/note pointing at the PDF report the numbers came from |
 | `notes` | TEXT? | e.g. "hypopnea-dominant; technical artifacts noted" |
 | `entered_at` | Long | When the user typed it in |
@@ -66,12 +71,14 @@ One row per metric value. This is the table all longitudinal analysis (Phase 4+)
 | `tier` | TEXT enum | `ESTABLISHED` / `EXPERIMENTAL` — validated against `ClaimPolicy` at write time; Tier 3 types are rejected |
 | `value_num` | REAL? | Numeric value |
 | `value_text` | TEXT? | Non-numeric values |
-| `unit` | TEXT enum | `SECONDS` / `MINUTES` / `PERCENT` / `COUNT` / `DBFS` / `INDEX_0_100` / `INDEX_0_10` / `BPM` / `MS` |
+| `unit` | TEXT enum | `SECONDS` / `MINUTES` / `PERCENT` / `COUNT` / `PER_HOUR` / `DBFS` / `INDEX_0_100` / `INDEX_0_10` / `MS` / `BPM` / `BREATHS_PER_MINUTE` |
+| `is_clinical` | Bool | True only for clinical-source rows — SQL triggers + recorder logic key on it |
 | `confidence` | REAL? | 0–1, nullable (user/clinical rows typically null) |
-| `model_version` | TEXT? | Model identity stamped at write time — currently the `energy-heuristic-v0` constant (`+dbg1` suffix when the debug enter-windows toggle was active). The FK to `model_registry` applies once the registry exists (§3.8, Phase 2) |
+| `model_version` | TEXT? | Model identity stamped at write time — currently the `energy-heuristic-v1-spectral` constant (`+dbg1` suffix when the debug enter-windows toggle was active). The FK to `model_registry` applies once the registry exists (§3.8, Phase 2) |
 | `period_start` / `period_end` | Long? | For period-scoped rows (e.g., per-hour, weekly) |
 | `notes` | TEXT? | |
-| `recorded_at` | Long | When the row was written |
+| `timestamp` | Long | When the value occurred (event/measurement time — not row-write time) |
+| `created_at` | Long | When the row was written |
 
 **Indices (implemented):** `(measurement_type, period_start)`, `(session_id)`, `(source_type, method)`.
 
@@ -79,9 +86,9 @@ One row per metric value. This is the table all longitudinal analysis (Phase 4+)
 
 | session_id | source | method | type | tier | value | unit | model |
 |---|---|---|---|---|---|---|---|
-| 401 | PHONE | ALGORITHM_ESTIMATED | SNORE_TIME | ESTABLISHED | 812 | SECONDS | energy-heuristic-v0 |
-| 401 | PHONE | ALGORITHM_ESTIMATED | SNORE_INTENSITY_PEAK | ESTABLISHED | -14.2 | DBFS | energy-heuristic-v0 |
-| 401 | PHONE | ALGORITHM_ESTIMATED | NOISE_MEDIAN | ESTABLISHED | -31.5 | DBFS | energy-heuristic-v0 |
+| 401 | PHONE | ALGORITHM_ESTIMATED | SNORE_TIME | ESTABLISHED | 812 | SECONDS | energy-heuristic-v1-spectral |
+| 401 | PHONE | ALGORITHM_ESTIMATED | SNORE_INTENSITY_PEAK | ESTABLISHED | -14.2 | DBFS | energy-heuristic-v1-spectral |
+| 401 | PHONE | ALGORITHM_ESTIMATED | NOISE_MEDIAN | ESTABLISHED | -31.5 | DBFS | energy-heuristic-v1-spectral |
 | 401 | GARMIN | DEVICE_REPORTED | VENDOR_HRV_RMSSD | ESTABLISHED | 48 | MS | null |
 | null | USER | USER_REPORTED | ALCOHOL_UNITS | ESTABLISHED | 2 | COUNT | null |
 
@@ -95,7 +102,7 @@ Clinical baseline values (e.g., AHI 17.6) currently live in `clinical_baseline` 
 
 **Clinical:** `TST`, `SLEEP_EFFICIENCY`, `AROUSAL_INDEX`, `N3_PERCENT`, `AHI`, plus free-text hypnogram summary via `notes`/`value_text`.
 
-**Wearable (Phase 3, Garmin slice implemented):** `VENDOR_SLEEP_DURATION`, `VENDOR_SLEEP_SCORE`, `VENDOR_HRV_RMSSD`, `VENDOR_BODY_BATTERY`, `VENDOR_RESTING_HEART_RATE` — all `ESTABLISHED` as device-reported pass-through (M10–M13/M18). `HEART_RATE`, `HRV`, `SPO2`, `VENDOR_SLEEP_STAGES` are reserved for the Health Connect slice.
+**Wearable (Phase 3, Garmin slice implemented — all `ESTABLISHED` device-reported pass-through, tiers per [MEASUREMENT_RELIABILITY.md](MEASUREMENT_RELIABILITY.md) §8):** `VENDOR_SLEEP_DURATION`, `VENDOR_SLEEP_SCORE`, `VENDOR_HRV_RMSSD`, `VENDOR_BODY_BATTERY`, `VENDOR_RESTING_HEART_RATE`, stage totals as four per-stage types (`VENDOR_DEEP_SLEEP` / `VENDOR_LIGHT_SLEEP` / `VENDOR_REM_SLEEP` / `VENDOR_AWAKE_SLEEP`; there is no `VENDOR_SLEEP_STAGES` row type), overnight heart rate (`VENDOR_AVG_HEART_RATE_SLEEP`), respiration (`VENDOR_RESPIRATION_AVG_SLEEP`), stress composites (`VENDOR_SLEEP_STRESS_AVG`, `VENDOR_STRESS_DAILY_AVG`), SpO₂ levels (`VENDOR_SPO2_AVG_SLEEP`, `VENDOR_SPO2_LOWEST_SLEEP`), `VENDOR_SLEEP_AWAKENINGS`, `VENDOR_NAP_TIME`, `VENDOR_SLEEP_NEED`, and the four sleep-score factor sub-scores (`VENDOR_SLEEP_FACTOR_{DURATION,QUALITY,STRESS,TIMING}`). `WEARABLE`-source rows arrive with the Health Connect slice.
 
 **User:** factor keys (§3.6).
 
@@ -113,8 +120,6 @@ Clinical baseline values (e.g., AHI 17.6) currently live in `clinical_baseline` 
 | `morning_notes` | TEXT (schema v6) | Short user note added after the night. User-entered context, never a measurement; **included in exports** |
 | `resumed_after_interruption` | Bool (schema v7) | Set when START_STICKY resumed an open session after mid-night process death: capture was **not** continuous. The morning report leads its integrity notes with it. `RECOVERED` status covers the opposite outcome (death with no resume) |
 
-**Index:** `started_at DESC`.
-
 ### 3.5 `acoustic_event` and `audio_clip`
 
 `acoustic_event` — raw detections (session-scoped, cascade-deleted):
@@ -129,11 +134,11 @@ Clinical baseline values (e.g., AHI 17.6) currently live in `clinical_baseline` 
 | `peak_dbfs`, `mean_dbfs` | REAL | Relative intensity only ([MEASUREMENT_RELIABILITY.md](MEASUREMENT_RELIABILITY.md) M2) |
 | `intensity_tier` | TEXT enum | `QUIET` / `LIGHT` / `LOUD` / `EPIC` |
 | `confidence` | REAL | Model probability at peak |
-| `model_id` | TEXT FK | |
+| `model_version` | TEXT | Detector identity (e.g. `energy-heuristic-v1-spectral`); no model_id/registry FK yet (§3.8) |
 | `clip_id` | Long? FK → audio_clip | |
-| `user_label` | TEXT? | User-corrected class from clip playback: `SNORE` / `COUGH` / `SPEECH` / `MOVEMENT` / `OTHER_NOT_SNORE` — the personal labeled dataset Phase 2 model improvement trains against; never alters scores |
+| `user_label` | TEXT? | User-corrected class from clip playback: `SNORE` / `COUGH` / `SPEECH` / `MOVEMENT` / `OTHER_NOT_SNORE` / `SILENCE` (nothing real on the clip) — the personal labeled dataset Phase 2 model improvement trains against; never alters scores |
 | `labeled_at` | Long? | When the user applied the label (schema v4) — distinguishes label age when curating training data |
-| `features_json` | TEXT? | The detection model's decision inputs as JSON (schema v5; for `energy-heuristic-v0`: `enter_windows`, `snr_peak_db`, `snr_mean_db`, `low_band_ratio_peak`, `low_band_ratio_mean`, `noise_floor_dbfs`). Debug visibility of v0 decisions — never a measurement, never rendered as clinical |
+| `features_json` | TEXT? | The detection model's decision inputs as JSON (schema v5; for `energy-heuristic-v1-spectral`: `enter_windows`, `exit_windows`, `open_windows`, `close_windows`, `snr_peak_db`, `snr_mean_db`, `low_band_ratio_peak`, `low_band_ratio_mean`, `noise_floor_dbfs`, `spectral_flatness_mean`, `harmonic_ratio_mean` — the v0 rows predate `exit/open/close_windows` (added schema v7 era, 2026-11-02), and rows recorded before 2026-11-05 lack the two spectral means (absent key = null on parse)). Debug visibility of detector decisions — never a measurement, never rendered as clinical |
 
 `audio_clip`:
 
@@ -176,7 +181,7 @@ Unique index `(session_id, schema_version)`; regeneration upserts. Reports never
 
 ### 3.8 `model_registry` — **documented, not yet implemented**
 
-Planned per the table below, to land when a second model exists (Phase 2 model v1). Until then the active model identity is the constant `MODEL_VERSION = "energy-heuristic-v0"` in `SessionRepository`, stamped onto events and measurements.
+Planned per the table below, to land when a second model exists (Phase 2 model v1). Until then the active model identity is the constant `MODEL_VERSION = "energy-heuristic-v1-spectral"` in `SessionRepository`, stamped onto events and measurements.
 
 | Column | Type | Notes |
 |---|---|---|
@@ -192,7 +197,7 @@ Planned per the table below, to land when a second model exists (Phase 2 model v
 
 ### 3.9 `raw_payload` — vendor JSON storage (schema v2)
 
-One row per `(source, endpoint, date)` (unique index), storing external API responses verbatim so field mappings can be corrected without data loss. Written by the Garmin import ([GARMIN_INTEGRATION.md](GARMIN_INTEGRATION.md) §5); re-import upserts. No retention expiry yet (rows are small); deletion happens with delete-all.
+One row per `(source, endpoint, date)` (unique index), storing external API responses verbatim so field mappings can be corrected without data loss. Written by the Garmin import ([GARMIN_INTEGRATION.md](GARMIN_INTEGRATION.md) §5); re-import upserts. Retention: rows follow **session retention** (default 90 days) — `RetentionWorker` deletes `fetchedAt` older than the cutoff; the mapped vendor metrics themselves survive in `measurement`; delete-all purges the rest.
 
 ## 4. Clinical immutability
 
@@ -206,7 +211,9 @@ One row per `(source, endpoint, date)` (unique index), storing external API resp
 
 ### 5.1 `capture_stats` (session) — implemented shape
 
-Written at session finalize and at every heartbeat (progress persistence for START_STICKY carry) by `SessionRepository` from `AudioEngine.NightStats`; `null` for sessions finalized as RECOVERED (the engine died with the process, so stats are unknowable). Parsed tolerantly by `domain/report/CaptureStats` — missing/malformed fields become null — and rendered in the report's "Session health" section, where `ReportAssembler` derives plain-language health warnings (suspected capture gaps when windows processed fall > 10 % below the 0.5 s-hop expectation, thermal throttling).
+Written at session finalize and at every heartbeat (progress persistence for START_STICKY carry) by `SessionRepository` from `AudioEngine.NightStats`. For sessions finalized as RECOVERED the final write is skipped — heartbeat-saved stats (if any) are kept as-is, so the row carries the last live counters plus `saved_at_ms`; only when the engine died before any heartbeat does the row fall back to `{"schema_version":1}`. Parsed tolerantly by `domain/report/CaptureStats` — missing/malformed fields become null — and rendered in the report's "Session health" section, where `ReportAssembler` derives plain-language health warnings (suspected capture gaps when windows processed fall > 10 % below the 0.5 s-hop expectation, thermal throttling).
+
+Snore share and score (measurements and report) use **captured analysis time** — `(windows_processed + windows_skipped) × 0.5 s`, cumulative across engine restarts — as their denominator, not tap-to-end time in bed: the latter counts the start delay, process-death gaps and pre-capture wall time as "night". A RECOVERED session with no events records no time-in-bed, share or score at all.
 
 ```json
 {
@@ -218,11 +225,13 @@ Written at session finalize and at every heartbeat (progress persistence for STA
   "clip_count": 47,
   "thermal_throttle_events": 1,
   "level_gate_skipped": 231,
+  "saved_at_ms": 1793564621686,
+  "capture_started_at": 1793747285656,
   "thermal_skipped_hops": [[1793564621686, 1793564624686, 3], [1793564629686, 1793564630686, 1]]
 }
 ```
 
-v2 adds `level_gate_skipped` (events the relative level gate rejected — kept for diagnostics, the events are still stored without clips) and `thermal_skipped_hops`: merged spans of `[start_epoch_ms, end_epoch_ms, hops]` recording which analysis hops thermal throttling skipped (within a span, every odd hop of the 0.5 s grid was unanalyzed), so per-hour detection coverage can be corrected in analysis. Spans are epoch-anchored and concatenated across START_STICKY restarts via the stats carry.
+`saved_at_ms` stamps heartbeat writes (a RECOVERED finalize bounds the night by the last heartbeat) and `capture_started_at` records when audio capture actually began after the start delay — the health-warning gap check compares processed windows against that capture window, not tap-to-stop wall time. v2 adds `level_gate_skipped` (events the relative level gate rejected — kept for diagnostics, the events are still stored without clips) and `thermal_skipped_hops`: merged spans of `[start_epoch_ms, end_epoch_ms, hops]` recording which analysis hops thermal throttling skipped (within a span, every odd hop of the 0.5 s grid was unanalyzed), so per-hour detection coverage can be corrected in analysis. Spans are epoch-anchored and concatenated across START_STICKY restarts via the stats carry.
 
 ### 5.2 Report `payload` (v1 — target shape for the deferred §3.7 snapshot)
 
@@ -247,6 +256,15 @@ v2 adds `level_gate_skipped` (events the relative level gate rejected — kept f
 
 Every value carries (or inherits) `method` and `tier`; `ClaimPolicy` filtered what was allowed in.
 
+### 5.3 Night ↔ calendar-day anchoring
+
+Two different calendar days attach to one session, deliberately distinct:
+
+- **Wake date — the Garmin join key.** Garmin keys a night's payload by its `calendarDate`, which is the morning the night *ends*: a session starting 21:52 on day D and ending 07:10 on day D+1 is Garmin's "day D+1" sleep entry. Every Garmin query (`SessionRepository` report join) and every session-triggered import (`ReportViewModel.importGarminForThisNight`) anchors on the local wake date — `endedAt` in the session timezone, or `startedAt + 12 h` for open sessions (`domain/report/NightDates`).
+- **Start date — the self-logged factor key.** User-logged lifestyle factors are context about the evening the night began; they key on the day the session started (`NightDates.factorDay`).
+
+Manual imports from Settings import the user-picked date as-is, so a manual import for an overnight session must target the wake date to be visible in that night's report.
+
 ## 6. Retention and deletion rules
 
 | Data | Default retention | Rationale |
@@ -267,7 +285,8 @@ Deletion paths:
 
 ## 7. Migrations and versioning
 
-- Room schemas exported to `app/schemas/` and covered by migration tests; **shipped migrations are never edited**, only appended.
+- Room schemas exported to `app/schemas/`; **shipped migrations are never edited**, only appended. Migration SQL is hand-reviewed and covered end-to-end by the instrumented `MigrationTest` (androidTest): seeds rows at v1, migrates to the latest version with `MigrationTestHelper`, verifies the rows survive and the clinical-immutability triggers exist and enforce.
 - JSON payloads (`capture_stats`, report payload) carry `schema_version`; readers handle older versions defensively.
 - `measurement_type`/enum growth is additive; `ClaimPolicy` is the gate, so unknown types in the DB can never render in the UI.
+- Schema history: 1→8 via seven real migrations; v8 is declaration-only (`@ColumnInfo(defaultValue = "0")` on `sleep_session.resumedAfterInterruption`, matching the `DEFAULT 0` the column has carried since v7).
 - Reprocessing (Phase 4+): re-running a newer model over stored clips writes **new** Measurement rows with the new `model_id`; old rows remain — provenance history is append-only.

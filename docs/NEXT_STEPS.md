@@ -35,7 +35,7 @@ Everything else is blocked on evidence only real nights can provide: battery, 8 
 - Any integrity note in the report (interruptions) → note the cause.
 - Fill the Daily log honestly if not done the evening before.
 
-**Night 2–3 (drills, not night 1):** force-stop the app mid-night (swipe away / `adb shell am force-stop com.sleepanalysis`) → next launch must show the **interrupted-night banner** (with the saved-event count); tapping *Finalize & view report* must produce a **RECOVERED** report covering up to the kill. Then one night *without* the battery-optimization exclusion to see the real difference.
+**Night 2–3 (drills, not night 1):** force-stop the app mid-night (swipe away / `adb shell am force-stop com.sleepanalysis`) → next launch must show the **interrupted-night banner** (with the saved-event count); tapping *Finalize & view report* must produce a **RECOVERED** report covering up to the kill. Then one night *without* the battery-optimization exclusion to see the real difference. Battery %/charging state is recorded in every heartbeat and the stop log line since 2026-11-04, so the ≤ 10 %/8 h gate reads straight from the session log.
 
 **Exit criteria for P0:** 3 consecutive nights with COMPLETED (or drilled-RECOVERED) sessions, battery ≤ 10 %/night on at least one, ≥ 10 labeled events, zero data loss.
 
@@ -43,14 +43,14 @@ Everything else is blocked on evidence only real nights can provide: battery, 8 
 
 1. **30-night dogfood** with a tiny nightly log (battery %, anomalies) — Phase 1's definition-of-done gate ([MVP_SCOPE](MVP_SCOPE.md) §7).
 2. **Garmin live import** (same period): enter the rotated key, import a date, check the four endpoint HTTP statuses in Settings — validates the `?date=` assumption and real payload shapes against the parsers; raw JSON makes remapping lossless.
-3. **CI + lint rules** (finally build what MVP_SCOPE F10 promised): GitHub Actions (build + unit tests), a check that the merged manifest requests only the six expected permissions, and a lint rule flagging forbidden clinical terms ("AHI", "apnea", "arousal", "sleep stage") outside approved disclaimer strings.
-4. **Report snapshot persistence** (DATA_MODEL §3.7) + retention decision for `raw_payload` (currently indefinite; rows are small but the doc's storage-limitation story should cover them).
+3. ~~**CI + lint rules**~~ — **done (2026-11-04)**: GitHub Actions runs build + unit tests + Android lint + the four policy gates (merged-manifest permission allowlist — now 9 declared permissions + 2 documented library additions, forbidden-terms check, repo-hygiene check, network-host allowlist) plus ruff/pytest; see `.github/workflows/ci.yml` and [ARCHITECTURE.md](ARCHITECTURE.md) §6.6.
+4. **Report snapshot persistence** (DATA_MODEL §3.7). ~~Retention decision for `raw_payload`~~ — **done (2026-11-04)**: raw payloads now follow session retention in the daily worker (DATA_MODEL §3.9).
 5. **DB trigger test** for clinical immutability (in-memory Room test against the `clinical_baseline` triggers) — the only Phase 1 safety mechanism with no automated coverage.
 6. **Retention-settings UI** — the plumbing exists (`UserPreferences.setRetention`, worker already reads it); only the Settings screen section is missing.
 
 ## P2 — Phase 2 proper (acoustic intelligence; ~3–6 weeks)
 
-1. **Fixture eval harness** (labeled WAV set → precision/recall asserted in tests) — needed before any model claim; your labeled events from P0 dogfood are the seed.
+1. **Fixture eval harness** (labeled WAV set → precision/recall asserted in tests) — needed before any model claim; your labeled events from P0 dogfood are the seed. The harness is shipped (`evalFixtures` task, `tools/export_fixtures.py`); the loop is documented in [EVAL_RUNBOOK.md](EVAL_RUNBOOK.md).
 2. **Detector v1**: TFLite model (YAMNet-mapped first, custom CNN later) behind the existing `SnoreDetector` interface + `model_registry` table (already specced, DATA_MODEL §3.8).
 3. **Movement (accelerometer)** → Tier-1 sleep/wake estimate (M5/M6) — biggest report upgrade.
 4. **Experimental breathing indicators** (M7/M8) behind the Settings toggle, exactly per MEASUREMENT_RELIABILITY §2/§7.

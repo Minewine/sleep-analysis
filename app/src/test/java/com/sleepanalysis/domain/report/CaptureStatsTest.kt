@@ -78,4 +78,40 @@ class CaptureStatsTest {
         )!!
         assertEquals(listOf(SkippedHopSpan(3000, 4000, 2)), stats.skippedHopSpans)
     }
+
+    @Test
+    fun `captured analysis time is processed plus skipped hops on the half-second grid`() {
+        val stats = CaptureStats.parse(
+            """{"schema_version":2,"windows_processed":100,"windows_skipped":50}"""
+        )!!
+        assertEquals(75_000L, stats.capturedAnalysisMs())
+    }
+
+    @Test
+    fun `missing window counts yield null captured time`() {
+        assertNull(CaptureStats.parse("""{"schema_version":1}""")!!.capturedAnalysisMs())
+    }
+
+    @Test
+    fun `capture start parses from capture_started_at`() {
+        val stats = CaptureStats.parse(
+            """{"schema_version":2,"windows_processed":10,"capture_started_at":1793564621686}"""
+        )!!
+        assertEquals(1_793_564_621_686L, stats.captureStartMs)
+        assertNull(CaptureStats.parse("""{"schema_version":2,"windows_processed":10}""")!!.captureStartMs)
+    }
+
+    @Test
+    fun `heartbeat timestamp parses from saved_at_ms`() {
+        val stats = CaptureStats.parse(
+            """{"schema_version":2,"windows_processed":10,"saved_at_ms":1793564621686}"""
+        )!!
+        assertEquals(1_793_564_621_686L, stats.savedAtMs)
+    }
+
+    @Test
+    fun `stats without a heartbeat stamp parse to null savedAt`() {
+        val stats = CaptureStats.parse("""{"schema_version":2,"windows_processed":10}""")!!
+        assertNull(stats.savedAtMs)
+    }
 }

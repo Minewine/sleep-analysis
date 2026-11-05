@@ -12,7 +12,7 @@ SleepAnalysis is a privacy-first Android platform for one person's long-term sle
 
 1. **Immutable clinical baseline** — structured results from the HUG (Hôpitaux Universitaires de Genève) sleep studies, January 2026.
 2. **Overnight acoustic monitoring** — phone microphone, on-device processing only.
-3. **Wearable data** (later) — Garmin / Health Connect: heart rate, HRV, SpO₂, vendor sleep estimates.
+3. **Wearable data** (Garmin slice **shipped** — see [GARMIN_INTEGRATION.md](GARMIN_INTEGRATION.md); Health Connect later) — heart rate, HRV, SpO₂ levels, vendor sleep estimates.
 4. **Lifestyle factor logging** — weight, medication, alcohol, exercise, stress, pain.
 5. **Longitudinal analysis** — trends, personal baseline bands, factor associations.
 

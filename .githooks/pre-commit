@@ -1,0 +1,16 @@
+#!/usr/bin/env sh
+# Fails the commit if a staged file matches a personal-health-data pattern.
+# Enable: git config core.hooksPath .githooks
+# Policy: docs/PRIVACY_AND_REGULATORY.md §2 (repo hygiene)
+
+set -e
+
+pat='(^night-data/|^analysis/chart_.*\.png$|\.wav$|\.db$|\.db-wal$|\.db-shm$|\.preferences_pb$|^.*session_.*\.log$)'
+
+staged=$(git diff --cached --name-only | grep -E "$pat" || true)
+if [ -n "$staged" ]; then
+    echo "ERROR: personal health data must not be committed (docs/PRIVACY_AND_REGULATORY.md):" >&2
+    echo "$staged" | sed 's/^/  - /' >&2
+    echo "Move the data outside the repo and pass it in by path instead." >&2
+    exit 1
+fi

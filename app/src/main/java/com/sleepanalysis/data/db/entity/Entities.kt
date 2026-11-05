@@ -1,5 +1,6 @@
 package com.sleepanalysis.data.db.entity
 
+import androidx.room.ColumnInfo
 import androidx.room.Entity
 import androidx.room.ForeignKey
 import androidx.room.Index
@@ -54,6 +55,7 @@ data class SleepSessionEntity(
      * (schema v7): overnight capture was not continuous, and the morning report surfaces this
      * prominently. The RECOVERED status covers the opposite outcome — a death with no resume.
      */
+    @ColumnInfo(defaultValue = "0")
     val resumedAfterInterruption: Boolean = false,
     val createdAt: Long = System.currentTimeMillis(),
 )

@@ -31,13 +31,15 @@ Clinical baseline values (PSG-derived) are not on this scale — they are clinic
 | M9 | Contactless breathing rate via ultrasonic sonar | **2** (Phase 5, optional) | Feasible (Sleep as Android precedent) but highly device-dependent | Low–Moderate | Badge + pet/hearing warning + "experimental" | Device-specific bench test before any display |
 | M10 | Wearable heart rate (nocturnal) | **1** (as device-reported) | Garmin/Health Connect direct value | Moderate–High | "Reported by your wearable" — never re-derived by us | None beyond pass-through integrity |
 | M11 | Wearable HRV (nocturnal) | **1** (as device-reported) | Vendor algorithm; opaque and device-specific | Moderate | "Vendor-reported HRV — algorithms differ between devices" | Consistency monitoring across firmware updates |
-| M12 | Wearable SpO₂ | **2** (as device-reported) | Consumer SpO₂ accuracy is limited; **never** derive desaturation events/index | Moderate (level) / n.a. (events) | "Vendor-reported SpO₂ level — not a desaturation measurement" | Trend-only display |
+| M12 | Wearable SpO₂ — levels only (nightly average, nightly lowest) | **1** (as device-reported, levels only) | Consumer SpO₂ accuracy is limited — values are context, never re-derived by us; **never** derive desaturation events/index (M17) | Moderate (level) / n.a. (events) | "Vendor-reported SpO₂ level — not a desaturation measurement" | Trend-only display of the level values; the DTO's `numberOfEventsBelowThreshold` is deliberately not imported (M12/M17) |
 | M13 | Vendor sleep stages (Garmin) | **1** (as device-reported, context only) | Vendor estimate, not measurement | Low–Moderate | "Vendor estimate — differs from PSG scoring by design" | Never numerically compared to clinical stages |
 | M18 | Vendor sleep duration/score + score-factor sub-scores, Body Battery, resting HR, sleep stages (M13), nocturnal HR (M10), respiration, sleep/daily stress composites, awakenings, nap time, sleep-need baseline, SpO₂ **levels only** (M12) — all via the Garmin Personal API | **1** (as device-reported) | Direct vendor pass-through; Body Battery and stress are proprietary vendor composites; factor sub-score key names are provisional until the first real night (raw payloads preserved) | Low–Moderate | Every row labeled **"(Garmin estimate)"**; vendor algorithms opaque; context only, never merged into phone-derived aggregates; SpO₂ shown as trend levels — **never** a desaturation measurement and `numberOfEventsBelowThreshold` is not imported (M12/M17) | Pass-through integrity; document endpoint/field assumptions in GARMIN_INTEGRATION.md §4 |
 | M14 | Phone-derived sleep stages (N1/N2/N3/REM) | **3** | Not credibly supported | — | — | Never built |
 | M15 | Phone-derived AHI / RDI / respiratory event index | **3** | Research shows screening-grade correlation (c-stat ~0.87–0.91 in cited studies), which is **not** a per-night clinical claim; crossing this line is also a medical-device claim | — | — | Never built |
 | M16 | Phone-derived arousal index | **3** | Arousal is EEG-scored; acoustics cannot score it | — | — | Never built |
 | M17 | Phone-derived desaturation / SpO₂ events | **3** | No sensor | — | — | Never built |
+
+**Resolution note (2026-11-04):** M12 previously read "**2**" while M18 listed "SpO₂ **levels only** (M12)" inside its Tier **1** device-reported row — an internal contradiction from the Garmin slice landing. The binding classification is **Tier 1 as device-reported, levels only** (what M18 always said and what the code implements): SpO₂ numbers are vendor pass-through context badged "(Garmin estimate)", never a desaturation measurement; deriving desaturation events/index from them remains Tier 3 (M17). Amending M12 (option (b) of the change control in §7) was chosen over demoting the code values to Tier 2, which would have hidden already-imported levels behind a toggle that does not exist until Phase 2.
 | C1 | Clinical baseline metrics (TST, efficiency, arousal index, N3%, AHI, hypnogram summary) | **Clinical** | Entered read-only from HUG reports | **High** (as measured) | "Clinically measured (PSG, HUG, date)" | None — source of truth |
 
 ## 3. The two hard equivalences (never allowed)
@@ -74,4 +76,58 @@ Clinical baseline values (PSG-derived) are not on this scale — they are clinic
 1. **Promotion (Tier 2 → Tier 1)** requires: (a) a written validation plan executed against ground truth — for breathing indicators this means a prospective comparison window against a follow-up HUG study, with agreement statistics reviewed honestly; (b) update to this document; (c) copy review of all UI strings; (d) version note in the app changelog.
 2. **Demotion** (new evidence of unreliability) requires the same path in reverse plus removal or re-badging of affected UI within one release.
 3. **New measurement proposals** start as Tier 2 by default, behind the experimental toggle, regardless of how confident the team feels.
-4. This document is the single source of truth; `ClaimPolicy` in code (see [ARCHITECTURE.md](ARCHITECTURE.md) §6) must reference tiers consistent with §2, and a unit test asserts the two stay in sync.
+4. This document is the single source of truth; `ClaimPolicy` in code (see [ARCHITECTURE.md](ARCHITECTURE.md) §6) must reference tiers consistent with §2, and a unit test asserts the two stay in sync — including parsing the machine-readable tier table (§8) so documentation drift fails the build.
+
+### 7.1 Detector changelog (per §7(1)(d) — version note for every detector change)
+
+- **2026-11-04 — `energy-heuristic-v0` → `energy-heuristic-v1-spectral`** (constant: `SessionRepository.MODEL_VERSION`). Adds two spectral gates on top of the v0 energy/band heuristic — spectral flatness ≤ max (tonal/peaked snore energy vs broadband noise) and harmonic ratio ≥ min (60–250 Hz autocorrelation), computed by the `monitoring/features/` FFT + autocorrelation — plus a breath-cycle rhythm gate (once a window passes all gates, adjacent windows of the same periodic train are believed; failing windows never seed it). Null-feature inputs fall back to exact v0 behavior. Thresholds tuned with the offline `FixtureEvaluator` (`monitoring/eval/`) over labeled dogfood clips via `ReplayEngine` (`monitoring/replay/`, feature-for-feature identical to the live loop). Driver: v0's broadband-household-noise false positives (night 1 produced 1,047 near-silent "SNORE" events). Documented limits: speech near the phone remains tonal+rhythmic (false positive); distant snoring may be missed.
+
+## 8. Machine-readable tier table (the binding code mirror)
+
+One row per `MeasurementType` constant, its tier, and the M-number that governs it. **Do not
+edit this table without the corresponding `MeasurementType` change in the same commit** —
+`ClaimPolicyTest` parses this table and fails the build on any drift in either direction
+(tier changed in code without this table, or vice versa, or a type missing from either side).
+Tiers: `ESTABLISHED` / `EXPERIMENTAL` / `OUT_OF_SCOPE_FOR_CLAIMS` (§1).
+
+| MeasurementType | Tier | M |
+|---|---|---|
+| `TIME_IN_BED` | ESTABLISHED | M5 (session-bounds time until movement lands) |
+| `SNORE_EVENT_COUNT` | ESTABLISHED | M1 |
+| `SNORE_TIME` | ESTABLISHED | M1 |
+| `SNORE_SHARE_OF_NIGHT` | ESTABLISHED | M3 |
+| `SNORE_INTENSITY_PEAK` | ESTABLISHED | M2 |
+| `SNORE_INTENSITY_MEAN` | ESTABLISHED | M2 |
+| `SNORE_SCORE` | ESTABLISHED | M3 (derived index) |
+| `NOISE_MEDIAN` | ESTABLISHED | M2 |
+| `NOISE_P95` | ESTABLISHED | M2 |
+| `ACOUSTIC_EVENT_COUNT` | ESTABLISHED | M4 |
+| `BREATHING_IRREGULARITY_INDICATOR` | EXPERIMENTAL | M7 |
+| `RESPIRATORY_PATTERN_INDICATOR` | EXPERIMENTAL | M8 |
+| `VENDOR_SLEEP_DURATION` | ESTABLISHED | M18 |
+| `VENDOR_SLEEP_SCORE` | ESTABLISHED | M18 |
+| `VENDOR_HRV_RMSSD` | ESTABLISHED | M11/M18 |
+| `VENDOR_BODY_BATTERY` | ESTABLISHED | M18 |
+| `VENDOR_RESTING_HEART_RATE` | ESTABLISHED | M18 |
+| `VENDOR_DEEP_SLEEP` | ESTABLISHED | M13/M18 |
+| `VENDOR_LIGHT_SLEEP` | ESTABLISHED | M13/M18 |
+| `VENDOR_REM_SLEEP` | ESTABLISHED | M13/M18 |
+| `VENDOR_AWAKE_SLEEP` | ESTABLISHED | M13/M18 |
+| `VENDOR_AVG_HEART_RATE_SLEEP` | ESTABLISHED | M10/M18 |
+| `VENDOR_RESPIRATION_AVG_SLEEP` | ESTABLISHED | M18 |
+| `VENDOR_SLEEP_STRESS_AVG` | ESTABLISHED | M18 |
+| `VENDOR_STRESS_DAILY_AVG` | ESTABLISHED | M18 |
+| `VENDOR_SPO2_AVG_SLEEP` | ESTABLISHED | M12/M18 |
+| `VENDOR_SPO2_LOWEST_SLEEP` | ESTABLISHED | M12/M18 |
+| `VENDOR_SLEEP_AWAKENINGS` | ESTABLISHED | M18 |
+| `VENDOR_NAP_TIME` | ESTABLISHED | M18 |
+| `VENDOR_SLEEP_NEED` | ESTABLISHED | M18 |
+| `VENDOR_SLEEP_FACTOR_DURATION` | ESTABLISHED | M18 |
+| `VENDOR_SLEEP_FACTOR_QUALITY` | ESTABLISHED | M18 |
+| `VENDOR_SLEEP_FACTOR_STRESS` | ESTABLISHED | M18 |
+| `VENDOR_SLEEP_FACTOR_TIMING` | ESTABLISHED | M18 |
+| `AHI_ESTIMATE` | OUT_OF_SCOPE_FOR_CLAIMS | M15 |
+| `RDI_ESTIMATE` | OUT_OF_SCOPE_FOR_CLAIMS | M15 |
+| `SLEEP_STAGE_ESTIMATE` | OUT_OF_SCOPE_FOR_CLAIMS | M14 |
+| `AROUSAL_INDEX_ESTIMATE` | OUT_OF_SCOPE_FOR_CLAIMS | M16 |
+| `SPO2_DESATURATION_ESTIMATE` | OUT_OF_SCOPE_FOR_CLAIMS | M17 |

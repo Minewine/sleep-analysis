@@ -3,18 +3,31 @@ package com.sleepanalysis.monitoring.detection
 import com.sleepanalysis.domain.scoring.SnoreScore
 
 /**
- * Tuning constants for the Phase 1 acoustic pipeline. The v0 detector is a documented
- * energy/band heuristic — detection QUALITY is explicitly a Phase 2 concern; the interface
- * (SnoreDetector) is the swap point (docs/MVP_SCOPE.md F4, docs/ARCHITECTURE.md §8).
+ * Tuning constants for the Phase 1 acoustic pipeline. The shipped detector is the
+ * documented energy-heuristic-v1-spectral (energy/band + spectral gates + rhythm gate); a
+ * learned model remains a Phase 2 concern — the interface (SnoreDetector) is the swap point
+ * (docs/MVP_SCOPE.md F4, docs/ARCHITECTURE.md §8).
  */
 object DetectorConfig {
     const val SAMPLE_RATE = 16_000
     const val WINDOW_MS = 1_000L
     const val HOP_MS = 500L
 
-    /** Clip length retained per detected event. */
-    const val CLIP_MS = 8_000L
-    const val MAX_CLIPS_PER_NIGHT = 50
+    /**
+     * Clip length retained per detected event. 10 s (was 8 s) so the widened 4 s merge
+     * window's busy-hold bound (maxHoldMs = mergeGapMs + hold slack ≈ 9 s at defaults) still
+     * emits with the event's tail inside the clip ring — see the EventDetector KDoc.
+     */
+    const val CLIP_MS = 10_000L
+
+    /**
+     * Nightly clip backstop. Raised 50 → 150 after the session-6..11 review: only ~3.4 % of
+     * detected snores got audio (50 caps bound every night, `clip_budget_skipped` entries from
+     * ~05:00) while real cost is ~256 KB/clip ≈ 13 MB per ~50 — a 150-clip night is ~38 MB and
+     * the 7-day retention window keeps steady state in the low hundreds of MB. Labels feed the
+     * Phase 2 eval gate; starving them starves the model work.
+     */
+    const val MAX_CLIPS_PER_NIGHT = 150
 
     /**
      * Relative level gate (backlog #2, self-calibrating). An absolute −55 dBFS cutoff ate real
@@ -52,8 +65,10 @@ object DetectorConfig {
      * Clip budget per wall-clock hour. Night 1 spent all 50 clips on the first 42 minutes of
      * bedtime noise, leaving nothing for the actual sleep window; this spreads the budget so
      * any burst can only claim a bounded share (MAX_CLIPS_PER_NIGHT stays as the backstop).
+     * Raised 8 → 15 alongside the nightly cap so a 150-clip night is reachable across a
+     * ~7.5 h window rather than choked at 8/hour.
      */
-    const val MAX_CLIPS_PER_HOUR = 8
+    const val MAX_CLIPS_PER_HOUR = 15
 
     /**
      * Loudness reserve (night 3 dogfood): a first-come-first-served budget starves exactly the
@@ -109,7 +124,10 @@ object DetectorConfig {
     const val ENTER_WINDOWS = 2       // 2 consecutive active hops (1.0 s) to open an event
     const val EXIT_WINDOWS = 4        // 4 consecutive quiet hops (2.0 s) to close it
     const val MIN_DURATION_MS = 2_000L
-    const val MERGE_GAP_MS = 2_000L
+    // Breath-pause cadence within a snore train is ~3-6 s; a 2 s gap shattered trains into
+    // 997 sub-5 s events on session 11 (avg 5.9 s) — 4 s merges the train, keeps separate
+    // episodes apart. Union-based metrics are merge-invariant; counts/labels get saner.
+    const val MERGE_GAP_MS = 4_000L
 
     /** Relative intensity bands (docs/MEASUREMENT_RELIABILITY.md M2 — relative, not SPL). */
     const val EPIC_DBFS = -10.0

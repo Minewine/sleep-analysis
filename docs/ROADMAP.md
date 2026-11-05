@@ -21,7 +21,7 @@ Related: [Product vision](PRODUCT_VISION.md) · [MVP scope](MVP_SCOPE.md) (Phase
 **Goal:** a reliable nightly recorder and an honest morning report, with the clinical baseline stored immutably.
 
 - Foreground-service audio capture, ring buffer, event clips only (no full-night audio)
-- Swappable v0 snore detector *(shipped: energy/band heuristic — the YAMNet-mapped model is Phase 2)*, snore + loud-noise events (cough/speech classification arrives with the model)
+- Swappable snore detector *(shipped: `energy-heuristic-v1-spectral` — energy/band heuristic + spectral flatness/harmonicity and breath-rhythm gates; the YAMNet-mapped model is Phase 2)*, snore + loud-noise events (cough/speech classification arrives with the model)
 - Night timeline + clip playback + user labels
 - Morning report: time in bed, snoring summary (time, share, tiers, score), acoustic event counts, integrity notes, baseline context
 - Clinical baseline structured read-only entry (HUG numbers)
@@ -55,7 +55,7 @@ Related: [Product vision](PRODUCT_VISION.md) · [MVP scope](MVP_SCOPE.md) (Phase
 
 **Goal:** bring the other data layers in — wearables, factors, clinical comparison, export.
 
-- **Health Connect integration:** import sleep sessions (device-reported), nocturnal HR/HRV (M10/M11), vendor SpO₂ (M12, Tier 2 display rules), vendor sleep stages (M13, context-only) — all land as Measurement rows via `WearableSource`, `method = DEVICE_REPORTED`; Health Connect is on-device IPC (no INTERNET)
+- **Health Connect integration:** import sleep sessions (device-reported), nocturnal HR/HRV (M10/M11), vendor SpO₂ levels (M12, device-reported levels only), vendor sleep stages (M13, context-only) — all land as Measurement rows via `WearableSource`, `method = DEVICE_REPORTED`; Health Connect is on-device IPC (no INTERNET)
 - **Garmin import — SHIPPED EARLY (first slice of this phase):** Personal API key in Android Keystore, on-demand pull of sleep/HRV/Body Battery/resting HR for one date, raw JSON in `raw_payload`, report labeled "Garmin estimate" (docs/GARMIN_INTEGRATION.md). Still open from this item: Health Connect, FIT/CSV file-import fallback
 - **Lifestyle factor logging UI:** weight, tirzepatide dose, alcohol, caffeine, exercise, stress, pain, notes ([DATA_MODEL.md](DATA_MODEL.md) §3.6)
 - **Clinical comparison view:** baseline metrics side by side with longitudinal trends under the §4 framing ("correlation and context — not equivalence")
@@ -64,7 +64,7 @@ Related: [Product vision](PRODUCT_VISION.md) · [MVP scope](MVP_SCOPE.md) (Phase
 
 **Effort:** 4–8 weeks.
 
-**Success criteria:** a wearable + factors timeline for 14+ consecutive nights; export opens correctly in Sheets/LibreOffice with provenance intact; comparison view copy passes the wording rules; still no INTERNET permission.
+**Success criteria:** a wearable + factors timeline for 14+ consecutive nights; export opens correctly in Sheets/LibreOffice with provenance intact; comparison view copy passes the wording rules; network traffic still limited to the single Garmin host allowlist.
 
 **Defers:** associations/insight ranking (Phase 4), any score combining phone + wearable data numerically.
 
@@ -91,7 +91,7 @@ Related: [Product vision](PRODUCT_VISION.md) · [MVP scope](MVP_SCOPE.md) (Phase
 - **Validation plan for breathing indicators (M7/M8):** prospective comparison window against a follow-up HUG sleep study — run the app nightly around the study, compare indicator vs. PSG-scored events with agreement statistics (sensitivity/specificity at personal thresholds); promotion only if the numbers justify it, otherwise demote or keep experimental indefinitely
 - **Sonar evaluation (M9):** device-specific bench test (accuracy across distances/positions), pet/hearing safety review, battery impact — ship only behind an experimental opt-in, or reject
 - **Optional feature cache / on-device personalization research:** feature-store experiments for future model work; per-user fine-tuning beyond thresholds stays research-grade until proven
-- **Clinician share links / networked anything:** only if a concrete need arrives — this is the first feature that would require the INTERNET permission; must pass a full privacy review against [PRIVACY_AND_REGULATORY.md](PRIVACY_AND_REGULATORY.md) before design starts
+- **Clinician share links / networked anything:** only if a concrete need arrives — this would be the first feature to add a networked host beyond the Garmin allowlist; it must pass a full privacy review against [PRIVACY_AND_REGULATORY.md](PRIVACY_AND_REGULATORY.md) before design starts
 
 **Effort:** open-ended, research-paced.
 
@@ -100,7 +100,7 @@ Related: [Product vision](PRODUCT_VISION.md) · [MVP scope](MVP_SCOPE.md) (Phase
 ## Cross-phase gates (every release)
 
 1. Measurement tiers unchanged or changed only via §7 change control.
-2. No INTERNET permission (until an approved Phase 5 feature changes that deliberately).
+2. No networked host beyond the single Garmin Personal API allowlist (`personal.connectapi.garmin.com`), until an approved feature deliberately changes that through privacy review.
 3. Battery ≤ 10%/night and thermal gates still pass on the reference device.
 4. Disclaimer copy audit: forbidden terms ([MEASUREMENT_RELIABILITY.md](MEASUREMENT_RELIABILITY.md) §3) absent from non-disclaimer strings.
 5. Data-loss drill: forced process-death recovery still works.

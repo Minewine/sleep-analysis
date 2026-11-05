@@ -1,8 +1,8 @@
 package com.sleepanalysis.monitoring.detection
 
 /**
- * Swappable detection interface (docs/MVP_SCOPE.md F4). Phase 1 ships an energy/band heuristic;
- * Phase 2 swaps in a TFLite model (e.g. YAMNet-mapped or a custom log-mel CNN) without touching
+ * Swappable detection interface (docs/MVP_SCOPE.md F4). Phase 1 ships the
+ * energy-heuristic-v1-spectral heuristic (see DetectorConfig); Phase 2 swaps in a TFLite model (e.g. YAMNet-mapped or a custom log-mel CNN) without touching
  * the capture pipeline, storage, or report logic.
  */
 interface SnoreDetector {

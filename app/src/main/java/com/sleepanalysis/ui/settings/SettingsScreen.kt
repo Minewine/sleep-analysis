@@ -59,6 +59,7 @@ import com.sleepanalysis.ui.components.formatMinutesOfDay
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.time.LocalDate
+import java.time.ZoneId
 import java.time.ZonedDateTime
 import javax.inject.Inject
 import kotlinx.coroutines.Dispatchers
@@ -252,7 +253,9 @@ class SettingsViewModel @Inject constructor(
 
     fun importForDate(date: String) {
         val parsed = runCatching { LocalDate.parse(date) }.getOrNull() ?: return
-        viewModelScope.launch { importManager.importForDate(parsed) }
+        // Manual import: the date is picked as shown on this device, so the device zone is
+        // the correct explicit choice (the session report uses the session zone instead).
+        viewModelScope.launch { importManager.importForDate(parsed, ZoneId.systemDefault()) }
     }
 }
 

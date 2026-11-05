@@ -20,7 +20,7 @@ A reliable overnight recorder with an honest morning report ([docs/MVP_SCOPE.md]
 
 - **Overnight recording** — foreground service with persistent notification and elapsed-time chronometer, AudioRecord 16 kHz mono capture, manual start/stop, thermal throttling (analysis every 2nd hop at MODERATE+), pre-flight storage check. If the process dies overnight, the next launch shows an explicit *interrupted night* banner (with how much was saved) and finalizes only when you confirm — never silent auto-recovery.
 - **Local storage (Room)** — `SleepSession`, `Measurement` (full provenance: timestamp, source, method, type, unit, value, confidence, model version, `isClinical`), `AcousticEvent` (+ clip refs), `ClinicalBaseline` (immutable: insert-only DAO + SQL triggers), per-night and delete-all.
-- **Basic acoustic analysis** — swappable `SnoreDetector` interface; shipped v0 is a documented energy/band-ratio heuristic (relative dBFS + rolling noise floor + low-band ratio), event shaping (hysteresis, min duration, gap merging), per-event confidence and decision-input record (`features_json`, debug visibility), ≤ 8 s WAV clips for detected events. Clip persistence is budgeted (`ClipPolicy`): a relative level floor (mean must clear the rolling noise floor + 10 dB, never under a −60 dBFS hard floor — so silent-room rumble is downgraded to OTHER_NOISE and never clipped or labeled SNORE, and the gate self-calibrates to louder rooms), +6 dB stricter during the first 30 min of capture (settling window), max 8 clips/hour so bedtime noise can't starve the night, 50/night backstop (retention-controlled). Full-night audio is **never** persisted.
+- **Basic acoustic analysis** — swappable `SnoreDetector` interface; shipped `energy-heuristic-v1-spectral`: the v0 energy/band-ratio heuristic (relative dBFS + rolling noise floor + low-band ratio) plus two spectral gates (spectral flatness + harmonic ratio via the `monitoring/features/` FFT — tonal snore energy vs broadband noise) and a breath-cycle rhythm gate (adjacent windows of one periodic train are believed; isolated spikes are not), 4 s train merging (breath-pause cadence), thresholds tuned offline with the fixture evaluator on dogfood clips; event shaping (hysteresis 2-in/4-out windows, min duration, gap merging), per-event confidence and decision-input record (`features_json`, debug visibility — including the spectral gate means since 2026-11-05), ≤ 10 s WAV clips for detected events. Clip persistence is budgeted (`ClipPolicy`): a relative level floor (mean must clear the rolling noise floor + 10 dB, never under a −60 dBFS hard floor — so silent-room rumble is downgraded to OTHER_NOISE and never clipped or labeled SNORE, and the gate self-calibrates to louder rooms), +6 dB stricter during the first 30 min of capture (settling window), max 15 clips/hour so bedtime noise can't starve the night, 150/night backstop with a 15-clip loudness reserve so the loudest events always get a clip, (retention-controlled). Full-night audio is **never** persisted.
 - **Morning report (Compose)** — time in bed, snore score, snoring time/share/intensity breakdown, interactive night timeline (tap → clip playback), hourly snoring bars, session-integrity notes, mandatory disclaimer card, read-only clinical baseline context. A **session health** section shows capture statistics (analysis windows processed/skipped, clips saved, thermal throttling) with plain-language health warnings when the capture looks degraded, links to the per-session text log, and lets you add short **morning notes** (user context, never a measurement).
 - **Clinical baseline** — structured read-only entry of study nights (date, lab, TST, efficiency, arousal index, N3 %, AHI, notes, source-document reference); corrections are new entries, never edits.
 - **Privacy basics** — first-launch disclaimer (must accept), mic-active indicator on Home + persistent notification, `allowBackup=false`, app-private storage only.
@@ -42,7 +42,6 @@ A reliable overnight recorder with an honest morning report ([docs/MVP_SCOPE.md]
 | [docs/NEXT_STEPS.md](docs/NEXT_STEPS.md) | Prioritized plan; P0 = first overnight test checklist |
 | [docs/PRIVACY_AND_REGULATORY.md](docs/PRIVACY_AND_REGULATORY.md) | On-device rules, deletion controls, disclaimer copy, Swiss/EU MDR notes |
 | [docs/GARMIN_INTEGRATION.md](docs/GARMIN_INTEGRATION.md) | Garmin Personal API: auth, endpoints, mapping, security, verification checklist |
-| `docs/Sleep_App_Proposal_Michael_the app author.docx` | Original proposal — refined by the docs above |
 
 ## Tech stack
 
@@ -55,10 +54,14 @@ Prerequisites:
 - Android Studio (current stable) with bundled JDK 17+, **or** JDK 17+ + Android SDK with platform 35 and build-tools 35
 - A real device with a microphone on **Android 11+** — overnight capture cannot be tested on an emulator
 
+CI (GitHub Actions) runs the same gates on every PR: assemble, unit tests, Android lint, permission/forbidden-terms/hygiene/network-host checks, ruff, pytest.
+
 ```bash
 git clone <repo-url> && cd sleep-analysis
 ./gradlew :app:assembleDebug        # debug APK at app/build/outputs/apk/debug/
 ./gradlew :app:testDebugUnitTest    # unit tests (detector, event shaping, scoring, claim policy, report, capture stats, session logger, WAV)
+./gradlew :app:connectedDebugAndroidTest  # Room migration test (needs a device or emulator)
+uv run pytest                       # Python tooling tests (tools/; uv-managed env, see pyproject.toml)
 ```
 
 Or open the project in Android Studio and press Run.
@@ -76,30 +79,35 @@ On the device:
 ```
 sleep-analysis/
 ├── README.md                 ← you are here
-├── docs/                     # specification set + original proposal + HUG PDFs
+├── docs/                     # specification set
 └── app/src/main/java/com/sleepanalysis/
     ├── monitoring/           # service (FGS), audio engine, detectors, event shaping, scheduled recording
-    ├── domain/               # claim policy (tiers), scoring, report assembly — pure Kotlin
+    │   ├── features/         # FFT + spectral features (flatness, harmonicity) for the v1 detector
+    │   ├── replay/           # offline clip replay, feature-for-feature identical to the live loop
+    │   └── eval/             # FixtureEvaluator: labeled clips → per-class precision/recall
+    ├── domain/               # claim policy (tiers), scoring, report assembly, night-date anchoring — pure Kotlin
     ├── data/                 # Room entities/DAOs, repositories, MeasurementRecorder, clip store, session logs, prefs
     ├── ui/                   # Compose screens: onboarding, home, report (+ session log), baseline, history, factor log, settings
+    ├── di/                   # Hilt module (provides the swappable SnoreDetector)
     └── work/                 # RetentionWorker
 ```
 
-Key swap point for Phase 2: `di/AppModule.provideSnoreDetector()` — replace the energy heuristic with a TFLite-backed `SnoreDetector`; capture, storage, and reports are untouched.
+Key swap point for Phase 2: `di/AppModule.provideSnoreDetector()` — replace the v1-spectral heuristic with a TFLite-backed `SnoreDetector`; capture, storage, and reports are untouched.
 
 ## Known limitations (Phase 1, by design)
 
-- **Detection quality is v0.** The energy/band heuristic has known false-positive modes (speech near the phone, broadband household noise) and may miss distant snoring. Clip playback + event labels exist so you can verify; labels feed Phase 2 calibration. Fixture-based precision/recall targets (≥ 0.80 / ≥ 0.70) are a Phase 2 gate, not yet met/measured.
+- **Detection quality is heuristic, not learned.** `energy-heuristic-v1-spectral` adds spectral flatness/harmonicity and breath-rhythm gates on top of the v0 energy/band heuristic, which removed the broadband-household-noise false positives seen in dogfooding — but speech close to the phone is also tonal and rhythmic, and very distant snoring may be missed. Clip playback + event labels exist so you can verify; labels feed Phase 2 calibration. Fixture-based precision/recall targets (≥ 0.80 / ≥ 0.70) are a Phase 2 gate, measured so far only on the small dogfood label set, not met/formally validated.
 - **Only snoring and loud-noise events.** Cough/speech classification needs the Phase 2 model; the schema already supports them.
 - **No sleep/wake estimate.** Time in bed (session bounds) only — movement-based estimation arrives with the accelerometer in Phase 2.
 - **No breathing indicators at all** — not even experimental ones (deliberately deferred to Phase 2 behind the experimental toggle).
 - **Report is computed, not snapshotted.** Reports are derived live from events (they exist for the 90-day retention window); the persisted Report-snapshot table from docs/DATA_MODEL.md §3.7 is deferred.
-- **Clip timestamps have ~0.5 s granularity** and clip retention covers the last 8 s of each event.
+- **Clip timestamps have ~0.5 s granularity** and clip retention covers the last 10 s of each event.
 - **A partial wake lock is held all night** (reliability over battery; see MonitorService docs). Quality gate: ≤ 10 %/8 h — measure in dogfood and drop the lock if the audio path alone proves sufficient.
 - **Retention settings are stored but not yet editable** — `DataStore` holds clips/sessions retention (defaults: clips 7 days, sessions 90 days) and the worker reads it; the settings UI is still pending; per-night and delete-all exist.
-- **Device/reroute handling is basic.** A mid-night audio-device change (headset unplug) is not actively detected; capture errors finalize the session as interrupted. Process death surfaces an explicit interrupted-night banner on next launch — finalization is user-confirmed, and a recovered report covers only up to the last saved event. If the system restarts the killed service (START_STICKY), the same session resumes: event timestamps use the new engine's first-sample clock, capture stats accumulate across restarts (heartbeat-persisted), and the per-night clip cap counts the whole session. Ambient noise median/p95 after a restart cover only the post-restart segment.
+- **Device/reroute handling is basic.** A mid-night audio-device change (headset unplug) is not actively detected; capture errors finalize the session as interrupted. Process death surfaces an explicit interrupted-night banner on next launch — finalization is user-confirmed, and a recovered report covers only up to the last saved event. If the system restarts the killed service (START_STICKY), capture does **not** silently auto-resume: on Android 11+ a background restart has no while-in-use microphone access (it would record silence), so the service posts a high-priority *recording interrupted* notification whose **Resume** action (a user tap — the interaction that grants mic access) restarts capture into the same session with stats carried over; if you never tap it, the Home interrupted-night banner handles finalize.
 - **Capture statistics only exist for sessions recorded after the hardening pass.** Sessions finalized as RECOVERED (engine died with the process) keep whatever progress the 15-minute heartbeat persisted; with no heartbeat saved, the report says so instead of showing warnings.
-- **Schema history.** Room schema export is on; the DB has evolved 1→6 via real migrations (raw payloads, factor log, label timestamps, event features JSON, morning notes) and upgrades in place.
+- **Schema history.** Room schema export is on; the DB has evolved 1→8 via real migrations (raw payloads, factor log, label timestamps, event features JSON, morning notes, interruption flag) and upgrades in place, covered by an instrumented `MigrationTest`.
+- **Garmin re-import replaces per-metric.** Re-importing a night deletes and rewrites only the metrics whose endpoints succeeded in that run (a partial import never wipes previously imported metrics); duplicate rows from double-tapping Import are prevented by design.
 - **Scheduled recording is off by default and alarm-based.** Force-stopping the app cancels its alarms (they re-arm on the next app open or settings change); Android 14+ requires the exact-alarm permission to be granted, or the schedule falls back to an inexact window that Doze can stretch well beyond its ~10 minutes on some devices.
 
 ## License

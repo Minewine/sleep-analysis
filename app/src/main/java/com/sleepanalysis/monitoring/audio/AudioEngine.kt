@@ -405,7 +405,7 @@ class AudioEngine(
                     ClipPolicy.Decision.WRITE, ClipPolicy.Decision.WRITE_LOUD_RESERVE -> {
                         // Gap merging defers delivery: drafts arrive ~3.5 s after endMs (hold
                         // bound endMs + MERGE_GAP_MS + WINDOW_MS + one hop, capped at ~6 s),
-                        // so the 8 s snapshot covers ~4.5 s of the event head — 1.5 s less
+                        // so the 10 s snapshot covers ~6.5 s of the event head
                         // of the event than the pre-merge immediate delivery; acceptable.
                         // Horizon guard (defense in depth): if the event's tail has slid past
                         // the ring horizon anyway (thermally-delayed emission, or a config
@@ -423,7 +423,7 @@ class AudioEngine(
                             if (samples.isNotEmpty()) {
                                 runCatching {
                                     val file: File = clipStore.writeClip(
-                                        sessionId, eventStartEpochMs, samples, config.sampleRate
+                                        sessionId, draft.type, eventStartEpochMs, samples, config.sampleRate
                                     )
                                     clipRelPath = clipStore.relativePath(file)
                                     clipDuration = samples.size * 1000L / config.sampleRate
@@ -479,7 +479,12 @@ class AudioEngine(
         }
     }
 
-    /** Builds an AudioRecord for [source]; null if the source fails to initialize on this device. */
+    /**
+     * Builds an AudioRecord for [source]; null if the source fails to initialize on this device.
+     * The constructor needs RECORD_AUDIO — MonitorService verifies it (and bails with a
+     * user-visible error) before the engine is ever started.
+     */
+    @SuppressLint("MissingPermission") // MonitorService verifies RECORD_AUDIO before start().
     private fun tryInitRecord(source: Int, bufferSize: Int): AudioRecord? {
         val record = AudioRecord(
             source,

@@ -31,6 +31,14 @@ data class EventFeatures(
     val lowBandRatioMean: Double,
     /** Mean rolling noise floor (dBFS) across the event's windows. */
     val noiseFloorDbfsMean: Double,
+    /**
+     * Mean spectral flatness (0..1, 1 = white noise) over the event's analyzed windows — the
+     * v1 gate's primary discriminator, persisted so thresholds can be retuned from real
+     * nights. Null when the producer did not compute spectral features (legacy/stub rows).
+     */
+    val spectralFlatnessMean: Double? = null,
+    /** Mean harmonic ratio (60–250 Hz autocorrelation, 0..1) — null under the same conditions. */
+    val harmonicRatioMean: Double? = null,
 ) {
     fun toJson(): String = JSONObject().apply {
         put("enter_windows", enterWindows)
@@ -42,9 +50,14 @@ data class EventFeatures(
         put("low_band_ratio_peak", lowBandRatioPeak)
         put("low_band_ratio_mean", lowBandRatioMean)
         put("noise_floor_dbfs", noiseFloorDbfsMean)
+        spectralFlatnessMean?.let { put("spectral_flatness_mean", it) }
+        harmonicRatioMean?.let { put("harmonic_ratio_mean", it) }
     }.toString()
 
     companion object {
+        private fun JSONObject.optDoubleOrNull(key: String): Double? =
+            if (has(key) && !isNull(key)) optDouble(key).takeIf { !it.isNaN() } else null
+
         fun fromJson(json: String?): EventFeatures? = runCatching {
             if (json.isNullOrBlank()) return@runCatching null
             val o = JSONObject(json)
@@ -59,6 +72,8 @@ data class EventFeatures(
                 lowBandRatioPeak = o.optDouble("low_band_ratio_peak"),
                 lowBandRatioMean = o.optDouble("low_band_ratio_mean"),
                 noiseFloorDbfsMean = o.optDouble("noise_floor_dbfs"),
+                spectralFlatnessMean = o.optDoubleOrNull("spectral_flatness_mean"),
+                harmonicRatioMean = o.optDoubleOrNull("harmonic_ratio_mean"),
             )
         }.getOrNull()
     }

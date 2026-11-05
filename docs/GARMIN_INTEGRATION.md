@@ -10,12 +10,13 @@ Related: [Privacy & regulatory](PRIVACY_AND_REGULATORY.md) (network posture amen
 
 | In | Out (later phases) |
 |---|---|
-| Manual import for one date (Settings + Report quick action) | Background/scheduled sync |
-| Sleep duration + vendor sleep score (`/sleep-service/sleep/dailySleep`) | SpO₂ (Tier-2 display rules first) |
-| HRV rMSSD nightly average (`/hrv-service/hrv/{date}`) | Stress, respiration, steps |
-| Body Battery (`/wellness-service/wellness/bodyBattery/reports/daily`, fallback from daily summary) | Garmin OAuth (consumer program) — Personal API key only |
-| Resting heart rate + body-battery fallback (`/usersummary-service/v2/dailysummaries`) | Multi-day batch import |
-| Raw JSON stored verbatim | Server-side anything |
+| Manual import for one date (Settings + Report quick action; the report anchors on the **wake date**, DATA_MODEL §5.3) | Background/scheduled sync |
+| Sleep duration, vendor sleep score, stage totals — deep/light/REM/awake (`/sleep-service/sleep/dailySleep`) | Garmin OAuth (consumer program) — Personal API key only |
+| HRV rMSSD nightly average + readings (`/hrv-service/hrv/{date}`) | Multi-day batch import |
+| Body Battery (`/wellness-service/wellness/bodyBattery/reports/daily`, fallback from daily summary) | Steps/activity detail (fetched in the daily summary, not imported) |
+| Daily summary: resting HR, respiration, **SpO₂ levels only** (desaturation counts are never imported — M12/M17), awakenings, nap time, sleep need, sleep-score factor sub-scores (`/usersummary-service/v2/dailysummaries`) | Server-side anything |
+| Sleep stress + daily stress (`/usersummary-service/stats/stress/daily`) | |
+| Raw JSON stored verbatim for every endpoint that returned 2xx | |
 
 ## 2. Key storage (security model)
 
@@ -70,7 +71,7 @@ Parsing (`GarminJsonParsers`) is deliberately tolerant: bounded-depth key search
 ```
 User taps "Import from Garmin" (Report: this night's date · Settings: any date)
   → key present?  no → Error state (no network call)
-  → token exchange → 4 GETs (each fails independently)
+  → token exchange → 5 GETs (each fails independently)
   → HTTP 200 bodies stored in raw_payload
   → tolerant parse → dedupe by type (dedicated endpoint beats summary fallback)
   → recordGarminEstimate per metric

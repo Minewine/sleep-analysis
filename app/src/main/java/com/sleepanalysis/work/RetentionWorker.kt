@@ -2,6 +2,7 @@ package com.sleepanalysis.work
 
 import android.content.Context
 import androidx.hilt.work.HiltWorker
+import androidx.room.withTransaction
 import androidx.work.CoroutineWorker
 import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.PeriodicWorkRequestBuilder
@@ -36,11 +37,18 @@ class RetentionWorker @AssistedInject constructor(
         val now = System.currentTimeMillis()
         val retention = prefs.retention.first()
 
-        // 1. Clips past their retention window → delete rows + files.
+        // 1. Clips past their retention window → clear event references, delete rows, then files.
+        //    The DB changes are one transaction: a crash mid-sweep can never leave acoustic_event
+        //    rows pointing at already-deleted clip rows (DATA_MODEL.md §3.5). Files go after the
+        //    commit — a crash there merely leaves orphans for the guarded sweep in step 4.
         val expiredClips = db.audioClipDao().olderThan(now - retention.clipsRetentionDays * DAY_MS)
         if (expiredClips.isNotEmpty()) {
+            val expiredIds = expiredClips.map { it.id }
+            db.withTransaction {
+                db.acousticEventDao().clearClipIds(expiredIds)
+                db.audioClipDao().deleteByIds(expiredIds)
+            }
             expiredClips.forEach { clipStore.absolutePath(it.filePath).delete() }
-            db.audioClipDao().deleteByIds(expiredClips.map { it.id })
         }
 
         // 2. Sessions past their retention window (events cascade; measurements survive).
@@ -48,6 +56,11 @@ class RetentionWorker @AssistedInject constructor(
 
         // 3. Session logs follow session retention.
         logger.purgeOlderThan(now - retention.sessionRetentionDays * DAY_MS)
+
+        // 3b. Raw Garmin payloads follow session retention too — the one otherwise-unbounded
+        //     store (a real dailySleep/HRV response is ~10-20 KB/day). Vendor metrics
+        //     themselves survive in `measurement`; only the verbatim debug payloads age out.
+        db.rawPayloadDao().deleteOlderThan(now - retention.sessionRetentionDays * DAY_MS)
 
         // 4. Orphan sweep: clip files with no DB row. Guarded (OrphanSweepPolicy): while a
         // session is recording there is a window between writeClip() and the audio_clip insert,

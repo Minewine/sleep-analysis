@@ -1,0 +1,20 @@
+# Python tooling for the sleep-analysis app (tools/): adb export/eval helpers.
+# Stdlib-first runtime (no runtime deps); dev group carries the test/lint stack.
+[project]
+name = "sleep-analysis-tools"
+version = "0.1.0"
+description = "Python tooling for the sleep-analysis Android app (tools/)"
+requires-python = ">=3.12"
+dependencies = []
+
+[dependency-groups]
+dev = ["pytest>=9", "ruff>=0.8"]
+
+[tool.pytest.ini_options]
+# tools/ has no __init__.py and tests `import export_fixtures` — pytest's default
+# "prepend" import mode inserts tools/ on sys.path, which that relies on.
+testpaths = ["tools"]
+addopts = "-q"
+
+[tool.ruff]
+target-version = "py312"

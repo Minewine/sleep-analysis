@@ -24,13 +24,15 @@ Related: [Measurement reliability](MEASUREMENT_RELIABILITY.md) · [Architecture]
 | Data | Location | Persisted | Notes |
 |---|---|---|---|
 | Raw audio stream | Memory (10 s ring buffer) | Never | Only event-triggered slices are written |
-| Event clips (WAV) | `filesDir/clips/<session>/` (app-private) | 7 days default | ≤ 8 s each, capped ~50/night |
+| Event clips (WAV) | `filesDir/clips/<session>/` (app-private) | 7 days default | ≤ 10 s each, capped ~150/night (~19 MB per 50 clips ≈ 48 MB/night) |
 | Per-session log files (text) | `filesDir/logs/session_<id>.log` (app-private) | With their session (90 days default) | Timestamped lifecycle/diagnostic lines only — never audio, never sensor payloads |
 | Database (sessions, events, measurements, reports, baseline) | App-private Room DB | Sessions/events 90 days; measurements indefinite; baseline until delete-all | WAL mode |
 | Clinical source documents | Referenced by path only (`clinical_baseline.source_document`) | Until delete-all | The app never copies the PDF into its storage |
 | Preferences (retention settings, disclaimer acceptance, detection debug toggle; experimental toggle arrives in Phase 2) | DataStore | Until cleared | |
 
-Storage security posture: app sandbox + Android file-based encryption (device lock screen required). `android:allowBackup="false"` and no data-extraction rules — nothing syncs to Google's device backup. App-level clip encryption (SQLCipher or AES for clip files) is an evaluated option in Phase 2 ([Architecture](ARCHITECTURE.md) §10); the DB never contains audio bytes.
+Storage security posture: app sandbox + Android file-based encryption (device lock screen required). `android:allowBackup="false"` **and** `res/xml/data_extraction_rules.xml`, which excludes the `root`, `file`, `database` and `sharedpref` domains from both **cloud backup** and **device-to-device transfer** — no app data syncs to Google's device backup or migrates to a new device (the rules are belt-and-braces alongside `allowBackup`, keeping the exclusion explicit if the flag is ever revisited). App-level clip encryption (SQLCipher or AES for clip files) is an evaluated option in Phase 2 ([Architecture](ARCHITECTURE.md) §10); the DB never contains audio bytes.
+
+**Repo hygiene:** this repository must never contain real sleep audio, device databases, Garmin API responses, or personal reports. Such data lives outside the repo and is passed into analysis tooling by path (e.g. `NIGHT_DATA`, `NIGHT_REPORT_OUT` env vars for `analysis/night_report.py`). `.gitignore` blocks `night-data/`, `analysis/chart_*.png`, `*.wav`, `*.db`, `*.db-wal`, `*.db-shm`, `*.preferences_pb`, and `session_*.log`; a pre-commit guard (`.githooks/pre-commit`, enable with `git config core.hooksPath .githooks`) fails commits that stage those patterns. Clinical PDFs and any document containing real names are out of scope for the repo as well.
 
 ## 3. Permissions
 
@@ -40,9 +42,13 @@ Storage security posture: app sandbox + Android file-based encryption (device lo
 | `FOREGROUND_SERVICE` + `FOREGROUND_SERVICE_MICROPHONE` | Manifest | Monitor service | Mic FGS type declared (API 30+; runtime type enforcement API 34+) |
 | `POST_NOTIFICATIONS` | Runtime (API 33+) | Ongoing recording notification | Part of start flow |
 | `WAKE_LOCK` | Manifest | Partial wake lock held for the recording session | Reliability over battery for overnight capture; quality gate ≤ 10 %/8 h |
+| `SCHEDULE_EXACT_ALARM` | Manifest | Scheduled nightly recording: exact bedtime/end alarms | Inexact ~10-minute fallback when not granted (Android 12+ can withhold it); no data implications |
+| `RECEIVE_BOOT_COMPLETED` | Manifest | Re-arm the nightly schedule after reboot or timezone/clock changes | Receivers never record from boot — they only post the bedtime notification / re-arm alarms |
 | `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` | Manifest | Lets the system battery-exemption dialog open directly from the app | No data implications; sideloaded personal app |
 | `INTERNET` | Manifest (Phase 3 amendment) | Garmin Personal API pulls, user-triggered only | Single host, read-only, no telemetry — rules in [GARMIN_INTEGRATION.md](GARMIN_INTEGRATION.md) §8 |
 | *(nothing else — no location, no storage beyond defaults, no contacts, etc.)* | | | |
+
+The merged manifest (library manifests merged in) contains two additional entries this app never declares: `ACCESS_NETWORK_STATE` (network connectivity state only — pulled in by WorkManager; grants no data access) and the app-namespace `DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION` (signature-protected placeholder androidx core generates for non-exported receivers). Both are allowlisted in `ci/permission-allowlist.txt` and enforced by the `checkPermissionAllowlist` CI gate: any merged permission outside that file fails the build.
 
 Battery-optimization exemption is requested with an in-app rationale (sideloaded personal app; Play's exemption policy not applicable, the rationale UX is kept anyway).
 
@@ -132,7 +138,7 @@ A lint rule flags forbidden clinical terms in `strings.xml` outside approved dis
 | **INTERNET added for Garmin Personal API pull only** | **3 (first slice)** | User-requested wearable data source; single host, user-triggered, read-only; audio still never leaves the device. Full rules: GARMIN_INTEGRATION.md §8 |
 | API key stored in Android Keystore (AES-GCM), never in code/config | 3 | No secrets in source; key material never leaves the hardware keystore |
 | Event clips only, never full-night audio | 1 | Data minimization; storage math (~115 MB/h raw) |
-| `allowBackup = false` | 1 | Keep audio-derived data and the Garmin ciphertext out of cloud device backups |
+| `allowBackup = false` + `data_extraction_rules.xml` (root/file/database/sharedpref excluded from cloud-backup and device-transfer) | 1 | Keep audio-derived data and the Garmin ciphertext out of cloud device backups and cross-device migration |
 | No analytics/crash SDKs | 1 | Single user; local `capture_stats` suffice |
 | Clinical rows insert-only + trigger | 1 | Audit integrity of the platform's anchor data |
 | Clinical rows removable only via delete-all | 1 | Erasure right without weakening immutability in normal use |

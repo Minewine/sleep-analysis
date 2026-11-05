@@ -8,6 +8,8 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.content.IntentFilter
+import android.os.BatteryManager
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
@@ -102,6 +104,9 @@ class MonitorService : Service() {
 
     @Volatile private var activeSessionId = -1L
     @Volatile private var sessionStartEpochMs = 0L
+
+    /** When audio capture actually began (after the start delay) — persisted via capture stats. */
+    @Volatile private var captureStartAtMs = 0L
     @Volatile private var activeModelVersion = SessionRepository.MODEL_VERSION
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -139,21 +144,31 @@ class MonitorService : Service() {
     }
 
     private fun beginRecording(existingSessionId: Long?, source: String = SOURCE_MANUAL) {
-        // Foreground promotion must happen promptly after startForegroundService() — and before
-        // ANY early return: stopSelf() without a prior startForeground() is a RemoteServiceException
-        // on API 26+, and the mic-permission/storage bails below are reachable (permission revoked
-        // after onboarding, storage filled up). [startInForeground] promotes type-less without
-        // RECORD_AUDIO (API 34+ forbids the microphone type then), so this never crashes.
-        startInForeground(System.currentTimeMillis())
-
+        // Pure in-memory re-check FIRST: a redundant start while already Recording/Starting/
+        // Delayed must return WITHOUT re-promoting — a fresh startForeground() would re-post
+        // the FGS notification with a new setWhen and reset the chronometer mid-night. The
+        // authoritative re-check inside the lock below still covers the racy arrivals.
         val current = stateHolder.state.value
         if (current is MonitorState.Recording || current is MonitorState.Starting ||
             current is MonitorState.Delayed
         ) return
 
+        // Foreground promotion must happen promptly after startForegroundService() — and before
+        // ANY early return below: stopSelf() without a prior startForeground() is a
+        // RemoteServiceException on API 26+, and the mic-permission/storage bails below are
+        // reachable (permission revoked after onboarding, storage filled up). Without
+        // RECORD_AUDIO [startInForeground] promotes type-less on API < 34 and skips the
+        // promotion entirely on API 34+ (it would throw there) — the mic bail below then stops
+        // the service, which is crash-safe in both cases (see [startInForeground]).
+        startInForeground(System.currentTimeMillis())
+
         if (ContextCompat.checkSelfPermission(this, android.Manifest.permission.RECORD_AUDIO) !=
             android.content.pm.PackageManager.PERMISSION_GRANTED
         ) {
+            // This is also the promotion-skipped path on API 34+ (no startForeground happened
+            // there at all — see [startInForeground]): stopSelf() is crash-safe on 34+ (Android
+            // 12+ tolerates it after startForegroundService()), and below 34 the type-less
+            // promotion is removed again by stopForegroundStop() first.
             stateHolder.set(MonitorState.StartError(getString(R.string.onboarding_mic_rationale)))
             stopForegroundStop()
             stopSelf()
@@ -179,8 +194,9 @@ class MonitorService : Service() {
                 stateHolder.set(MonitorState.Starting)
                 try {
                     // Master switch (design: recording controls) — defense in depth: Home disables
-                    // the button and the scheduler never arms when it is off. Only gates new
-                    // starts; sticky recovery of an existing session still resumes.
+                    // the button and the scheduler never arms when it is off, and
+                    // [resumeInterruptedSession] applies the same switch to the interrupted-
+                    // notification resume. Only gates starting, never force-stops an active night.
                     if (existingSessionId == null && !prefs.recordingEnabledNow()) {
                         Log.w(TAG, "start blocked: recording is disabled (source=$source)")
                         stateHolder.set(MonitorState.Idle)
@@ -254,7 +270,7 @@ class MonitorService : Service() {
                         }
                         return@withLock
                     }
-                    beginCaptureLocked(existingSessionId, sessionId)
+                    beginCaptureLocked(existingSessionId, sessionId, captureStartAt)
 
                     if (existingSessionId != null) {
                         // The session predates this engine — count the notification from its start.
@@ -277,7 +293,7 @@ class MonitorService : Service() {
      * after the delay elapses — always with [beginEndMutex] held. Re-validates the world first:
      * during the delay a Stop, the scheduled end, or a finalize may have closed the session.
      */
-    private suspend fun beginCaptureLocked(existingSessionId: Long?, sessionId: Long) {
+    private suspend fun beginCaptureLocked(existingSessionId: Long?, sessionId: Long, captureStartAtMs: Long) {
         val session = sessionRepository.session(sessionId)
         if (session == null || session.endedAt != null) {
             // A concurrent finalize (stop during delay, banner confirm) won the race —
@@ -307,6 +323,7 @@ class MonitorService : Service() {
         )
         // Visible to the capture thread before the first samples arrive (see field docs).
         engine = newEngine
+        this.captureStartAtMs = captureStartAtMs
         newEngine.start()
         // The thermal listener was registered before this engine existed, and the system does
         // not re-broadcast the current status — a phone already ≥ MODERATE would record
@@ -331,7 +348,7 @@ class MonitorService : Service() {
                 logger.log(sessionId, "capture_start_skipped", "state=${current::class.simpleName}")
                 return@withLock
             }
-            beginCaptureLocked(existingSessionId, sessionId)
+            beginCaptureLocked(existingSessionId, sessionId, expectedCaptureStartAt)
         }
     }
 
@@ -363,11 +380,14 @@ class MonitorService : Service() {
                         sessionId, "recording_stop",
                         "source=$source status=$status windows=${it.windowsProcessed} skipped=${it.windowsSkipped} " +
                             "clips=${it.clipCount} runClipBytes=${it.clipBytesTotal} gateSkip=${it.levelGateSkipped} " +
-                            "thermalEvents=${it.thermalThrottleEvents}"
+                            "thermalEvents=${it.thermalThrottleEvents} " + batteryTelemetry()
                     )
                 }
                 val finalized = try {
-                    sessionRepository.finalizeSession(sessionId, status, stats, activeModelVersion)
+                    sessionRepository.finalizeSession(
+                        sessionId, status, stats, activeModelVersion,
+                        captureStartAtMs = captureStartAtMs,
+                    )
                 } catch (t: Throwable) {
                     logger.log(sessionId, "finalize_failed", "${t.javaClass.simpleName}: ${t.message}")
                     false
@@ -396,27 +416,57 @@ class MonitorService : Service() {
      * session stays open (the Home interrupted-night banner offers finalize) and a
      * high-priority notification asks the user to tap to resume/restart — the tap is the
      * user-interaction path that grants mic access.
+     *
+     * The sticky restart of a previously-foreground service is delivered with
+     * startForegroundService() semantics, so the service MUST call startForeground() before it
+     * stops ("did not then call startForeground" crash on API 26+): [startInForeground] runs
+     * first, and [stopForegroundStop] removes the FGS notification again before [stopSelf] —
+     * the high-priority interrupted notification (id 1043) survives as the user-facing signal.
      */
     private suspend fun surfaceInterruptionOrStop() {
+        startInForeground(System.currentTimeMillis())
         val open = sessionRepository.findOpenSession()
         if (open != null && activeSessionId < 0) {
             InterruptedNotification.show(this)
         }
+        stopForegroundStop()
         stopSelf()
     }
 
     /**
      * Interrupted-notification Resume action: the user-tap path that both grants mic access
      * (Android 11+) and keeps the same-session resume plumbing (statsCarry,
-     * markResumedAfterInterruption) intact.
+     * markResumedAfterInterruption) intact. Gated by [resumeDecision].
      */
     private suspend fun resumeInterruptedSession() {
         val open = sessionRepository.findOpenSession()
-        if (open == null) {
-            stopSelf()
-            return
+        when (resumeDecision(openSessionId = open?.id ?: 0L, recordingEnabled = prefs.recordingEnabledNow())) {
+            ResumeDecision.RESUME -> open?.let {
+                beginRecording(existingSessionId = it.id, source = SOURCE_RESUMED)
+            }
+            ResumeDecision.BLOCKED -> {
+                // Master switch gates manual starts, scheduled starts AND resume: with recording
+                // disabled capture must not start. The session stays open and the interrupted
+                // notification stays up — it remains the user's re-entry point, and the Home
+                // banner flow (finalize/resume) still works. A lingering tap must never stop the
+                // service under a live engine, though (beginRecording's re-check would have
+                // returned early instead).
+                Log.w(TAG, "resume blocked: recording is disabled (session=${open?.id})")
+                val current = stateHolder.state.value
+                if (current !is MonitorState.Recording && current !is MonitorState.Starting &&
+                    current !is MonitorState.Delayed
+                ) {
+                    stopSelf()
+                }
+            }
+            ResumeDecision.STALE -> {
+                // The user tapped Resume after the session was already finalized elsewhere
+                // (banner confirm, stale cleanup): nothing to resume — drop the stale banner.
+                Log.w(TAG, "resume ignored: no open session (already finalized)")
+                InterruptedNotification.cancel(this)
+                stopSelf()
+            }
         }
-        beginRecording(existingSessionId = open.id, source = SOURCE_RESUMED)
     }
 
     private val engineListener = object : AudioEngine.Listener {
@@ -463,15 +513,22 @@ class MonitorService : Service() {
     }
 
     /**
-     * Promotes the service to foreground with the recording notification. Either way the
-     * promotion happens, so a bail path's stopSelf() can never trigger the
-     * RemoteServiceException("did not call startForeground") crash on API 26+. The `microphone`
-     * type requires RECORD_AUDIO to be granted on API 34+ (SecurityException otherwise) —
-     * without the permission the promotion is type-less and the caller bails right after.
+     * Promotes the service to foreground with the recording notification, so a bail path's
+     * stopSelf() can never trigger the RemoteServiceException("did not call startForeground")
+     * crash on API 26+. Without RECORD_AUDIO the promotion splits by API level:
+     *  - API < 34: promotes type-less (`0`) — legal pre-34 — and the caller's mic-permission
+     *    bail stops the service right after.
+     *  - API 34+: type-less would be fatal — ServiceCompat passes the type straight through
+     *    (Api34Impl), and on API 34+ with targetSdk 34+ the platform requires at least one
+     *    manifest-declared type / resolves `microphone`, throwing (SecurityException) without
+     *    RECORD_AUDIO. So NO startForeground happens at all; the caller's mic bail stops the
+     *    service instead, which is safe there: Android 12 (S) and above tolerate stopSelf()
+     *    after startForegroundService() without a prior startForeground().
      */
     private fun startInForeground(startedAt: Long) {
         val micGranted = ContextCompat.checkSelfPermission(this, android.Manifest.permission.RECORD_AUDIO) ==
             android.content.pm.PackageManager.PERMISSION_GRANTED
+        if (!micGranted && Build.VERSION.SDK_INT >= 34) return
         ServiceCompat.startForeground(
             this, NOTIFICATION_ID, buildRecordingNotification(startedAt),
             if (micGranted) ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE else 0,
@@ -638,10 +695,13 @@ class MonitorService : Service() {
                     logger.log(
                         activeSessionId, "heartbeat",
                         "windows=${s.windowsProcessed} skipped=${s.windowsSkipped} " +
-                            "clips=${s.clipCount} gateSkip=${s.levelGateSkipped} freeMB=$freeMb$warn"
+                            "clips=${s.clipCount} gateSkip=${s.levelGateSkipped} freeMB=$freeMb " +
+                            batteryTelemetry() + warn
                     )
                     val sessionId = activeSessionId
-                    if (sessionId > 0) sessionRepository.saveCaptureProgress(sessionId, s)
+                    if (sessionId > 0) {
+                        sessionRepository.saveCaptureProgress(sessionId, s, captureStartAtMs)
+                    }
                 }.onFailure {
                     logger.log(activeSessionId, "heartbeat_failed", "${it.javaClass.simpleName}: ${it.message}")
                 }
@@ -652,6 +712,21 @@ class MonitorService : Service() {
     private fun freeStorageMb(): Long = runCatching {
         StatFs(filesDir.absolutePath).availableBytes / (1024 * 1024)
     }.getOrDefault(-1L)
+
+    /**
+     * Battery percentage and charging state for the session log. The ≤ 10 %/8 h quality gate
+     * (MVP_SCOPE A3) was never measurable because nothing recorded the level — every
+     * heartbeat and the stop line now carry it, so a night's drain is one grep away.
+     */
+    private fun batteryTelemetry(): String = runCatching {
+        val bm = getSystemService(Context.BATTERY_SERVICE) as BatteryManager
+        val level = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
+        val status = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+            ?.getIntExtra(BatteryManager.EXTRA_STATUS, -1) ?: -1
+        val charging = status == BatteryManager.BATTERY_STATUS_CHARGING ||
+            status == BatteryManager.BATTERY_STATUS_FULL
+        "batt=${level}% charging=$charging"
+    }.getOrDefault("batt=?%")
 
     private fun thermalName(status: Int = (getSystemService(Context.POWER_SERVICE) as PowerManager).currentThermalStatus): String =
         when (status) {

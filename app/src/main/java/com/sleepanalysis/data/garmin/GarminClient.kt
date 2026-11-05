@@ -4,6 +4,9 @@ import com.sleepanalysis.data.secure.GarminKeyStore
 import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
+import java.time.ZonedDateTime
+import java.time.format.DateTimeFormatter
+import java.time.format.DateTimeParseException
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.Dispatchers
@@ -63,15 +66,23 @@ class GarminClient @Inject constructor(
                 to "/usersummary-service/stats/stress/daily",
         )
         val results = endpoints.map { (path, label) ->
-            val result = httpGet(path, label, token)
+            var result = httpGet(path, label, token)
             if (result.httpStatus == 401) {
-                // Token likely expired — exchange once and retry this endpoint.
+                // Token likely expired — exchange once and retry this endpoint. A FAILED
+                // RE-EXCHANGE marks only this endpoint failed and must not abort the
+                // import: the other endpoints may still succeed (each fails independently,
+                // docs/GARMIN_INTEGRATION.md §6).
                 cachedToken = null
-                token = bearerToken(apiKey)
-                httpGet(path, label, token)
-            } else {
-                result
+                result = try {
+                    token = bearerToken(apiKey)
+                    httpGet(path, label, token)
+                } catch (_: GarminException) {
+                    // Negative status = no HTTP verdict this run (network failure or a
+                    // token re-exchange that never produced a token).
+                    EndpointResult(label, STATUS_NO_HTTP, null)
+                }
             }
+            result
         }
         GarminDayResult(results)
     }
@@ -91,7 +102,7 @@ class GarminClient @Inject constructor(
             throw GarminException("Network unreachable: ${e.message}", e)
         }
         connection.setRequestProperty("Authorization", "ApiKey $apiKey")
-        val (status, body) = readResponse(connection)
+        val (status, body, _) = readResponse(connection)
         if (status != 200) {
             throw GarminException(
                 when (status) {
@@ -109,30 +120,46 @@ class GarminClient @Inject constructor(
         token
     }
 
+    /** One raw HTTP exchange: status, body, and the server's Retry-After hint if it sent one. */
+    private data class RawResponse(val status: Int, val body: String?, val retryAfterHeader: String?)
+
+    /**
+     * Fetches one endpoint with bounded retries: transient I/O failures and rate-limit
+     * verdicts (429/503) are retried up to [GarminRetryPolicy.MAX_ATTEMPTS], backing off
+     * per [GarminRetryPolicy] — honoring Retry-After, never waiting longer than its cap.
+     * After the budget is spent the endpoint fails independently (negative status when no
+     * HTTP verdict was reached) — one flaky endpoint never aborts the import.
+     */
     private suspend fun httpGet(path: String, endpoint: String, token: String): EndpointResult {
-        // One short-backoff retry: a single IOException (offline blip, timeout) must not
-        // permanently fail the endpoint for this import. After the retry the endpoint still
-        // fails independently (docs/GARMIN_INTEGRATION.md §6).
-        return try {
-            getOnce(path, endpoint, token)
-        } catch (_: IOException) {
-            delay(RETRY_BACKOFF_MS)
-            try {
+        var attempt = 0
+        while (true) {
+            attempt++
+            val response = try {
                 getOnce(path, endpoint, token)
             } catch (_: IOException) {
-                // Single endpoint failing (offline, DNS, timeout) must not abort the others.
-                EndpointResult(endpoint, -1, null)
+                null
             }
+            if (response != null && !GarminRetryPolicy.shouldRetry(response.status)) {
+                // Any 2xx counts as success; an empty 204-style body is an absent result,
+                // which the tolerant parsers skip exactly like a missing key.
+                return EndpointResult(
+                    endpoint,
+                    response.status,
+                    response.body?.takeIf { response.status in 200..299 && it.isNotBlank() },
+                )
+            }
+            if (attempt >= GarminRetryPolicy.MAX_ATTEMPTS) {
+                return EndpointResult(endpoint, response?.status ?: STATUS_NO_HTTP, null)
+            }
+            delay(GarminRetryPolicy.backoffMs(attempt, response?.retryAfterHeader))
         }
     }
 
-    private fun getOnce(path: String, endpoint: String, token: String): EndpointResult {
+    private fun getOnce(path: String, endpoint: String, token: String): RawResponse {
         val connection = openConnection("$BASE$path", method = "GET")
         connection.setRequestProperty("Authorization", "Bearer $token")
-        val (status, body) = readResponse(connection)
-        // Any 2xx counts as success; an empty 204-style body is an absent result, which the
-        // tolerant parsers skip exactly like a missing key.
-        return EndpointResult(endpoint, status, body?.takeIf { status in 200..299 && it.isNotBlank() })
+        val (status, body, retryAfter) = readResponse(connection)
+        return RawResponse(status, body, retryAfter)
     }
 
     private fun openConnection(url: String, method: String, accept: String = "application/json"): HttpURLConnection {
@@ -146,12 +173,13 @@ class GarminClient @Inject constructor(
         return connection
     }
 
-    /** Reads body or error stream; the API key/token are never written to logs. */
-    private fun readResponse(connection: HttpURLConnection): Pair<Int, String?> = try {
+    /** Reads body or error stream plus the Retry-After header; the key/token are never logged. */
+    private fun readResponse(connection: HttpURLConnection): Triple<Int, String?, String?> = try {
         val status = connection.responseCode
         val stream = if (status in 200..299) connection.inputStream else connection.errorStream
         val body = stream?.bufferedReader()?.use { it.readText() }
-        status to body
+        val retryAfter = connection.getHeaderField("Retry-After")
+        Triple(status, body, retryAfter)
     } catch (e: IOException) {
         throw e
     } finally {
@@ -168,7 +196,50 @@ class GarminClient @Inject constructor(
         const val TOKEN_PATH = "/personalapitoken-service/personal-api/personal-api-key/token"
         const val CONNECT_TIMEOUT_MS = 10_000
         const val READ_TIMEOUT_MS = 20_000
-        const val RETRY_BACKOFF_MS = 2_000L
+
+        /** Endpoint status meaning "no HTTP verdict this run" (network failure / failed token re-exchange). */
+        const val STATUS_NO_HTTP = -1
         const val DEFAULT_TOKEN_TTL_MS = 5 * 60_000L
+    }
+}
+
+/**
+ * Bounded retry/backoff policy for Garmin endpoints — pure, unit-tested without network.
+ * Garmin rate-limits with 429/503 and a Retry-After header (delta-seconds or RFC 1123
+ * HTTP-date). The header is honored but never beyond [MAX_BACKOFF_MS], an endpoint is never
+ * attempted more than [MAX_ATTEMPTS] times, and without a header the delay grows
+ * exponentially from [DEFAULT_BACKOFF_MS].
+ */
+object GarminRetryPolicy {
+    const val MAX_ATTEMPTS = 3
+    const val DEFAULT_BACKOFF_MS = 2_000L
+    const val MAX_BACKOFF_MS = 15_000L
+
+    fun shouldRetry(status: Int): Boolean = status == 429 || status == 503
+
+    /**
+     * Delay before retry attempt [attempt] (1-based): Retry-After when the server sent one
+     * (bounded), else exponential 2 s → 4 s → capped. Never negative.
+     */
+    fun backoffMs(attempt: Int, retryAfterHeader: String?, nowMs: Long = System.currentTimeMillis()): Long {
+        retryAfterMs(retryAfterHeader, nowMs)?.let { return it.coerceIn(0, MAX_BACKOFF_MS) }
+        val exponential = DEFAULT_BACKOFF_MS shl (attempt - 1).coerceIn(0, 4)
+        return exponential.coerceAtMost(MAX_BACKOFF_MS)
+    }
+
+    /**
+     * Retry-After as a delay in ms: a non-negative delta-seconds value or a future RFC 1123
+     * HTTP-date; null when the header is absent, unparsable, or already in the past.
+     */
+    fun retryAfterMs(header: String?, nowMs: Long = System.currentTimeMillis()): Long? {
+        if (header.isNullOrBlank()) return null
+        header.trim().toLongOrNull()?.let { seconds -> return (seconds * 1000L).takeIf { it >= 0 } }
+        return try {
+            val at = ZonedDateTime.parse(header.trim(), DateTimeFormatter.RFC_1123_DATE_TIME)
+                .toInstant().toEpochMilli()
+            (at - nowMs).takeIf { it > 0 }
+        } catch (_: DateTimeParseException) {
+            null
+        }
     }
 }

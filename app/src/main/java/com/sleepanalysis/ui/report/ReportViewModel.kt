@@ -14,7 +14,6 @@ import com.sleepanalysis.domain.report.MorningReport
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.File
-import java.time.Instant
 import java.time.ZoneId
 import javax.inject.Inject
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -49,13 +48,15 @@ class ReportViewModel @Inject constructor(
     val garminImportState: StateFlow<GarminImportManager.GarminImportState> =
         garminImportManager.state
 
-    /** Manual import for the calendar day this session started in. */
+    /** Manual import for this night's WAKE date, in the session's own timezone. */
     fun importGarminForThisNight() {
         val r = report.value ?: return
-        val date = Instant.ofEpochMilli(r.startedAt)
-            .atZone(ZoneId.of(r.timeZone)).toLocalDate()
+        val date = com.sleepanalysis.domain.report.NightDates
+            .garminWakeDate(r.startedAt, r.endedAt, r.timeZone)
         viewModelScope.launch {
-            garminImportManager.importForDate(date)
+            // The session's zone, not the device default: timestamps recorded while travelling
+            // or across a DST boundary must land in the wake day's local window.
+            garminImportManager.importForDate(date, ZoneId.of(r.timeZone))
             reload() // pick up re-imported Garmin metrics
         }
     }

@@ -2,9 +2,10 @@ package com.sleepanalysis.data.files
 
 import com.sleepanalysis.monitoring.audio.WavWriter
 import java.io.File
+import java.util.concurrent.atomic.AtomicLong
 
 /**
- * App-private clip storage: `<root>/session_<id>/evt_<startMs>.wav`.
+ * App-private clip storage: `<root>/session_<id>/evt_<type>_<startMs>_<n>.wav`.
  * Retention is enforced by RetentionWorker and delete paths (docs/DATA_MODEL.md §6).
  */
 class ClipStore(private val rootDir: File) {
@@ -17,10 +18,19 @@ class ClipStore(private val rootDir: File) {
 
     fun sessionDir(sessionId: Long): File = File(rootDir, "session_$sessionId")
 
-    /** Writes a PCM16 mono WAV clip; returns the file. Blocking file I/O — call from an IO dispatcher. */
-    fun writeClip(sessionId: Long, eventStartMs: Long, samples: ShortArray, sampleRate: Int): File {
+    /** Process-lifetime clip counter — disambiguates events that share a start timestamp. */
+    private val clipCounter = AtomicLong()
+
+    /**
+     * Writes a PCM16 mono WAV clip; returns the file. Blocking file I/O — call from an IO
+     * dispatcher. Names are collision-safe: two events can share an eventStartMs (a snore
+     * ending exactly as another event begins, merged windows), so the name carries the event
+     * type and a monotonic counter, never just the timestamp.
+     */
+    fun writeClip(sessionId: Long, eventType: String, eventStartMs: Long, samples: ShortArray, sampleRate: Int): File {
         val dir = sessionDir(sessionId).apply { mkdirs() }
-        val file = File(dir, "evt_$eventStartMs.wav")
+        val name = "evt_${eventType.lowercase()}_${eventStartMs}_${clipCounter.incrementAndGet()}.wav"
+        val file = File(dir, name)
         WavWriter.writePcm16Mono(file, samples, sampleRate)
         return file
     }

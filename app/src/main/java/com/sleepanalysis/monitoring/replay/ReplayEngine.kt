@@ -25,10 +25,13 @@ import kotlin.math.sqrt
  *  - the one-pole low-pass state (`lp`) is reset to 0.0 at each window start, as AudioEngine's
  *    analyzeWindow keeps it local per call — replay reproduces that (including its per-window
  *    transient) rather than a "better" continuous filter.
- *  - the noise-floor ring starts empty on each replay, so early windows of a clip see a floor
- *    built only from that clip's own first windows (the live engine's floor is warm from
- *    minutes of prior audio). With 8 s clips and a 240-window ring the floor is effectively
- *    the clip's own low percentile — documented limitation when comparing with live events.
+ *  - the noise-floor ring can be pre-filled via [Config.initialFloorDbfs] — the session's
+ *    recorded noise floor (export_fixtures writes the median event floor into the manifest).
+ *    Without it the ring starts empty and every window of the clip sees a floor built from
+ *    the clip's own audio: SNR collapses to ~0 and the detector goes silent on exactly the
+ *    clips a real night labeled as snoring (measured 2026-11-05: recall 0 across ALL classes
+ *    with a cold ring, despite a live floor −84 dBFS vs snore peaks −11..−30 dBFS). The live
+ *    engine's floor is warm from minutes of prior room tone; replay must be too.
  *
  * Pure JVM, no Android imports — runs in plain unit tests.
  */
@@ -47,6 +50,12 @@ class ReplayEngine(
         val lowPassAlpha: Double = DetectorConfig.LOW_PASS_ALPHA,
         val noiseFloorWindowCount: Int = DetectorConfig.NOISE_FLOOR_WINDOW_COUNT,
         val noiseFloorPercentile: Double = DetectorConfig.NOISE_FLOOR_PERCENTILE,
+        /**
+         * Room-tone floor (dBFS) pre-filled into the noise-floor ring — the live steady state
+         * after minutes of quiet audio. Null (default) keeps the historical cold-start ring,
+         * which makes event-only clips unreplayable (see class KDoc).
+         */
+        val initialFloorDbfs: Double? = null,
         /** Consecutive active windows required to open an event — mirrors AudioEngine's Config. */
         val enterWindows: Int = DetectorConfig.ENTER_WINDOWS,
         /** Relative clip-gate margin — mirrors AudioEngine's Config (evaluated at finalization). */
@@ -95,6 +104,12 @@ class ReplayEngine(
         val noiseFloorRing = DoubleArray(config.noiseFloorWindowCount)
         var noiseFloorIndex = 0
         var noiseFloorCount = 0
+        config.initialFloorDbfs?.let { warm ->
+            // Steady-state floor: the live engine's ring is dominated by minutes of room tone,
+            // so a constant pre-fill reproduces the percentile exactly.
+            noiseFloorRing.fill(warm)
+            noiseFloorCount = noiseFloorRing.size
+        }
 
         var windowStart = 0
         while (true) {

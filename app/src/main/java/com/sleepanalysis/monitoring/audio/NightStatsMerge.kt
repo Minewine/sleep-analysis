@@ -53,12 +53,18 @@ fun AudioEngine.NightStats.withCarry(carry: StatsCarry?): AudioEngine.NightStats
 /**
  * Serializes capture stats for the session row (docs/DATA_MODEL.md §5.1). [clipCountOverride]
  * lets the finalizer store the DB-accurate clip count, which spans all engines of the session.
- * Pure — shared by heartbeat progress writes and finalize. v2 adds thermal_skipped_hops
- * (arrays of [startEpochMs, endEpochMs, hops]); the parser tolerates its absence.
+ * [savedAtMs] stamps heartbeat progress writes so a recovered session's true capture end is
+ * bounded by the last verifiably-live moment, not by tap-to-stop. [captureStartMs] records
+ * when audio capture actually began (after the start delay) so health warnings can compare
+ * processed windows against the real capture window instead of tap-to-stop wall time. Pure —
+ * shared by heartbeat progress writes and finalize. v2 adds thermal_skipped_hops (arrays of
+ * [startEpochMs, endEpochMs, hops]); the parser tolerates their absence.
  */
 fun captureStatsJson(
     stats: AudioEngine.NightStats?,
     clipCountOverride: Int? = null,
+    savedAtMs: Long? = null,
+    captureStartMs: Long? = null,
 ): String {
     if (stats == null) return """{"schema_version":1}"""
     val clipCount = clipCountOverride ?: stats.clipCount
@@ -67,11 +73,14 @@ fun captureStatsJson(
             stats.skippedHopSpans.joinToString(",") {
                 "[${it.startEpochMs},${it.endEpochMs},${it.hops}]"
             } + "]"
+    val savedAtJson = savedAtMs?.let { ""","saved_at_ms":$it""" } ?: ""
+    val captureStartJson = captureStartMs?.let { ""","capture_started_at":$it""" } ?: ""
     return """{"schema_version":2,"windows_processed":${stats.windowsProcessed},""" +
         """"windows_skipped":${stats.windowsSkipped},""" +
         """"ambient_dbfs_median":${stats.ambientDbfsMedian ?: "null"},""" +
         """"ambient_dbfs_p95":${stats.ambientDbfsP95 ?: "null"},""" +
         """"clip_count":$clipCount,""" +
         """"thermal_throttle_events":${stats.thermalThrottleEvents},""" +
-        """"level_gate_skipped":${stats.levelGateSkipped}$spansJson}"""
+        """"level_gate_skipped":${stats.levelGateSkipped}""" +
+        savedAtJson + captureStartJson + spansJson + "}"
 }

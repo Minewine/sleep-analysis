@@ -37,20 +37,21 @@ class SessionLogger @Inject constructor(private val rootDir: File) {
         logFile(sessionId).delete()
     }.getOrDefault(false)
 
-    /** Deletes every session log file. Returns the number removed. Never throws. */
+    /** Deletes every session log file. Returns the number actually removed (a delete that fails is not counted). Never throws. */
     fun deleteAll(): Int = runCatching {
         rootDir.listFiles()
             ?.filter { it.isFile }
-            ?.onEach { it.delete() }
-            ?.size
+            ?.count { it.delete() }
     }.getOrNull() ?: 0
 
-    /** Deletes log files last modified before [cutoffMs]. Returns the number removed. Never throws. */
+    /**
+     * Deletes log files last modified before [cutoffMs]. Returns the number actually removed
+     * (a delete that fails is not counted). Never throws.
+     */
     fun purgeOlderThan(cutoffMs: Long): Int = runCatching {
         rootDir.listFiles()
             ?.filter { it.isFile && it.lastModified() < cutoffMs }
-            ?.onEach { it.delete() }
-            ?.size
+            ?.count { it.delete() }
     }.getOrNull() ?: 0
 
     private fun fileName(sessionId: Long) = "session_$sessionId.log"

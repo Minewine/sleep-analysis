@@ -5,7 +5,6 @@ import com.sleepanalysis.monitoring.detection.DetectorConfig
 import com.sleepanalysis.monitoring.detection.SnoreDetector
 import com.sleepanalysis.monitoring.replay.ReplayEngine
 import java.io.File
-import java.io.PrintWriter
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -89,8 +88,9 @@ class FixtureEvaluator {
         entries: List<FixtureEntry>,
         detector: SnoreDetector,
         clipPositiveThreshold: Double = 0.5,
+        initialFloorDbfs: Double? = null,
     ): EvalReport {
-        val replay = ReplayEngine(detector)
+        val replay = ReplayEngine(detector, ReplayEngine.Config(initialFloorDbfs = initialFloorDbfs))
         val scores = mutableListOf<ClipScore>()
         var unlabeled = 0
         var missingFiles = 0
@@ -215,7 +215,8 @@ class FixtureEvaluator {
 
     fun writeJson(report: EvalReport, file: File) {
         file.parentFile?.mkdirs()
-        PrintWriter(file, Charsets.UTF_8).use { it.write(toJson(report).toString(2)) }
+        // writeText, not PrintWriter(File, Charset): that ctor is API 33+ (min is 30).
+        file.writeText(toJson(report).toString(2), Charsets.UTF_8)
     }
 
     /** Compact per-label table for stdout (the `evalFixtures` task / manual runs). */

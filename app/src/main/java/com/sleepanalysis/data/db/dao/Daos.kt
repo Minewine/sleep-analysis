@@ -64,10 +64,23 @@ interface SleepSessionDao {
     suspend fun deleteAll()
 }
 
+/** One clip-backed event with its clip's relative path — the labeling work set. */
+data class ClipBackedEventRow(
+    @androidx.room.Embedded val event: com.sleepanalysis.data.db.entity.AcousticEventEntity,
+    val clipPath: String,
+)
+
 @Dao
 interface AcousticEventDao {
     @Insert
     suspend fun insert(event: AcousticEventEntity): Long
+
+    @Query(
+        "SELECT e.*, c.filePath AS clipPath FROM acoustic_event e " +
+            "JOIN audio_clip c ON c.id = e.clipId " +
+            "WHERE e.sessionId = :sessionId ORDER BY e.startMs"
+    )
+    suspend fun clipBackedEvents(sessionId: Long): List<ClipBackedEventRow>
 
     @Query("SELECT * FROM acoustic_event WHERE sessionId = :sessionId ORDER BY startMs")
     suspend fun bySession(sessionId: Long): List<AcousticEventEntity>
@@ -77,6 +90,14 @@ interface AcousticEventDao {
 
     @Query("UPDATE acoustic_event SET userLabel = :label, labeledAt = :labeledAt WHERE id = :eventId")
     suspend fun setUserLabel(eventId: Long, label: String?, labeledAt: Long?)
+
+    /**
+     * Retention: clears the clip link of events whose clip rows are being deleted, in the
+     * same transaction as the row deletion (RetentionWorker) — belt-and-braces alongside the
+     * FK's ON DELETE SET_NULL, keeping the clip↔event invariant explicit (DATA_MODEL.md §3.5).
+     */
+    @Query("UPDATE acoustic_event SET clipId = NULL WHERE clipId IN (:clipIds)")
+    suspend fun clearClipIds(clipIds: List<Long>)
 
     @Query("DELETE FROM acoustic_event")
     suspend fun deleteAll()
@@ -134,14 +155,26 @@ interface MeasurementDao {
     )
     suspend fun garminBetween(from: Long, to: Long): List<MeasurementEntity>
 
-    /** Deletes the GARMIN rows of one day window — a re-import replaces them (docs/GARMIN_INTEGRATION.md §6). */
-    @Query("DELETE FROM measurement WHERE sourceType = 'GARMIN' AND periodStart = :periodStart")
-    suspend fun deleteGarminForDay(periodStart: Long)
+    /**
+     * Deletes the GARMIN rows of one day window for the given measurement types ONLY — a
+     * partial re-import (an endpoint that failed this run) must not wipe the other types'
+     * previously imported rows (docs/GARMIN_INTEGRATION.md §6).
+     */
+    @Query(
+        "DELETE FROM measurement WHERE sourceType = 'GARMIN' AND periodStart = :periodStart " +
+            "AND measurementType IN (:types)"
+    )
+    suspend fun deleteGarminForTypes(periodStart: Long, types: List<String>)
 
-    /** Atomic delete-then-insert so a re-import can never duplicate the day's GARMIN rows. */
+    /**
+     * Atomic delete-then-insert so a re-import can never duplicate the day's GARMIN rows. The
+     * delete is scoped to the incoming rows' measurement types: a partial re-import leaves the
+     * other types' rows intact. An empty batch inserts nothing and deletes nothing.
+     */
     @Transaction
     suspend fun replaceGarminForDay(periodStart: Long, rows: List<MeasurementEntity>) {
-        deleteGarminForDay(periodStart)
+        if (rows.isEmpty()) return
+        deleteGarminForTypes(periodStart, rows.map { it.measurementType }.distinct())
         insertAll(rows)
     }
 }
@@ -170,6 +203,9 @@ interface RawPayloadDao {
 
     @Query("SELECT * FROM raw_payload WHERE source = :source AND date = :date ORDER BY endpoint")
     suspend fun forDate(source: String, date: String): List<RawPayloadEntity>
+
+    @Query("DELETE FROM raw_payload WHERE fetchedAt < :cutoff")
+    suspend fun deleteOlderThan(cutoff: Long): Int
 
     @Query("DELETE FROM raw_payload")
     suspend fun deleteAll()

@@ -10,7 +10,9 @@ enum class EventUserLabel(val label: String) {
     COUGH("Cough"),
     SPEECH("Speech"),
     MOVEMENT("Movement"),
-    OTHER_NOT_SNORE("Other / Not snore");
+    OTHER_NOT_SNORE("Other / Not snore"),
+    /** Nothing real on the clip — near-silent tail, mic noise. A negative for every class. */
+    SILENCE("Silence");
 
     companion object {
         fun fromKey(key: String?): EventUserLabel? = entries.firstOrNull { it.name == key }

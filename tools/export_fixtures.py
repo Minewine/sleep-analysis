@@ -11,7 +11,7 @@ re-gain them (docs/NEXT_STEPS.md P2).
 Binary transfers use `adb exec-out` (raw stdout, no PTY), because plain
 `adb shell cat` runs through a pty that mangles 0x0a/0x0d bytes. Each pulled
 clip is additionally verified against the on-device byte count
-(`run-as ... sh -c 'wc -c < file'`, executed inside the app sandbox — the
+(direct `run-as ... wc -c file`, executed inside the app sandbox — the
 device-level shell cannot open app-private paths); on mismatch the pulled file
 is deleted and the clip recorded as failed.
 
@@ -30,6 +30,7 @@ import json
 import sqlite3
 import subprocess
 import sys
+import time
 import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
@@ -77,25 +78,61 @@ def detect_serial() -> str | None:
 
 
 def pull_db(serial: str | None, work_dir: Path) -> Path:
-    """Copies the app database (+ WAL) from the phone into [work_dir]; returns the db path."""
+    """Copies the app database (+ WAL) from the phone into [work_dir]; returns the db path.
+
+    Validates every copy (quick_check + a sanity row count) and retries — a USB flap mid
+    `cat` yields a truncated file that SQLite still opens, silently exporting garbage
+    (observed 2026-11-05: 8 of 148 clips, floor −64 dBFS instead of −84).
+    """
     args = adb_device_args(serial)
     db_path = work_dir / DB_NAME
     wal_path = work_dir / (DB_NAME + "-wal")
-    with db_path.open("wb") as f:
-        # exec-out: raw binary stdout — `adb shell` runs a pty that would CRLF-mangle the db.
-        subprocess.run(
-            [*args, "exec-out", "run-as", APP_PACKAGE, "cat", f"databases/{DB_NAME}"],
-            check=True,
-            stdout=f,
-        )
-    wal = subprocess.run(
-        [*args, "exec-out", "run-as", APP_PACKAGE, "cat", f"databases/{DB_NAME}-wal"],
-        capture_output=True,
-        check=False,  # WAL may not exist; absence is fine
-    )
-    if wal.returncode == 0 and wal.stdout:
-        wal_path.write_bytes(wal.stdout)
-    return db_path
+    last_error: Exception | None = None
+    for attempt in range(1, 4):
+        try:
+            with db_path.open("wb") as f:
+                # exec-out: raw binary stdout — `adb shell` runs a pty that would CRLF-mangle
+                # the db.
+                subprocess.run(
+                    [*args, "exec-out", "run-as", APP_PACKAGE, "cat", f"databases/{DB_NAME}"],
+                    check=True,
+                    stdout=f,
+                    timeout=60,
+                )
+            # The WAL is NOT optional (Room runs WAL mode; on-device it holds most of the
+            # recent writes — 445 KB WAL vs 381 KB main on session 1). A silent failure here
+            # opens a stale main-file snapshot that passes quick_check but is missing the
+            # night's rows. Failure to copy it retries the whole pull.
+            wal = subprocess.run(
+                [*args, "exec-out", "run-as", APP_PACKAGE, "cat", f"databases/{DB_NAME}-wal"],
+                capture_output=True,
+                check=True,
+                timeout=60,
+            )
+            if not wal.stdout:
+                raise RuntimeError("empty WAL copy from device")
+            wal_path.write_bytes(wal.stdout)
+            _validate_db(db_path)
+            return db_path
+        except (subprocess.SubprocessError, sqlite3.DatabaseError) as e:
+            last_error = e
+            print(f"warning: db pull attempt {attempt} failed ({e}); retrying", file=sys.stderr)
+            time.sleep(2)
+    raise RuntimeError(f"db pull failed after 3 attempts: {last_error}")
+
+
+def _validate_db(db_path: Path) -> None:
+    """Rejects truncated/garbage pulls: quick_check must pass and the schema must be ours."""
+    conn = sqlite3.connect(db_path)
+    try:
+        check = conn.execute("PRAGMA quick_check").fetchone()[0]
+        if check != "ok":
+            raise sqlite3.DatabaseError(f"quick_check: {check}")
+        sessions = conn.execute("SELECT COUNT(*) FROM sleep_session").fetchone()[0]
+        if sessions < 1:
+            raise sqlite3.DatabaseError("no sleep_session rows — truncated pull?")
+    finally:
+        conn.close()
 
 
 def fetch_rows(conn: sqlite3.Connection, session_id: int) -> list[dict]:
@@ -157,11 +194,19 @@ def build_entry(row: dict, clip_rel: str) -> dict:
 def write_manifest(
     out_dir: Path, session_id: int, entries: list[dict], now: datetime | None = None
 ) -> Path:
+    floors = sorted(
+        e["features"]["noise_floor_dbfs"]
+        for e in entries
+        if e.get("features") and e["features"].get("noise_floor_dbfs") is not None
+    )
     manifest = {
         "sample_rate": 16000,
-        "clip_ms": 8000,
+        "clip_ms": 10000,
         "exported_at": (now or datetime.now(UTC)).isoformat(),
         "source_session": session_id,
+        # Median rolling noise floor across the session's events (post-gain dBFS) — the
+        # replay's noise-floor pre-roll value, so clips replay with the live SNR (ReplayEngine).
+        "floor_dbfs": round(floors[len(floors) // 2], 2) if floors else None,
         "entries": entries,
     }
     path = out_dir / "manifest.json"
@@ -172,9 +217,11 @@ def write_manifest(
 def remote_size(serial: str | None, rel_path: str) -> int:
     """Byte count of one app-private clip, read on the device.
 
-    The `wc -c < file` redirect runs inside `run-as ... sh -c` so the file is
-    opened as the app user — the on-device shell itself cannot read app-private
-    paths, and without the redirect wc would print the name alongside the count.
+    Direct `run-as ... wc -c <file>` (no `sh -c` redirect): adb joins its
+    arguments with spaces and the ON-DEVICE shell re-parses the whole line, so
+    a quoted `sh -c "wc -c < 'file'"` loses its quoting — the `< file` redirect
+    is applied by the outer shell with the wrong cwd and fails ("can't open").
+    wc prints "count path"; the count comes first, which split()[0] reads.
     """
     out = subprocess.run(
         [
@@ -182,9 +229,9 @@ def remote_size(serial: str | None, rel_path: str) -> int:
             "shell",
             "run-as",
             APP_PACKAGE,
-            "sh",
+            "wc",
             "-c",
-            f"wc -c < '{CLIPS_DIR}/{rel_path}'",
+            f"{CLIPS_DIR}/{rel_path}",
         ],
         check=True,
         capture_output=True,

@@ -46,25 +46,25 @@ import com.sleepanalysis.data.db.entity.EventType
  *
  *    "Provably closed" needs care: a successor draft only EXISTS at its close, which is at
  *    least (enterWindows − 1 + exitWindows) hops after its first pending window. With
- *    MERGE_GAP_MS (2 s) equal to EXIT_WINDOWS×HOP_MS (2 s), comparing the current timestamp
+ *    MERGE_GAP_MS (4 s) vs EXIT_WINDOWS×HOP_MS (2 s), comparing the current timestamp
  *    against deferred.endMs + mergeGapMs alone would expire every held final one hop after
  *    its close — before any successor draft could exist — and no same-type merge would ever
  *    fire. The hold therefore lasts until BOTH machines are idle (no pending and no active
  *    windows — while either is busy a draft may still arrive and merge, checked at absorb
  *    time) AND the timestamp exceeds deferred.endMs + mergeGapMs + [windowMs] (the +windowMs
  *    accounts for event starts being backdated one window from the first pending stamp).
- *    With the defaults this emits ≤ ~3.5 s after the event's last active window — inside the
- *    live ring buffer's 8 s clip horizon (see AudioEngine.deliver).
+ *    With the defaults this emits ≤ ~5 s after the event's last active window — inside the
+ *    live ring buffer's 10 s clip horizon (see AudioEngine.deliver).
  *
  *    The idle condition alone could pin a held final indefinitely behind an unrelated open
  *    event (a continuously-open snore spell suppressing the OTHER_NOISE bucket), so a hard
  *    hold cap applies independent of machine-busy: held finals are emitted once the timestamp
- *    exceeds deferred.endMs + [maxHoldMs] (7 s at defaults). A merging successor's draft
+ *    exceeds deferred.endMs + [maxHoldMs] (9 s at defaults). A merging successor's draft
  *    closes at gap + successorSpan + exitSpan after the held final's end, so the cap covers
  *    every successor with span ≤ (exitWindows + 2) hops (3 s — the observed fragment span);
  *    longer downgrade-ambiguous successors are sacrificed by the cap rather than pinning the
  *    held final past the live ring buffer's 8 s clip horizon: emission happens ≤ endMs +
- *    maxHoldMs + one hop = 7.5 s after the tail, 0.5 s inside the ring (AudioEngine.deliver).
+ *    maxHoldMs + one hop = 9.5 s after the tail, 0.5 s inside the 10 s ring (AudioEngine.deliver).
  *
  *    A later same-type draft that does not merge CAN arrive while its predecessor is still
  *    held — expiry uses the hard cap whenever EITHER machine is busy, so e.g. a single
@@ -169,6 +169,9 @@ class EventDetector(
         val lowBandRatioSum: Double,
         val noiseFloorDbfsSum: Double,
         val openWindows: Int,
+        val flatSum: Double,
+        val flatCount: Int,
+        val harmSum: Double,
     )
 
     /** Deferred finals by post-gate-downgrade type — at most one held final per type. */
@@ -184,7 +187,7 @@ class EventDetector(
      * (exitWindows + 2) hops (3 s — the observed session-10 fragment span) the fold lands
      * at ≤ 7 s and survives the cap; longer successors are sacrificed rather than pinning
      * the held final behind a downgrade-ambiguous open event. Delivery stays 0.5 s inside
-     * the live clip ring: emission at ≤ endMs + maxHoldMs + one hop = 7.5 s after the tail
+     * the live clip ring: emission at ≤ endMs + maxHoldMs + one hop = 9.5 s after the tail
      * (ring horizon 8 s — see AudioEngine.deliver; delivery is synchronous on the capture
      * thread, so the bound is exact).
      *
@@ -291,6 +294,9 @@ class EventDetector(
         val ratioPeak = maxOf(sA.lowBandRatioPeak, sB.lowBandRatioPeak)
         val ratioSum = sA.lowBandRatioSum + sB.lowBandRatioSum
         val floorSum = sA.noiseFloorDbfsSum + sB.noiseFloorDbfsSum
+        val flatSum = sA.flatSum + sB.flatSum
+        val flatCount = sA.flatCount + sB.flatCount
+        val harmSum = sA.harmSum + sB.harmSum
         val fA = a.features
         val fB = incoming.features
         val openWindows = fA.openWindows + fB.openWindows
@@ -312,11 +318,13 @@ class EventDetector(
                 lowBandRatioPeak = ratioPeak,
                 lowBandRatioMean = if (windows > 0) ratioSum / windows else fA.lowBandRatioMean,
                 noiseFloorDbfsMean = if (windows > 0) floorSum / windows else fA.noiseFloorDbfsMean,
+                spectralFlatnessMean = if (flatCount > 0) flatSum / flatCount else null,
+                harmonicRatioMean = if (flatCount > 0) harmSum / flatCount else null,
             ),
         )
         return Deferred(
             merged,
-            WindowSums(windows, peakDbfs, sumDbfs, sumConfidence, snrPeakDb, snrSumDb, ratioPeak, ratioSum, floorSum, openWindows),
+            WindowSums(windows, peakDbfs, sumDbfs, sumConfidence, snrPeakDb, snrSumDb, ratioPeak, ratioSum, floorSum, openWindows, flatSum, flatCount, harmSum),
         )
     }
 
@@ -340,6 +348,9 @@ class EventDetector(
         var ratioPeak = 0.0
         var ratioSum = 0.0
         var floorSum = 0.0
+        var flatSum = 0.0
+        var flatCount = 0
+        var harmSum = 0.0
 
         /**
          * Raw sums of the event closed by the most recent [close] call — read (via the
@@ -375,6 +386,9 @@ class EventDetector(
                         ratioPeak = 0.0
                         ratioSum = 0.0
                         floorSum = 0.0
+                        flatSum = 0.0
+                        flatCount = 0
+                        harmSum = 0.0
                     }
                 }
                 if (active) {
@@ -388,6 +402,8 @@ class EventDetector(
                     ratioPeak = maxOf(ratioPeak, features.lowBandRatio)
                     ratioSum += features.lowBandRatio
                     floorSum += features.noiseFloorDbfs
+                    features.spectralFlatness?.let { flatSum += it; flatCount++ }
+                    features.harmonicRatio?.let { harmSum += it }
                 }
                 return null
             }
@@ -422,6 +438,9 @@ class EventDetector(
                 peakDbfs = peak,
                 sumDbfs = sumDbfs,
                 sumConfidence = sumConfidence,
+                flatSum = flatSum,
+                flatCount = flatCount,
+                harmSum = harmSum,
                 snrPeakDb = snrPeak,
                 snrSumDb = snrSum,
                 lowBandRatioPeak = ratioPeak,
@@ -447,6 +466,8 @@ class EventDetector(
                     lowBandRatioPeak = ratioPeak,
                     lowBandRatioMean = if (windows > 0) ratioSum / windows else 0.0,
                     noiseFloorDbfsMean = floorMean,
+                    spectralFlatnessMean = if (flatCount > 0) flatSum / flatCount else null,
+                    harmonicRatioMean = if (flatCount > 0) harmSum / flatCount else null,
                 ),
             )
         }
