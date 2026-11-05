@@ -64,10 +64,23 @@ interface SleepSessionDao {
     suspend fun deleteAll()
 }
 
+/** One clip-backed event with its clip's relative path — the labeling work set. */
+data class ClipBackedEventRow(
+    @androidx.room.Embedded val event: com.sleepanalysis.data.db.entity.AcousticEventEntity,
+    val clipPath: String,
+)
+
 @Dao
 interface AcousticEventDao {
     @Insert
     suspend fun insert(event: AcousticEventEntity): Long
+
+    @Query(
+        "SELECT e.*, c.filePath AS clipPath FROM acoustic_event e " +
+            "JOIN audio_clip c ON c.id = e.clipId " +
+            "WHERE e.sessionId = :sessionId ORDER BY e.startMs"
+    )
+    suspend fun clipBackedEvents(sessionId: Long): List<ClipBackedEventRow>
 
     @Query("SELECT * FROM acoustic_event WHERE sessionId = :sessionId ORDER BY startMs")
     suspend fun bySession(sessionId: Long): List<AcousticEventEntity>

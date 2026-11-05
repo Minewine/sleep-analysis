@@ -64,6 +64,10 @@ class SessionRepository @Inject constructor(
 
     suspend fun session(sessionId: Long): SleepSessionEntity? = sessionDao.byId(sessionId)
 
+    /** Every event of [sessionId] that has a clip — the bulk-labeling work set (§3.5). */
+    suspend fun clipBackedEventsForLabeling(sessionId: Long): List<com.sleepanalysis.data.db.dao.ClipBackedEventRow> =
+        eventDao.clipBackedEvents(sessionId)
+
     suspend fun findOpenSession(): SleepSessionEntity? = sessionDao.findOpen()
 
     suspend fun latestSession(): SleepSessionEntity? = sessionDao.latest()

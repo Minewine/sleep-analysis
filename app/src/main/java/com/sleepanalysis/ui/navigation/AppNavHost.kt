@@ -17,6 +17,7 @@ object Routes {
     const val HOME = "home"
     const val REPORT = "report/{sessionId}"
     const val REPORT_LOG = "report/{sessionId}/log"
+    const val REPORT_LABELING = "report/{sessionId}/label"
     const val HISTORY = "history"
     const val BASELINE = "baseline"
     const val SETTINGS = "settings"
@@ -24,6 +25,7 @@ object Routes {
 
     fun report(sessionId: Long) = "report/$sessionId"
     fun reportLog(sessionId: Long) = "report/$sessionId/log"
+    fun reportLabeling(sessionId: Long) = "report/$sessionId/label"
 }
 
 @Composable
@@ -47,7 +49,14 @@ fun AppNavHost() {
             ReportScreen(
                 onBack = { navController.popBackStack() },
                 onOpenSessionLog = { navController.navigate(Routes.reportLog(sessionId)) },
+                onLabelClips = { navController.navigate(Routes.reportLabeling(sessionId)) },
             )
+        }
+        composable(
+            Routes.REPORT_LABELING,
+            arguments = listOf(navArgument("sessionId") { type = NavType.LongType }),
+        ) {
+            com.sleepanalysis.ui.report.LabelingScreen(onBack = { navController.popBackStack() })
         }
         composable(
             Routes.REPORT_LOG,

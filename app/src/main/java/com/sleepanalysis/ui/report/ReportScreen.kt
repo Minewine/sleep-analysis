@@ -57,6 +57,7 @@ import com.sleepanalysis.ui.components.formatDuration
 fun ReportScreen(
     onBack: () -> Unit,
     onOpenSessionLog: () -> Unit = {},
+    onLabelClips: () -> Unit = {},
     viewModel: ReportViewModel = hiltViewModel(),
 ) {
     val report by viewModel.report.collectAsStateWithLifecycle()
@@ -70,6 +71,12 @@ fun ReportScreen(
             navigationIcon = {
                 IconButton(onClick = onBack) {
                     Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.action_back))
+                }
+            },
+            actions = {
+                // Bulk labeling for the night's clips (docs/EVAL_RUNBOOK.md step 1).
+                TextButton(onClick = onLabelClips) {
+                    Text(stringResource(R.string.labeling_open))
                 }
             },
         )
