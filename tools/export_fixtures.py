@@ -11,7 +11,7 @@ re-gain them (docs/NEXT_STEPS.md P2).
 Binary transfers use `adb exec-out` (raw stdout, no PTY), because plain
 `adb shell cat` runs through a pty that mangles 0x0a/0x0d bytes. Each pulled
 clip is additionally verified against the on-device byte count
-(`run-as ... sh -c 'wc -c < file'`, executed inside the app sandbox — the
+(direct `run-as ... wc -c file`, executed inside the app sandbox — the
 device-level shell cannot open app-private paths); on mismatch the pulled file
 is deleted and the clip recorded as failed.
 
@@ -157,11 +157,19 @@ def build_entry(row: dict, clip_rel: str) -> dict:
 def write_manifest(
     out_dir: Path, session_id: int, entries: list[dict], now: datetime | None = None
 ) -> Path:
+    floors = sorted(
+        e["features"]["noise_floor_dbfs"]
+        for e in entries
+        if e.get("features") and e["features"].get("noise_floor_dbfs") is not None
+    )
     manifest = {
         "sample_rate": 16000,
-        "clip_ms": 8000,
+        "clip_ms": 10000,
         "exported_at": (now or datetime.now(UTC)).isoformat(),
         "source_session": session_id,
+        # Median rolling noise floor across the session's events (post-gain dBFS) — the
+        # replay's noise-floor pre-roll value, so clips replay with the live SNR (ReplayEngine).
+        "floor_dbfs": round(floors[len(floors) // 2], 2) if floors else None,
         "entries": entries,
     }
     path = out_dir / "manifest.json"
@@ -172,9 +180,11 @@ def write_manifest(
 def remote_size(serial: str | None, rel_path: str) -> int:
     """Byte count of one app-private clip, read on the device.
 
-    The `wc -c < file` redirect runs inside `run-as ... sh -c` so the file is
-    opened as the app user — the on-device shell itself cannot read app-private
-    paths, and without the redirect wc would print the name alongside the count.
+    Direct `run-as ... wc -c <file>` (no `sh -c` redirect): adb joins its
+    arguments with spaces and the ON-DEVICE shell re-parses the whole line, so
+    a quoted `sh -c "wc -c < 'file'"` loses its quoting — the `< file` redirect
+    is applied by the outer shell with the wrong cwd and fails ("can't open").
+    wc prints "count path"; the count comes first, which split()[0] reads.
     """
     out = subprocess.run(
         [
@@ -182,9 +192,9 @@ def remote_size(serial: str | None, rel_path: str) -> int:
             "shell",
             "run-as",
             APP_PACKAGE,
-            "sh",
+            "wc",
             "-c",
-            f"wc -c < '{CLIPS_DIR}/{rel_path}'",
+            f"{CLIPS_DIR}/{rel_path}",
         ],
         check=True,
         capture_output=True,

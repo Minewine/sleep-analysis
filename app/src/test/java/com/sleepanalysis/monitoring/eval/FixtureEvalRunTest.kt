@@ -50,7 +50,11 @@ class FixtureEvalRunTest {
         }
 
         val evaluator = FixtureEvaluator()
-        val report = evaluator.evaluate(entries, EnergySnoreDetector())
+        // The session's recorded floor pre-warms the replay's noise-floor ring — without it
+        // every clip replays cold and the detector is deaf (see ReplayEngine KDoc).
+        val floorDbfs = if (manifest.has("floor_dbfs") && !manifest.isNull("floor_dbfs"))
+            manifest.getDouble("floor_dbfs") else null
+        val report = evaluator.evaluate(entries, EnergySnoreDetector(), initialFloorDbfs = floorDbfs)
         evaluator.writeJson(report, File("build/eval-report.json"))
         println(evaluator.summaryText(report))
 

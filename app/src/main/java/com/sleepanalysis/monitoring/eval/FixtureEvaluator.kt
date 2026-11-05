@@ -88,8 +88,9 @@ class FixtureEvaluator {
         entries: List<FixtureEntry>,
         detector: SnoreDetector,
         clipPositiveThreshold: Double = 0.5,
+        initialFloorDbfs: Double? = null,
     ): EvalReport {
-        val replay = ReplayEngine(detector)
+        val replay = ReplayEngine(detector, ReplayEngine.Config(initialFloorDbfs = initialFloorDbfs))
         val scores = mutableListOf<ClipScore>()
         var unlabeled = 0
         var missingFiles = 0
