@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -62,7 +63,9 @@ fun ReportScreen(
     val report by viewModel.report.collectAsStateWithLifecycle()
     val playingEventId by viewModel.playingEventId.collectAsStateWithLifecycle()
     val garminImportState by viewModel.garminImportState.collectAsStateWithLifecycle()
+    val clipQuality by viewModel.clipQuality.collectAsStateWithLifecycle()
     var selectedEventId by remember { mutableStateOf<Long?>(null) }
+    val context = androidx.compose.ui.platform.LocalContext.current
 
     Scaffold(topBar = {
         TopAppBar(
@@ -70,6 +73,24 @@ fun ReportScreen(
             navigationIcon = {
                 IconButton(onClick = onBack) {
                     Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.action_back))
+                }
+            },
+            actions = {
+                report?.let { r ->
+                    IconButton(onClick = {
+                        viewModel.buildShareText()?.let { text ->
+                            val send = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                                type = "text/plain"
+                                putExtra(android.content.Intent.EXTRA_TEXT, text)
+                            }
+                            context.startActivity(android.content.Intent.createChooser(send, null))
+                        }
+                    }) {
+                        Icon(
+                            Icons.Filled.Share,
+                            contentDescription = stringResource(R.string.action_share),
+                        )
+                    }
                 }
             },
         )
@@ -98,16 +119,36 @@ fun ReportScreen(
                     )
                 }
             }
+            item { TldrCard(report = r) }
+            item { QualityBannersCard(report = r, clipQuality = clipQuality) }
             item { DisclaimerCard() }
             item {
                 SessionHealthCard(
                     timeInBedSeconds = r.timeInBedSeconds,
                     capture = r.capture,
                     warnings = r.healthWarnings,
+                    detectorVersion = r.modelVersion,
+                    shareUsesCapturedTime = r.shareUsesCapturedTime,
+                    captureWindowStartMs = r.captureWindowStartMs,
+                    captureWindowEndMs = r.endedAt,
+                    startedAt = r.startedAt,
                     onViewLog = onOpenSessionLog,
                 )
             }
             item { HeadlineGrid(r = r) }
+            if (r.topClips.isNotEmpty()) {
+                item {
+                    TopClipsCard(
+                        clips = r.topClips,
+                        startedAt = r.startedAt,
+                        worstBoutClip = r.worstBoutClip,
+                        playingEventId = playingEventId,
+                        onPlay = viewModel::playClip,
+                        onStop = viewModel::stopPlayback,
+                        onSelect = { selectedEventId = it },
+                    )
+                }
+            }
             item {
                 MorningNotesCard(
                     saved = r.morningNotes,
@@ -128,6 +169,8 @@ fun ReportScreen(
                     }
                 }
             }
+
+            item { NightStructureCard(report = r) }
 
             item {
                 Column {
@@ -240,6 +283,14 @@ fun ReportScreen(
             item {
                 GarminCard(
                     metrics = r.garmin,
+                    snoreSeconds = r.snoreSeconds,
+                    sleep = r.garminSleep,
+                    longestBoutStage = r.longestBoutStage,
+                    snoreMinutesByStage = r.snoreMinutesByStage,
+                    garminStageMinutes = r.garminStageMinutes,
+                    garminSleepScore = r.garminSleepScore,
+                    captureWindowStartMs = r.captureWindowStartMs ?: r.startedAt,
+                    captureWindowEndMs = r.endedAt,
                     importState = garminImportState,
                     onImport = viewModel::importGarminForThisNight,
                 )
@@ -249,6 +300,224 @@ fun ReportScreen(
                 item { DailyFactorsCard(factors = r.dailyFactors) }
             }
             item { Spacer(Modifier.height(32.dp)) }
+        }
+    }
+}
+
+/**
+ * The 10-second night: how much snoring, how bad at its worst, and how it compares to the
+ * previous night. The comparison is version-gated — a detector change hides the time delta,
+ * a score-formula change hides the score delta (docs/NIGHT_REPORT.md §TLDR).
+ */
+@Composable
+private fun TldrCard(report: com.sleepanalysis.domain.report.MorningReport) {
+    Card {
+        Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text(
+                stringResource(R.string.report_tldr_title),
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+            )
+            val captureStart = report.captureWindowStartMs ?: report.startedAt
+            val captured = (report.endedAt - captureStart).coerceAtLeast(0)
+            val shareText = String.format(java.util.Locale.US, "%.0f%%", report.snoreSharePercent)
+            Text(
+                stringResource(
+                    R.string.report_tldr_snored,
+                    formatDuration(report.snoreSeconds * 1000),
+                    shareText,
+                    formatDuration(captured),
+                ),
+                style = MaterialTheme.typography.bodyLarge,
+            )
+            report.boutStats?.let {
+                Text(
+                    stringResource(
+                        R.string.report_tldr_worst,
+                        formatDuration(it.longestBoutMs),
+                        Formatting.time(it.longestBoutStartMs),
+                        Formatting.time(it.longestBoutEndMs),
+                    ),
+                    style = MaterialTheme.typography.bodyLarge,
+                )
+            }
+            if (report.quietGaps.isNotEmpty()) {
+                Text(
+                    stringResource(
+                        R.string.report_tldr_quiet,
+                        report.quietGaps.size,
+                        formatDuration(report.quietGaps.sumOf { it.durationMs }),
+                    ),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            report.previousNight?.let { prev ->
+                if (prev.sameDetectorVersion && prev.snoreSeconds != null) {
+                    val delta = report.snoreSeconds - prev.snoreSeconds
+                    val sign = if (delta > 0) "+" else if (delta < 0) "−" else ""
+                    val deltaText = sign + formatDuration(kotlin.math.abs(delta) * 1000)
+                    val scoreLine = if (prev.sameScoreFormula && prev.snoreScore != null) {
+                        "${report.snoreScore} vs ${prev.snoreScore}"
+                    } else {
+                        stringResource(R.string.report_tldr_prev_score_nc, "${report.snoreScore}")
+                    }
+                    Text(
+                        stringResource(
+                            R.string.report_tldr_prev,
+                            formatDuration(prev.snoreSeconds * 1000),
+                            deltaText,
+                            scoreLine,
+                        ),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                } else {
+                    Text(
+                        stringResource(R.string.report_tldr_prev_hidden),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Non-blocking data-quality banners (docs/NIGHT_REPORT.md): clipped/missing/unreadable clips,
+ * audio coverage, Garmin linkage, and version changes vs the previous night. Everything here
+ * is evidence about the recording — none of it gates or rewrites the numbers above.
+ */
+@Composable
+private fun QualityBannersCard(
+    report: com.sleepanalysis.domain.report.MorningReport,
+    clipQuality: com.sleepanalysis.ui.report.ReportViewModel.ClipQualityReport?,
+) {
+    val warnings = buildList {
+        clipQuality?.let { q ->
+            if (q.clippedFilePaths.isNotEmpty()) {
+                add(stringResource(R.string.report_quality_clipped, q.clippedFilePaths.size, q.checked))
+            }
+            if (q.missingFiles > 0) add(stringResource(R.string.report_quality_missing, q.missingFiles))
+            if (q.unreadableFiles > 0) add(stringResource(R.string.report_quality_unreadable, q.unreadableFiles))
+        }
+        report.clipCoverage?.takeIf { it.snoreEventCount > 0 }?.let { c ->
+            add(
+                stringResource(
+                    R.string.report_quality_coverage,
+                    formatDuration(c.coveredSeconds * 1000),
+                    formatDuration(c.totalSeconds * 1000),
+                    c.snoreEventsWithClip,
+                    c.snoreEventCount,
+                ),
+            )
+        }
+        when (report.garminStatus) {
+            com.sleepanalysis.domain.report.GarminLinkStatus.MISSING ->
+                add(stringResource(R.string.report_quality_garmin_missing))
+            com.sleepanalysis.domain.report.GarminLinkStatus.METRICS_ONLY ->
+                add(stringResource(R.string.report_quality_garmin_metrics_only))
+            com.sleepanalysis.domain.report.GarminLinkStatus.LINKED -> {}
+        }
+        report.previousNight?.let { prev ->
+            if (!prev.sameDetectorVersion) {
+                add(stringResource(R.string.report_quality_version_detector))
+            } else if (!prev.sameScoreFormula) {
+                add(stringResource(R.string.report_quality_version_score))
+            }
+        }
+    }
+    if (warnings.isEmpty()) return
+    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+        Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text(
+                stringResource(R.string.report_quality_title),
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+            )
+            warnings.forEach {
+                Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+    }
+}
+
+/** The "hear the worst moments" section: top retained clips, highest peak first. */
+@Composable
+private fun TopClipsCard(
+    clips: List<com.sleepanalysis.domain.report.ClipRef>,
+    startedAt: Long,
+    worstBoutClip: com.sleepanalysis.domain.report.ClipRef?,
+    playingEventId: Long?,
+    onPlay: (com.sleepanalysis.domain.report.ClipRef) -> Unit,
+    onStop: () -> Unit,
+    onSelect: (Long) -> Unit,
+) {
+    Card {
+        Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(
+                stringResource(R.string.report_top_clips_title),
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+                stringResource(R.string.report_top_clips_note),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            worstBoutClip?.let { clip ->
+                Row(
+                    Modifier.fillMaxWidth().clickable { onSelect(clip.eventId) },
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            stringResource(R.string.report_top_clips_worst_bout) + " · " +
+                                Formatting.dbfs(clip.peakDbfs) + " · " + formatDuration(clip.durationMs),
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        Text(
+                            Formatting.time(startedAt + clip.offsetMs) + " · " + eventTypeLabel(clip.eventType),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    if (clip.eventId == playingEventId) {
+                        OutlinedButton(onClick = onStop) { Text(stringResource(R.string.report_stop_playback)) }
+                    } else {
+                        Button(onClick = { onPlay(clip) }) { Text(stringResource(R.string.report_play)) }
+                    }
+                }
+            }
+            clips.filter { it.eventId != worstBoutClip?.eventId }.forEach { clip ->
+                val playing = clip.eventId == playingEventId
+                Row(
+                    Modifier.fillMaxWidth().clickable { onSelect(clip.eventId) },
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            Formatting.time(startedAt + clip.offsetMs) + " · " +
+                                Formatting.dbfs(clip.peakDbfs) + " · " + formatDuration(clip.durationMs),
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                        Text(
+                            eventTypeLabel(clip.eventType) + " · " + clip.intensityTier,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    if (playing) {
+                        OutlinedButton(onClick = onStop) { Text(stringResource(R.string.report_stop_playback)) }
+                    } else {
+                        Button(onClick = { onPlay(clip) }) { Text(stringResource(R.string.report_play)) }
+                    }
+                }
+            }
         }
     }
 }
@@ -313,6 +582,11 @@ private fun SessionHealthCard(
     timeInBedSeconds: Long,
     capture: com.sleepanalysis.domain.report.CaptureStats?,
     warnings: List<String>,
+    detectorVersion: String?,
+    shareUsesCapturedTime: Boolean,
+    captureWindowStartMs: Long?,
+    captureWindowEndMs: Long,
+    startedAt: Long,
     onViewLog: () -> Unit,
 ) {
     Card {
@@ -325,6 +599,47 @@ private fun SessionHealthCard(
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 Text(stringResource(R.string.report_health_recording), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Text(formatDuration(timeInBedSeconds * 1000), style = MaterialTheme.typography.bodyMedium)
+            }
+            if (captureWindowStartMs != null && captureWindowEndMs > captureWindowStartMs) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text(stringResource(R.string.report_health_capture_window), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(
+                        Formatting.time(captureWindowStartMs) + " – " + Formatting.time(captureWindowEndMs) +
+                            " (" + formatDuration(captureWindowEndMs - captureWindowStartMs) + ")",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                }
+                val delayMinutes = (captureWindowStartMs - startedAt) / 60_000
+                if (delayMinutes > 0) {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text(stringResource(R.string.report_health_start_delay), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("$delayMinutes min", style = MaterialTheme.typography.bodyMedium)
+                    }
+                }
+            }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text(stringResource(R.string.report_health_share_denominator), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(
+                    stringResource(
+                        if (shareUsesCapturedTime) R.string.report_health_share_captured
+                        else R.string.report_health_share_inbed,
+                    ),
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+            }
+            val ambientMedian = capture?.ambientDbfsMedian
+            if (ambientMedian != null) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text(stringResource(R.string.report_health_ambient), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(
+                        String.format("%.1f / %.1f dBFS", ambientMedian, capture?.ambientDbfsP95 ?: ambientMedian),
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                }
+            }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text(stringResource(R.string.report_health_detector), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(detectorVersion ?: "—", style = MaterialTheme.typography.bodyMedium)
             }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 Text(stringResource(R.string.report_health_windows), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -350,11 +665,113 @@ private fun SessionHealthCard(
     }
 }
 
+/**
+ * Burst-vs-bout view of the night plus its quiet stretches (docs/NIGHT_REPORT.md). Every
+ * number traces back to stored events: a burst is one stored event (the detector already
+ * guarantees no internal silence > 2 s inside an event), a bout chains bursts with gaps ≤ 10 s.
+ */
+@Composable
+private fun NightStructureCard(report: com.sleepanalysis.domain.report.MorningReport) {
+    val stats = report.boutStats
+    val gaps = report.quietGaps
+    if (stats == null && gaps.isEmpty()) return
+    Card {
+        Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            if (stats != null) {
+                Text(
+                    stringResource(R.string.report_structure_title),
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    stringResource(
+                        R.string.report_structure_bursts,
+                        stats.burstCount,
+                        formatDuration(stats.medianBurstMs),
+                        formatDuration(stats.longestBurstMs),
+                    ),
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                Text(
+                    stringResource(
+                        R.string.report_structure_bouts,
+                        stats.boutCount,
+                        formatDuration(stats.longestBoutMs),
+                        stats.longestBoutBursts,
+                        Formatting.time(stats.longestBoutStartMs),
+                        Formatting.time(stats.longestBoutEndMs),
+                    ),
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                report.boutStats5s?.let { tight ->
+                    Text(
+                        stringResource(
+                            R.string.report_structure_bouts_tight,
+                            tight.boutCount,
+                            formatDuration(tight.longestBoutMs),
+                        ),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            if (gaps.isNotEmpty()) {
+                Text(
+                    stringResource(R.string.report_gaps_title),
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                gaps.take(8).forEach { gap ->
+                    val classification = when (gap.kind) {
+                        com.sleepanalysis.domain.report.QuietGapKind.QUIET ->
+                            gap.meanDbfs?.let {
+                                stringResource(R.string.report_gap_kind_quiet, Formatting.dbfs(it))
+                            } ?: "" // stored QUIET rows always carry evidence; defensive
+                        com.sleepanalysis.domain.report.QuietGapKind.UNCAPTURED ->
+                            stringResource(R.string.report_gap_kind_uncaptured)
+                        else -> ""
+                    }
+                    Text(
+                        stringResource(
+                            R.string.report_gap_row,
+                            Formatting.time(gap.startMs),
+                            Formatting.time(gap.endMs),
+                            formatDuration(gap.durationMs),
+                        ) + classification,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                if (gaps.size > 8) {
+                    Text("+${gaps.size - 8}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            } else {
+                Text(
+                    stringResource(R.string.report_gaps_none),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+}
+
 @Composable
 private fun HeadlineGrid(r: com.sleepanalysis.domain.report.MorningReport) {
     Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         HeadlineCell(Modifier.weight(1f), stringResource(R.string.report_time_in_bed), formatDuration(r.timeInBedSeconds * 1000))
-        HeadlineCell(Modifier.weight(1f), stringResource(R.string.report_snore_score), "${r.snoreScore}")
+        HeadlineCell(
+            Modifier.weight(1f),
+            stringResource(R.string.report_snore_score),
+            "${r.snoreScore}",
+            subtitle = r.snoreEventCount.takeIf { it > 0 }?.let {
+                stringResource(
+                    R.string.report_score_breakdown,
+                    String.format(java.util.Locale.US, "%.0f", r.scoreBreakdown.sharePoints),
+                    String.format(java.util.Locale.US, "%.0f", r.scoreBreakdown.intensityPoints),
+                )
+            },
+        )
     }
     Spacer(Modifier.height(12.dp))
     Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -370,14 +787,30 @@ private fun HeadlineGrid(r: com.sleepanalysis.domain.report.MorningReport) {
             r.peakDbfs?.let { Formatting.dbfs(it) } ?: "—",
         )
     }
+    Spacer(Modifier.height(12.dp))
+    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        HeadlineCell(
+            Modifier.weight(1f),
+            stringResource(R.string.report_longest_burst),
+            r.longestSnore?.let { formatDuration(it.durationMs) } ?: "—",
+        )
+        HeadlineCell(
+            Modifier.weight(1f),
+            stringResource(R.string.report_longest_bout),
+            r.boutStats?.let { formatDuration(it.longestBoutMs) } ?: "—",
+        )
+    }
 }
 
 @Composable
-private fun HeadlineCell(modifier: Modifier, label: String, value: String) {
+private fun HeadlineCell(modifier: Modifier, label: String, value: String, subtitle: String? = null) {
     Card(modifier = modifier) {
         Column(Modifier.padding(12.dp)) {
             Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Text(value, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+            if (subtitle != null) {
+                Text(subtitle, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
         }
     }
 }
@@ -595,6 +1028,14 @@ private fun eventTypeLabel(type: String): String = when (type) {
 @Composable
 private fun GarminCard(
     metrics: List<com.sleepanalysis.domain.report.GarminMetric>,
+    snoreSeconds: Long,
+    sleep: com.sleepanalysis.domain.report.GarminSleepSummary?,
+    longestBoutStage: com.sleepanalysis.domain.report.BoutStage?,
+    snoreMinutesByStage: List<com.sleepanalysis.domain.report.StageSnoreMinutes>,
+    garminStageMinutes: Map<String, Long>,
+    garminSleepScore: Double?,
+    captureWindowStartMs: Long,
+    captureWindowEndMs: Long,
     importState: com.sleepanalysis.data.garmin.GarminImportManager.GarminImportState,
     onImport: () -> Unit,
 ) {
@@ -610,6 +1051,113 @@ private fun GarminCard(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            if (sleep != null) {
+                // The vendor/acoustic join made honest: Garmin's own window vs the captured
+                // night. A zero overlap means the payload belongs to a different night.
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text(
+                        stringResource(R.string.report_garmin_windows),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        "Phone " + Formatting.time(captureWindowStartMs) + "–" + Formatting.time(captureWindowEndMs) +
+                            " · Garmin " + Formatting.time(sleep.sleepStartMs) + "–" + Formatting.time(sleep.sleepEndMs),
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                }
+                Text(
+                    stringResource(R.string.report_garmin_linked),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+                if (sleep.overlapWithCaptureMs > 0) {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text(
+                            stringResource(R.string.report_garmin_overlap),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Text(
+                            formatDuration(sleep.overlapWithCaptureMs) + " / " +
+                                formatDuration(sleep.captureWindowEndMs - sleep.captureWindowStartMs),
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                    }
+                } else {
+                    Text(
+                        stringResource(R.string.report_garmin_no_overlap),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+                // Headline vendor number + where the worst stretch fell (timeline when stored).
+                (sleep.sleepScore ?: garminSleepScore)?.let {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text(
+                            stringResource(R.string.report_garmin_score),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Text(
+                            String.format(java.util.Locale.US, "%.0f / 100", it),
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                    }
+                }
+                if (garminStageMinutes.isNotEmpty()) {
+                    Text(
+                        garminStageMinutes.entries.joinToString(" · ") { (stage, minutes) ->
+                            "$stage ${formatDuration(minutes * 60_000)}"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                if (snoreMinutesByStage.isNotEmpty()) {
+                    // Timeline available: snoring minutes per vendor stage.
+                    Text(
+                        snoreMinutesByStage.joinToString(" · ") {
+                            String.format(java.util.Locale.US, "%s %dm", it.stage, it.snoreMinutes)
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                } else if (garminStageMinutes.isNotEmpty()) {
+                    // Totals only (no sleepLevels timeline): the totals-level comparison.
+                    Text(
+                        stringResource(
+                            R.string.report_garmin_snore_vs_stages,
+                            formatDuration(snoreSeconds * 1000),
+                        ),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                longestBoutStage?.let { bs ->
+                    Text(
+                        stringResource(
+                            R.string.report_garmin_bout_stage,
+                            bs.stage,
+                            String.format(java.util.Locale.US, "%.0f", bs.coveredFraction * 100),
+                        ),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                if (snoreMinutesByStage.isNotEmpty()) {
+                    Text(
+                        snoreMinutesByStage.joinToString(" · ") {
+                            String.format(
+                                java.util.Locale.US, "%s %dm", it.stage, it.snoreMinutes,
+                            )
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
             if (metrics.isEmpty()) {
                 Text(
                     stringResource(R.string.report_garmin_empty),
