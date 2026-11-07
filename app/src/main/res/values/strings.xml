@@ -3,6 +3,7 @@
 
     <!-- Shared -->
     <string name="action_back">Back</string>
+    <string name="action_share">Share summary</string>
 
     <!-- Onboarding / disclaimer (docs/PRIVACY_AND_REGULATORY.md §5.1) -->
     <string name="onboarding_title">Before you start</string>
@@ -57,18 +58,26 @@
 
     <!-- Report -->
     <string name="report_title">Morning report</string>
+    <string name="report_tldr_title">In short</string>
+    <string name="report_tldr_snored">Snored %1$s · %2$s of %3$s captured</string>
+    <string name="report_tldr_worst">Worst stretch %1$s (%2$s–%3$s)</string>
+    <string name="report_tldr_prev">vs previous night: %1$s snoring (%2$s) · score %3$s</string>
+    <string name="report_tldr_prev_score_nc">score %1$s (previous night not comparable)</string>
+    <string name="report_tldr_quiet">%1$d quiet stretches ≥ 10 min · total %2$s</string>
+    <string name="report_tldr_prev_hidden">Previous night not compared (missing data or different version)</string>
     <string name="report_disclaimer">Estimates from on-device microphone analysis. Not a diagnostic device. For sleep-health questions, talk to a clinician.</string>
     <string name="report_time_in_bed">Time in bed</string>
     <string name="report_snore_time">Snoring time</string>
     <string name="report_snore_share">% of night</string>
     <string name="report_snore_score">Snore score</string>
-    <string name="report_snore_events">Snoring spells</string>
+    <string name="report_score_breakdown">share %1$s + intensity %2$s</string>
+    <string name="report_snore_events">Snoring bursts</string>
     <string name="report_intensity_breakdown">Intensity breakdown</string>
     <string name="report_timeline">Night timeline</string>
     <string name="report_hourly">Snoring per hour</string>
     <string name="report_loudest_title">Loudest sounds</string>
     <string name="report_loudest_note">Top episodes by peak loudness — tap a row for details and labeling.</string>
-    <string name="report_episode_summary">%1$d snoring spells · peak %2$s</string>
+    <string name="report_episode_summary">%1$d snoring bursts · peak %2$s</string>
     <string name="report_events_title">Acoustic events</string>
     <string name="report_tap_event">Tap the timeline or an event to play its clip.</string>
     <string name="report_no_events">No acoustic events were detected this night.</string>
@@ -79,6 +88,24 @@
     <string name="report_play">Play clip</string>
     <string name="report_stop_playback">Stop playback</string>
     <string name="report_peak_intensity">Peak intensity</string>
+    <string name="report_longest_burst">Longest burst</string>
+    <string name="report_longest_bout">Longest bout</string>
+
+    <!-- Report: data-quality banners (non-blocking) -->
+    <string name="report_quality_title">Data quality</string>
+    <string name="report_quality_clipped">%1$d of %2$d clips are digitally clipped (full-scale) — the loudest moments sound distorted on playback.</string>
+    <string name="report_quality_missing">%1$d clip file(s) are missing from storage.</string>
+    <string name="report_quality_unreadable">%1$d clip file(s) could not be decoded.</string>
+    <string name="report_quality_coverage">Audio covers %1$s of %2$s snoring (%3$d of %4$d bursts).</string>
+    <string name="report_quality_garmin_missing">No Garmin data for this night — import from the Garmin section below.</string>
+    <string name="report_quality_garmin_metrics_only">Garmin metrics are shown, but the sleep-window payload is unavailable (aged out or older import).</string>
+    <string name="report_quality_version_detector">Previous night is not comparable — detector version differs or is unknown.</string>
+    <string name="report_quality_version_score">Previous night\'s score is not comparable — different or unknown score formula version.</string>
+
+    <!-- Report: top clips -->
+    <string name="report_top_clips_title">Top clips</string>
+    <string name="report_top_clips_worst_bout">Worst bout</string>
+    <string name="report_top_clips_note">Loudest retained audio, highest peak first — tap the row for details.</string>
 
     <!-- Baseline -->
     <string name="baseline_title">Clinical baseline</string>
@@ -194,6 +221,32 @@
     <string name="report_garmin_note">Vendor algorithms, shown as context next to the acoustic estimates above — never compared numerically with clinical data.</string>
     <string name="report_garmin_empty">No Garmin data imported for this night yet.</string>
     <string name="report_garmin_import">Import from Garmin</string>
+    <string name="report_garmin_window">Garmin sleep window (%1$s)</string>
+    <string name="report_garmin_overlap">Overlap with captured night</string>
+    <string name="report_garmin_no_overlap">Garmin\'s window does not overlap the captured night — this may be the wrong night\'s data.</string>
+    <string name="report_garmin_score">Garmin sleep score</string>
+    <string name="report_garmin_windows">Windows (phone / Garmin)</string>
+    <string name="report_garmin_linked">Linked to this night ✓</string>
+    <string name="report_garmin_snore_vs_stages">Snoring %1$s this night · stage timeline unavailable (totals only)</string>
+    <string name="report_garmin_bout_stage">Longest snore bout fell in %1$s (%2$s%% of it)</string>
+
+    <!-- 7-day trend -->
+    <string name="trend_title">7-day trend</string>
+    <string name="trend_empty">No completed nights yet.</string>
+    <string name="trend_detector_changed">detector changed</string>
+    <string name="trend_score_changed">score formula changed</string>
+    <string name="trend_version_note">A marked night was produced by a different detector or score-formula version: across that boundary its snoring minutes, share and score are not directly comparable with the neighbouring nights.</string>
+    <string name="trend_no_score">—</string>
+    <string name="trend_row_snoring">%1$s snoring</string>
+    <string name="trend_row_share">%1$s%% of capture</string>
+    <string name="trend_row_bout">bout %1$s</string>
+    <string name="trend_row_peak">%1$s dB avg peak</string>
+    <string name="trend_row_coverage">clips %1$s%%</string>
+    <string name="trend_row_quiet">quiet %1$s (%2$d gaps)</string>
+    <string name="trend_row_uncaptured">%1$s no capture</string>
+    <string name="trend_provenance_detector">%1$s</string>
+    <string name="trend_provenance_score">score %1$s</string>
+    <string name="history_trends">Trends</string>
 
     <!-- Report: event labeling -->
     <string name="report_label_caption">What was this? Tap to label (tap again to clear) — builds your personal dataset for better detection.</string>
@@ -202,14 +255,35 @@
     <!-- Report: session health / observability -->
     <string name="report_health_title">Session health</string>
     <string name="report_health_recording">Recording time</string>
+    <string name="report_health_detector">Detector</string>
     <string name="report_health_windows">Analysis windows</string>
     <string name="report_health_clips">Clips saved</string>
     <string name="report_health_view_log">View session log</string>
+    <string name="report_health_capture_window">Capture window</string>
+    <string name="report_health_start_delay">Start delay</string>
+    <string name="report_health_ambient">Ambient level (median/p95)</string>
+    <string name="report_health_share_denominator">Snore share covers</string>
+    <string name="report_health_share_captured">captured audio</string>
+    <string name="report_health_share_inbed">recording time (no capture stats)</string>
+
+    <!-- Report: snoring structure (bursts + bouts) and quiet stretches -->
+    <string name="report_structure_title">Snoring structure</string>
+    <string name="report_structure_bursts">Bursts: %1$d · median %2$s · longest %3$s</string>
+    <string name="report_structure_bouts">Bouts (gaps ≤ 10 s): %1$d · longest %2$s (%3$d bursts, %4$s–%5$s)</string>
+    <string name="report_structure_bouts_tight">Bouts (gaps ≤ 5 s): %1$d · longest %2$s</string>
+    <string name="report_gaps_title">Quiet stretches (≥ 10 min)</string>
+    <string name="report_gaps_none">None — sound was detected throughout the captured night.</string>
+    <string name="report_gap_row">%1$s – %2$s · %3$s</string>
+    <string name="report_gap_kind_quiet"> · quiet (%1$s)</string>
+    <string name="report_gap_kind_uncaptured"> · no capture</string>
     <string name="log_title">Session log</string>
     <string name="log_share">Export</string>
     <string name="log_empty">No log file exists for this session (recorded before health tracking, or logging failed silently).</string>
 
     <!-- Settings: debug -->
+    <string name="settings_noise_filter_title">Low-confidence noise in reports</string>
+    <string name="settings_noise_filter_subtitle">Hide noise events whose detector confidence falls below the threshold (kept in the database either way). Off shows everything.</string>
+    <string name="settings_noise_filter_off">Off</string>
     <string name="settings_debug_title">Debug: relax event opening</string>
     <string name="settings_debug_body">Open an event after a single loud window instead of two consecutive ones. Debug aid for quiet testing only — takes effect on the next recording, which is marked \"dbg1\" in its data.</string>
 
