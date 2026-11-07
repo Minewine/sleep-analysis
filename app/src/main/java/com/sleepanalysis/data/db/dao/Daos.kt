@@ -10,6 +10,8 @@ import com.sleepanalysis.data.db.entity.ClinicalBaselineEntity
 import com.sleepanalysis.data.db.entity.MeasurementEntity
 import com.sleepanalysis.data.db.entity.RawPayloadEntity
 import com.sleepanalysis.data.db.entity.SleepSessionEntity
+import com.sleepanalysis.data.db.entity.QuietGapEntity
+import com.sleepanalysis.data.db.entity.SleepStageEntity
 import com.sleepanalysis.data.db.entity.UserFactorEntity
 import kotlinx.coroutines.flow.Flow
 
@@ -43,6 +45,9 @@ interface SleepSessionDao {
     @Query("SELECT startedAt FROM sleep_session ORDER BY startedAt DESC")
     suspend fun allStartTimes(): List<Long>
 
+    @Query("SELECT * FROM sleep_session")
+    suspend fun all(): List<SleepSessionEntity>
+
     @Query("DELETE FROM sleep_session WHERE id = :id")
     suspend fun delete(id: Long)
 
@@ -71,6 +76,13 @@ interface AcousticEventDao {
 
     @Query("SELECT * FROM acoustic_event WHERE sessionId = :sessionId ORDER BY startMs")
     suspend fun bySession(sessionId: Long): List<AcousticEventEntity>
+
+    /** Detector version of the session's first snore event — cross-night comparison guard. */
+    @Query(
+        "SELECT modelVersion FROM acoustic_event WHERE sessionId = :sessionId " +
+            "AND type = 'SNORE' ORDER BY startMs LIMIT 1"
+    )
+    suspend fun firstSnoreModelVersion(sessionId: Long): String?
 
     @Query("SELECT COUNT(*) FROM acoustic_event WHERE sessionId = :sessionId")
     suspend fun countForSession(sessionId: Long): Int
@@ -196,6 +208,52 @@ interface RawPayloadDao {
 
     @Query("DELETE FROM raw_payload")
     suspend fun deleteAll()
+}
+
+/** Vendor sleep-stage timeline of one session (schema v9). Device-reported context only. */
+@Dao
+interface SleepStageDao {
+    @Insert
+    suspend fun insertAll(stages: List<SleepStageEntity>)
+
+    @Query("SELECT * FROM sleep_stage WHERE sessionId = :sessionId ORDER BY startMs")
+    suspend fun bySession(sessionId: Long): List<SleepStageEntity>
+
+    @Query("DELETE FROM sleep_stage WHERE sessionId = :sessionId")
+    suspend fun deleteForSession(sessionId: Long)
+
+    @Query("DELETE FROM sleep_stage")
+    suspend fun deleteAll()
+
+    /** Atomic replace so a re-import can never duplicate a night's stage timeline. */
+    @Transaction
+    suspend fun replaceForSession(sessionId: Long, stages: List<SleepStageEntity>) {
+        deleteForSession(sessionId)
+        insertAll(stages)
+    }
+}
+
+/** Stored event-free spans ≥10 min of one session (schema v10, docs/DATA_MODEL.md §3.11). */
+@Dao
+interface QuietGapDao {
+    @Insert
+    suspend fun insertAll(gaps: List<QuietGapEntity>)
+
+    @Query("SELECT * FROM quiet_gap WHERE sessionId = :sessionId ORDER BY startMs")
+    suspend fun bySession(sessionId: Long): List<QuietGapEntity>
+
+    @Query("DELETE FROM quiet_gap WHERE sessionId = :sessionId")
+    suspend fun deleteForSession(sessionId: Long)
+
+    @Query("DELETE FROM quiet_gap")
+    suspend fun deleteAll()
+
+    /** Atomic replace: re-finalizing a session must never duplicate its gaps. */
+    @Transaction
+    suspend fun replaceForSession(sessionId: Long, gaps: List<QuietGapEntity>) {
+        deleteForSession(sessionId)
+        insertAll(gaps)
+    }
 }
 
 /** Self-logged daily lifestyle factors. Only set factors are stored (absence = not logged). */

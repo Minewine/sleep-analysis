@@ -108,6 +108,71 @@ class MigrationTest {
             } catch (_: android.database.SQLException) {
                 // expected — the trigger raised ABORT
             }
+
+            // v9 sleep_stage round-trip through the app's own builder (table exists, writable,
+            // and the FK CASCADE that removes stages with their session is in force).
+            sql.execSQL(
+                "INSERT INTO sleep_stage (sessionId, startMs, endMs, stage, createdAt) VALUES " +
+                    "(1, 1793657000000, 1793657120000, 'DEEP', 1793681500000)"
+            )
+            sql.query("SELECT stage FROM sleep_stage WHERE sessionId = 1").use { c ->
+                assertTrue(c.moveToFirst())
+                assertEquals("DEEP", c.getString(0))
+            }
+            sql.query("SELECT COUNT(*) FROM sleep_stage").use { c ->
+                c.moveToFirst()
+                assertEquals(1, c.getInt(0))
+            }
+            // v10 quiet_gap round-trip + CASCADE with its session.
+            sql.execSQL(
+                "INSERT INTO quiet_gap (sessionId, startMs, endMs, durationMs, kind, meanDbfs, createdAt) VALUES " +
+                    "(1, 1793658000000, 1793658720000, 720000, 'QUIET', -83.5, 1793681500000)"
+            )
+            sql.query("SELECT kind, meanDbfs FROM quiet_gap WHERE sessionId = 1").use { c ->
+                assertTrue(c.moveToFirst())
+                assertEquals("QUIET", c.getString(0))
+                assertEquals(-83.5, c.getDouble(1), 0.0001)
+            }
+            // v11 audio_clip round-trip: the new gain/peak columns persist, a legacy-style
+            // insert (no new columns) backfills the fixed 2.5 int16 mic gain (truthful
+            // history) with a NULL peak, and the FK CASCADE removes clips with their session.
+            sql.execSQL(
+                "INSERT INTO audio_clip (sessionId, filePath, durationMs, sizeBytes, sampleRate, createdAt, appliedGain, filePeakDbfs) VALUES " +
+                    "(1, 'session_1/evt_snore_1793657000000_1.wav', 8000, 256044, 16000, 1793681500000, 1.4, -1.0)"
+            )
+            sql.execSQL(
+                "INSERT INTO audio_clip (sessionId, filePath, durationMs, sizeBytes, sampleRate, createdAt) VALUES " +
+                    "(1, 'session_1/evt_snore_1793657000000_2.wav', 8000, 256044, 16000, 1793681500000)"
+            )
+            sql.query(
+                "SELECT appliedGain, filePeakDbfs FROM audio_clip " +
+                    "WHERE filePath = 'session_1/evt_snore_1793657000000_1.wav'"
+            ).use { c ->
+                assertTrue(c.moveToFirst())
+                assertEquals(1.4, c.getDouble(0), 0.0001)
+                assertEquals(-1.0, c.getDouble(1), 0.0001)
+            }
+            sql.query(
+                "SELECT appliedGain, filePeakDbfs FROM audio_clip " +
+                    "WHERE filePath = 'session_1/evt_snore_1793657000000_2.wav'"
+            ).use { c ->
+                assertTrue(c.moveToFirst())
+                assertEquals(2.5, c.getDouble(0), 0.0001) // v11 DEFAULT backfill
+                assertTrue(c.isNull(1))
+            }
+            sql.execSQL("DELETE FROM sleep_session WHERE id = 1")
+            sql.query("SELECT COUNT(*) FROM sleep_stage").use { c ->
+                c.moveToFirst()
+                assertEquals(0, c.getInt(0)) // CASCADE removed the stage with its session
+            }
+            sql.query("SELECT COUNT(*) FROM quiet_gap").use { c ->
+                c.moveToFirst()
+                assertEquals(0, c.getInt(0)) // …and the quiet gap
+            }
+            sql.query("SELECT COUNT(*) FROM audio_clip").use { c ->
+                c.moveToFirst()
+                assertEquals(0, c.getInt(0)) // …and the clips
+            }
         } finally {
             db.close()
         }
@@ -115,6 +180,6 @@ class MigrationTest {
 
     private companion object {
         const val TEST_DB = "migration-test.db"
-        const val LATEST_VERSION = 8
+        const val LATEST_VERSION = 11
     }
 }

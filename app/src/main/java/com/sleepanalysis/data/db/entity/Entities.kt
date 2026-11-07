@@ -128,6 +128,16 @@ data class AudioClipEntity(
     val durationMs: Long,
     val sizeBytes: Long,
     val sampleRate: Int = 16_000,
+    /**
+     * Total gain actually applied to the stored samples (schema v11): mic gain × block
+     * peak-limit scale (ClipStore.gainAndLimit) — less than the mic gain on loud clips that
+     * were limited. Old rows predate raw+limited clip writes and were written with the fixed
+     * 2.5 in-place int16 mic gain: that default is truthful history, not a placeholder.
+     */
+    @ColumnInfo(defaultValue = "2.5")
+    val appliedGain: Float = 2.5f,
+    /** Peak of the stored samples in dBFS (schema v11, ≈ −1.0 on limited clips); null pre-v11. */
+    val filePeakDbfs: Double? = null,
     val createdAt: Long = System.currentTimeMillis(),
 )
 
@@ -210,6 +220,66 @@ data class RawPayloadEntity(
     val date: String,
     val payload: String,
     val fetchedAt: Long = System.currentTimeMillis(),
+)
+
+/**
+ * One vendor sleep-stage span of a linked session (schema v9, docs/DATA_MODEL.md §3.10).
+ * Device-reported context only — never compared to PSG stages (docs/MEASUREMENT_RELIABILITY.md
+ * M13). Populated when a Garmin payload carries a sleepLevels timeline; the owning session's
+ * deletion removes it (FK CASCADE). Stage is the vendor's own label, uppercased
+ * (DEEP/LIGHT/REM/AWAKE, or an unknown vendor label verbatim).
+ */
+@Entity(
+    tableName = "sleep_stage",
+    foreignKeys = [
+        ForeignKey(
+            entity = SleepSessionEntity::class,
+            parentColumns = ["id"],
+            childColumns = ["sessionId"],
+            onDelete = ForeignKey.CASCADE,
+        ),
+    ],
+    indices = [Index("sessionId", "startMs")],
+)
+data class SleepStageEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val sessionId: Long,
+    val startMs: Long,
+    val endMs: Long,
+    val stage: String,
+    val createdAt: Long = System.currentTimeMillis(),
+)
+
+/**
+ * One event-free span ≥10 min inside a session's capture window (schema v10,
+ * docs/DATA_MODEL.md §3.11), computed at finalize from the night's events and the capture's
+ * level buckets: QUIET spans sat at the ambient bed (real quiet sleep), UNCAPTURED spans have
+ * no level evidence (process death). Written once per session (replace); the session's
+ * deletion removes them (FK CASCADE).
+ */
+@Entity(
+    tableName = "quiet_gap",
+    foreignKeys = [
+        ForeignKey(
+            entity = SleepSessionEntity::class,
+            parentColumns = ["id"],
+            childColumns = ["sessionId"],
+            onDelete = ForeignKey.CASCADE,
+        ),
+    ],
+    indices = [Index("sessionId", "startMs")],
+)
+data class QuietGapEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val sessionId: Long,
+    val startMs: Long,
+    val endMs: Long,
+    val durationMs: Long,
+    /** QUIET or UNCAPTURED (domain/report.QuietGapKind); null = no bucket evidence existed. */
+    val kind: String? = null,
+    /** Mean window dBFS of the covering level buckets (null without evidence). */
+    val meanDbfs: Double? = null,
+    val createdAt: Long = System.currentTimeMillis(),
 )
 
 /**

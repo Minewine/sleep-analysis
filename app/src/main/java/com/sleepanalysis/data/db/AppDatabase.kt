@@ -11,15 +11,19 @@ import com.sleepanalysis.data.db.dao.AcousticEventDao
 import com.sleepanalysis.data.db.dao.AudioClipDao
 import com.sleepanalysis.data.db.dao.ClinicalBaselineDao
 import com.sleepanalysis.data.db.dao.MeasurementDao
+import com.sleepanalysis.data.db.dao.QuietGapDao
 import com.sleepanalysis.data.db.dao.RawPayloadDao
 import com.sleepanalysis.data.db.dao.SleepSessionDao
+import com.sleepanalysis.data.db.dao.SleepStageDao
 import com.sleepanalysis.data.db.dao.UserFactorDao
 import com.sleepanalysis.data.db.entity.AcousticEventEntity
 import com.sleepanalysis.data.db.entity.AudioClipEntity
 import com.sleepanalysis.data.db.entity.ClinicalBaselineEntity
 import com.sleepanalysis.data.db.entity.MeasurementEntity
+import com.sleepanalysis.data.db.entity.QuietGapEntity
 import com.sleepanalysis.data.db.entity.RawPayloadEntity
 import com.sleepanalysis.data.db.entity.SleepSessionEntity
+import com.sleepanalysis.data.db.entity.SleepStageEntity
 import com.sleepanalysis.data.db.entity.UserFactorEntity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -33,8 +37,10 @@ import kotlinx.coroutines.withContext
         ClinicalBaselineEntity::class,
         RawPayloadEntity::class,
         UserFactorEntity::class,
+        SleepStageEntity::class,
+        QuietGapEntity::class,
     ],
-    version = 8,
+    version = 11,
     exportSchema = true,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -45,6 +51,8 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun clinicalBaselineDao(): ClinicalBaselineDao
     abstract fun rawPayloadDao(): RawPayloadDao
     abstract fun userFactorDao(): UserFactorDao
+    abstract fun sleepStageDao(): SleepStageDao
+    abstract fun quietGapDao(): QuietGapDao
 
     /**
      * Removes every row including the clinical baseline. The immutability triggers must be
@@ -64,6 +72,8 @@ abstract class AppDatabase : RoomDatabase() {
                 clinicalBaselineDao().deleteAll()
                 rawPayloadDao().deleteAll()
                 userFactorDao().deleteAll()
+                sleepStageDao().deleteAll()
+                quietGapDao().deleteAll()
             } finally {
                 createImmutabilityTriggers(raw)
             }
@@ -170,10 +180,63 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /** v10 stores the night's classified quiet gaps (docs/DATA_MODEL.md §3.11). */
+        private val MIGRATION_9_10 = object : Migration(9, 10) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `quiet_gap` (" +
+                        "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                        "`sessionId` INTEGER NOT NULL, `startMs` INTEGER NOT NULL, " +
+                        "`endMs` INTEGER NOT NULL, `durationMs` INTEGER NOT NULL, " +
+                        "`kind` TEXT, `meanDbfs` REAL, `createdAt` INTEGER NOT NULL, " +
+                        "FOREIGN KEY(`sessionId`) REFERENCES `sleep_session`(`id`) " +
+                        "ON UPDATE NO ACTION ON DELETE CASCADE )"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_quiet_gap_sessionId_startMs` " +
+                        "ON `quiet_gap` (`sessionId`, `startMs`)"
+                )
+            }
+        }
+
+        /** v9 adds the vendor sleep-stage timeline (docs/DATA_MODEL.md §3.10). */
+        private val MIGRATION_8_9 = object : Migration(8, 9) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `sleep_stage` (" +
+                        "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                        "`sessionId` INTEGER NOT NULL, `startMs` INTEGER NOT NULL, " +
+                        "`endMs` INTEGER NOT NULL, `stage` TEXT NOT NULL, " +
+                        "`createdAt` INTEGER NOT NULL, " +
+                        "FOREIGN KEY(`sessionId`) REFERENCES `sleep_session`(`id`) " +
+                        "ON UPDATE NO ACTION ON DELETE CASCADE )"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_sleep_stage_sessionId_startMs` " +
+                        "ON `sleep_stage` (`sessionId`, `startMs`)"
+                )
+            }
+        }
+
+        /**
+         * v11 stores per-clip applied gain + file peak (docs/DATA_MODEL.md §3.5): clips are now
+         * written from RAW ring samples with a float mic gain and a −1 dBFS block peak-limit,
+         * so the row can say what was actually stored. `appliedGain` defaults to 2.5 — the
+         * fixed in-place int16 mic gain every pre-v11 clip was written with (truthful history);
+         * `filePeakDbfs` stays NULL there (those clips' peaks were never recorded).
+         */
+        private val MIGRATION_10_11 = object : Migration(10, 11) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `audio_clip` ADD COLUMN `appliedGain` REAL NOT NULL DEFAULT 2.5")
+                db.execSQL("ALTER TABLE `audio_clip` ADD COLUMN `filePeakDbfs` REAL")
+            }
+        }
+
         /** All schema migrations in order — shared with the instrumented migration test. */
         val MIGRATIONS: Array<Migration> = arrayOf(
             MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5,
-            MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8,
+            MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10,
+            MIGRATION_10_11,
         )
     }
 }
