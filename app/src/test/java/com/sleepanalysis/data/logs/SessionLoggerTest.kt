@@ -1,6 +1,7 @@
 package com.sleepanalysis.data.logs
 
 import java.io.File
+import java.time.Instant
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -29,6 +30,22 @@ class SessionLoggerTest {
         assertEquals(2, lines.size)
         assertTrue(lines[0] < lines[1]) // timestamps sort lexicographically within the same day
         assertTrue(lines[0].startsWith("20")) // year prefix of the ISO timestamp
+    }
+
+    @Test
+    fun `timestamps are ISO-8601 UTC and stamped at write time`() {
+        val before = Instant.now()
+        logger.log(7, "recording_stop", "source=manual status=COMPLETED")
+        val after = Instant.now()
+
+        val line = logger.readSessionLog(7)!!.trim().lines().single()
+        // First token up to the space: "2026-…" + " [recording_stop] …" per the log() format.
+        val ts = line.substringBefore(' ')
+        // Instant.parse rejects any non-UTC offset (e.g. '+01:00'), so this asserts ISO-8601 UTC
+        // with a 'Z' suffix — no zone-aware formatter can slip in unnoticed.
+        val parsed = Instant.parse(ts)
+        assertTrue("timestamp ${parsed} predates the write by >2s", parsed >= before.minusSeconds(2))
+        assertTrue("timestamp ${parsed} lags the write by >2s", parsed <= after.plusSeconds(2))
     }
 
     @Test

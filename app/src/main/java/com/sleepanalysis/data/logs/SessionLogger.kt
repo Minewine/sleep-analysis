@@ -12,6 +12,14 @@ import javax.inject.Singleton
  * leaves the device.
  *
  * Blocking file I/O — callers are on background dispatchers.
+ *
+ * Timestamps are true UTC: every line is stamped with [Instant.now] at write time and rendered
+ * as ISO-8601 UTC (`Instant.toString` — always ends in `Z`, never a local offset), so log lines
+ * line up with the epoch-millis columns the DB writes from the same wall clock. Device-clock
+ * jumps (NTP corrections) can still create apparent gaps between records written at the same
+ * moment: the clock is read fresh on every write, so a correction landing between two writes
+ * shifts one timestamp relative to the other (e.g. a stop line stamping 1 h behind the session
+ * row finalized milliseconds later).
  */
 @Singleton
 class SessionLogger @Inject constructor(private val rootDir: File) {
