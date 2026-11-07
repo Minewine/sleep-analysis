@@ -16,6 +16,17 @@ data class SkippedHopSpan(
 )
 
 /**
+ * One mean-window-dBFS level bucket of the capture (schema v3 capture_stats): the cheap
+ * per-window level summary that lets an event-free gap be classified "quiet sleep" (windows
+ * processed, level at the ambient bed) vs "no capture" (no buckets — process death).
+ */
+data class AmbientLevelBucket(
+    val startMs: Long,
+    val endMs: Long,
+    val meanDbfs: Double,
+)
+
+/**
  * Parsed capture statistics for one session (the `capture_stats` JSON written at session
  * finalize, docs/DATA_MODEL.md §5.1). Tolerant: missing or malformed fields become null so
  * older sessions and interrupted writes still render.
@@ -34,6 +45,8 @@ data class CaptureStats(
     val savedAtMs: Long? = null,
     /** When audio capture actually began (after the start delay); null for pre-v8 rows. */
     val captureStartMs: Long? = null,
+    /** Mean window dBFS per 5-minute epoch bucket (schema v3); empty for older rows. */
+    val ambientBuckets: List<AmbientLevelBucket> = emptyList(),
 ) {
     /**
      * Mic-live capture time in ms: every 0.5 s analysis hop the engine processed or
@@ -65,8 +78,17 @@ data class CaptureStats(
                 skippedHopSpans = o.optJSONArrayOrNull("thermal_skipped_hops")?.toSpans() ?: emptyList(),
                 savedAtMs = o.optLongOrNull("saved_at_ms"),
                 captureStartMs = o.optLongOrNull("capture_started_at"),
+                ambientBuckets = o.optJSONArrayOrNull("ambient_level_buckets")?.toBuckets() ?: emptyList(),
             )
         }.getOrNull()
+
+        private fun JSONArray.toBuckets(): List<AmbientLevelBucket> =
+            (0 until length()).mapNotNull { i ->
+                val a = optJSONArray(i) ?: return@mapNotNull null
+                if (a.length() < 3) return@mapNotNull null
+                val bucket = AmbientLevelBucket(a.optLong(0), a.optLong(1), a.optDouble(2))
+                if (bucket.endMs <= bucket.startMs || bucket.meanDbfs.isNaN()) null else bucket
+            }
 
         private fun JSONArray.toSpans(): List<SkippedHopSpan> =
             (0 until length()).mapNotNull { i ->

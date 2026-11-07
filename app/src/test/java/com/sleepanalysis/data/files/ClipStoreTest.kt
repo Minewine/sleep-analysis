@@ -84,8 +84,8 @@ class ClipStoreTest {
     @Test
     fun `two events with the same start ms produce distinct files`() {
         val store = store()
-        val first = store.writeClip(10, "SNORE", 1_793_747_290_769, shortArrayOf(0, 0), 16_000)
-        val second = store.writeClip(10, "SNORE", 1_793_747_290_769, shortArrayOf(0, 0), 16_000)
+        val first = store.writeClip(10, "SNORE", 1_793_747_290_769, shortArrayOf(0, 0), 16_000, 2.5f).file
+        val second = store.writeClip(10, "SNORE", 1_793_747_290_769, shortArrayOf(0, 0), 16_000, 2.5f).file
         assertNotEquals(first.name, second.name)
         assertTrue(first.exists())
         assertTrue(second.exists())
@@ -94,8 +94,8 @@ class ClipStoreTest {
     @Test
     fun `event type is part of the filename`() {
         val store = store()
-        val snore = store.writeClip(10, "SNORE", 1_000, shortArrayOf(0), 16_000)
-        val cough = store.writeClip(10, "COUGH", 1_000, shortArrayOf(0), 16_000)
+        val snore = store.writeClip(10, "SNORE", 1_000, shortArrayOf(0), 16_000, 2.5f).file
+        val cough = store.writeClip(10, "COUGH", 1_000, shortArrayOf(0), 16_000, 2.5f).file
         assertTrue(snore.name.startsWith("evt_snore_"))
         assertTrue(cough.name.startsWith("evt_cough_"))
         assertNotEquals(snore.name, cough.name)
@@ -104,7 +104,7 @@ class ClipStoreTest {
     @Test
     fun `relative paths of written clips are session-scoped and resolvable`() {
         val store = store()
-        val file = store.writeClip(7, "SNORE", 1_000, shortArrayOf(0), 16_000)
+        val file = store.writeClip(7, "SNORE", 1_000, shortArrayOf(0), 16_000, 2.5f).file
         val rel = store.relativePath(file)
         assertTrue(rel.startsWith("session_7/"))
         assertEquals(file, store.absolutePath(rel))
@@ -113,7 +113,7 @@ class ClipStoreTest {
     @Test
     fun `written clip is a readable RIFF wave file`() {
         val store = store()
-        val file = store.writeClip(10, "SNORE", 1_000, shortArrayOf(1, -1, 2, -2), 16_000)
+        val file = store.writeClip(10, "SNORE", 1_000, shortArrayOf(1, -1, 2, -2), 16_000, 2.5f).file
         assertEquals("RIFF", file.readBytes().copyOfRange(0, 4).decodeToString())
     }
 }

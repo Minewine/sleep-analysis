@@ -3,7 +3,7 @@ package com.sleepanalysis.data.prefs
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
-/** Setter- and read-boundary clamps: negative retention must never future-date the retention cutoff, and legacy out-of-range stored values must be safe at the reads too. */
+/** Setter- and read-boundary clamps: retention, schedule clock, and the report thresholds (docs/NIGHT_REPORT.md §4). */
 class PreferenceBoundsTest {
 
     @Test
@@ -35,5 +35,32 @@ class PreferenceBoundsTest {
         assertEquals(0, PreferenceBounds.sanitizeMinuteOfDayOrDefault(-5, default = 22 * 60 + 30))
         assertEquals(24 * 60 - 1, PreferenceBounds.sanitizeMinuteOfDayOrDefault(2_000, default = 22 * 60 + 30))
         assertEquals(22 * 60 + 30, PreferenceBounds.sanitizeMinuteOfDayOrDefault(null, default = 22 * 60 + 30))
+    }
+
+    @Test
+    fun `confidence clamps to the configured bounds`() {
+        val b = PreferenceBounds
+        assertEquals(0.0, b.sanitizeConfidence(-1.0), 0.0001)
+        assertEquals(0.9, b.sanitizeConfidence(1.5), 0.0001)
+        assertEquals(0.5, b.sanitizeConfidence(0.5), 0.0001)
+    }
+
+    @Test
+    fun `NaN confidence falls back to the default instead of poisoning the clamp`() {
+        assertEquals(
+            PreferenceBounds.DEFAULT_NOISE_MIN_CONFIDENCE,
+            PreferenceBounds.sanitizeConfidence(Double.NaN),
+            0.0001,
+        )
+        assertEquals(
+            PreferenceBounds.DEFAULT_NOISE_MIN_CONFIDENCE,
+            PreferenceBounds.sanitizeConfidenceOrDefault(null, PreferenceBounds.DEFAULT_NOISE_MIN_CONFIDENCE),
+            0.0001,
+        )
+        assertEquals(
+            0.7,
+            PreferenceBounds.sanitizeConfidenceOrDefault(0.7, PreferenceBounds.DEFAULT_NOISE_MIN_CONFIDENCE),
+            0.0001,
+        )
     }
 }

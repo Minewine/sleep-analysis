@@ -22,7 +22,8 @@ import kotlin.math.sqrt
  *
  *   AudioRecord (16 kHz mono PCM16) → 1 s windows @ 0.5 s hop → features (dBFS, low-band ratio,
  *   rolling noise floor) → [SnoreDetector] → [EventDetector] → finalized events →
- *   clip flush from the in-memory ring buffer → [ClipPolicy] gates → [ClipStore].
+ *   clip flush from the in-memory ring buffer (RAW, pre-gain samples) → [ClipPolicy] gates →
+ *   [ClipStore] (float mic gain + −1 dBFS block peak-limit at write time).
  *
  * Clip persistence is bounded: a relative level gate (noise floor + margin, capped by a hard
  * absolute floor) keeps mic-self-noise artifacts from being saved (night 1: 1,047 near-silent
@@ -56,7 +57,9 @@ class AudioEngine(
          * Software mic gain applied to every raw PCM16 sample right after it is read from
          * AudioRecord. Raises effective mic sensitivity without touching the detector's
          * relative thresholds. Adjust here (or via MonitorService's Config construction) —
-         * 2.5 ≈ +8 dB; values above ~4 risk clipping loud snores.
+         * 2.5 ≈ +8 dB; values above ~4 risk clipping the ANALYSIS path on loud snores (the
+         * clip path is protected: the ring holds raw samples and ClipStore re-applies this
+         * gain in float with a −1 dBFS block peak-limit at write time).
          */
         val micGain: Float = 2.5f,
         /** Consecutive active windows required to open an event (debug toggle may set 1). */
@@ -70,12 +73,20 @@ class AudioEngine(
     )
 
     interface Listener {
-        /** Called on the capture thread whenever an event is finalized (clip already written, if any). */
+        /**
+         * Called on the capture thread whenever an event is finalized (clip already written,
+         * if any). [appliedGain] and [filePeakDbfs] are the persisted audio_clip values — the
+         * gain actually applied to the stored samples and the file's true peak in dBFS — and
+         * are null whenever the event has no clip (level/budget-gated, horizon-skipped, or
+         * clip write failure).
+         */
         fun onEventFinalized(
             draft: EventDetector.EventDraft,
             clipRelativePath: String?,
             clipDurationMs: Long,
             clipSizeBytes: Long,
+            appliedGain: Float?,
+            filePeakDbfs: Double?,
         )
 
         fun onCaptureError(throwable: Throwable)
@@ -97,6 +108,8 @@ class AudioEngine(
         val levelGateSkipped: Int = 0,
         /** Thermally skipped analysis hops as merged epoch spans — analysis-correctable coverage. */
         val skippedHopSpans: List<SkippedHopSpan> = emptyList(),
+        /** Mean window dBFS per 5-minute epoch bucket — quiet-sleep vs no-capture evidence. */
+        val ambientBuckets: List<com.sleepanalysis.domain.report.AmbientLevelBucket> = emptyList(),
     )
 
     private val windowSamples = (config.sampleRate * config.windowMs / 1000).toInt()
@@ -110,6 +123,18 @@ class AudioEngine(
     private val spectralWorkspace = SpectralFeatures.Workspace(config.sampleRate)
 
     private val clipRing = RingBuffer(clipSamples)
+
+    /**
+     * Preallocated RAW (pre-gain) scratch for the capture reads — the clip ring must hold the
+     * UNGAINED hop so the clip write path can float-gain + peak-limit instead of inheriting
+     * [applyGain]'s int16-clamped peaks (session 4: loud clips written flat-topped at 0 dBFS).
+     * [applyGain] mutates the read buffer in place for the analysis path, so the raw hop is
+     * copied here first. Two buffers: [fillBlocking] reads a whole window, the main loop one
+     * hop. Mirrors the [SpectralFeatures.Workspace] no-allocation-in-the-hot-loop rule.
+     */
+    private val rawWindowBuf = ShortArray(windowSamples)
+    private val rawHopBuf = ShortArray(hopSamples)
+    private val ambientBuckets = AmbientLevelBuckets()
     private val eventDetector = EventDetector(
         enterWindows = config.enterWindows,
         windowMs = config.windowMs,
@@ -161,6 +186,7 @@ class AudioEngine(
     @Volatile private var clipBytes = 0L
     /** Hour bucket of the last clip_budget_skipped log — rate-limits the session log. Capture-thread-only. */
     private var lastBudgetLogBucket = Long.MIN_VALUE
+    private var lastCooldownLogBucket = Long.MIN_VALUE
 
     fun start() {
         check(!running) { "AudioEngine already running" }
@@ -215,6 +241,9 @@ class AudioEngine(
             thermalThrottleEvents = thermalThrottleEvents,
             levelGateSkipped = levelGateSkipped,
             skippedHopSpans = skippedHops.spans(),
+            ambientBuckets = ambientBuckets.snapshot().map {
+                com.sleepanalysis.domain.report.AmbientLevelBucket(it.startMs, it.endMs, it.meanDbfs)
+            },
         )
     }
 
@@ -282,13 +311,15 @@ class AudioEngine(
                 analyzeWindow(windowBuf, hopCounter)
                 hopCounter++
 
-                if (readBlocking(opened, hopBuf, hopSamples) < hopSamples) break
+                if (readBlocking(opened, hopBuf, hopSamples, rawHopBuf) < hopSamples) break
 
                 // Slide the window forward by one hop; ring buffer always advances so clips
-                // stay available even while thermal throttling skips analysis.
+                // stay available even while thermal throttling skips analysis. The window
+                // keeps the GAINED hop (analysis path, unchanged); the ring gets the RAW one
+                // (clip path — ClipStore gains in float + peak-limits at write time).
                 System.arraycopy(windowBuf, hopSamples, windowBuf, 0, windowSamples - hopSamples)
                 System.arraycopy(hopBuf, 0, windowBuf, windowSamples - hopSamples, hopSamples)
-                clipRing.write(hopBuf)
+                clipRing.write(rawHopBuf)
             }
         } catch (t: Throwable) {
             listener.onCaptureError(t)
@@ -327,6 +358,13 @@ class AudioEngine(
         noiseFloorCount = minOf(noiseFloorCount + 1, noiseFloorRing.size)
         synchronized(statsLock) {
             if (ambientDbfs.size < 100_000) ambientDbfs.add(dbfs)
+        }
+        // Level buckets anchor on the same epoch expression as the skipped-hop spans —
+        // a window-END anchor (fillBlocking writes the primed window before the first
+        // analysis); harmless at 5-minute granularity, consistent across both consumers.
+        val bucketBase = captureStartEpochMs
+        if (bucketBase > 0L) {
+            ambientBuckets.add(bucketBase + clipRing.totalWritten * 1000 / config.sampleRate, dbfs)
         }
         windowsProcessed++
 
@@ -391,6 +429,8 @@ class AudioEngine(
             var clipRelPath: String? = null
             var clipDuration = 0L
             var clipSize = 0L
+            var clipAppliedGain: Float? = null
+            var clipFilePeakDbfs: Double? = null
             val eventStartEpochMs = clipTimeBase + draft.startMs
             if (clipTimeBase > 0L) {
                 when (
@@ -400,13 +440,15 @@ class AudioEngine(
                         peakDbfs = draft.peakDbfs,
                         eventStartEpochMs = eventStartEpochMs,
                         captureStartEpochMs = clipTimeBase,
+                        type = draft.type,
                     )
                 ) {
                     ClipPolicy.Decision.WRITE, ClipPolicy.Decision.WRITE_LOUD_RESERVE -> {
-                        // Gap merging defers delivery: drafts arrive ~3.5 s after endMs (hold
-                        // bound endMs + MERGE_GAP_MS + WINDOW_MS + one hop, capped at ~6 s),
-                        // so the 8 s snapshot covers ~4.5 s of the event head — 1.5 s less
-                        // of the event than the pre-merge immediate delivery; acceptable.
+                        // Deferred emission delays delivery: at the shipped gap of 0 drafts
+                        // arrive ≤ ~2.5 s after endMs (idle bound endMs + WINDOW_MS; hold cap
+                        // endMs + 5 s + one hop when a machine is busy), so the 8 s snapshot
+                        // covers ≥ 2.5 s of the event head plus its full tail — comfortably
+                        // inside the ring (the v1 2 s gap capped at 7.5 s, 0.5 s inside).
                         // Horizon guard (defense in depth): if the event's tail has slid past
                         // the ring horizon anyway (thermally-delayed emission, or a config
                         // whose hold bounds exceed clipMs), the snapshot would hold zero
@@ -419,20 +461,25 @@ class AudioEngine(
                                 spanMs = config.clipMs,
                             )
                         ) {
-                            val samples = clipRing.snapshotLast(clipSamples)
+                            val samples = clipRing.snapshotLast(clipSamples) // RAW, pre-gain audio
                             if (samples.isNotEmpty()) {
                                 runCatching {
-                                    val file: File = clipStore.writeClip(
-                                        sessionId, draft.type, eventStartEpochMs, samples, config.sampleRate
+                                    val written = clipStore.writeClip(
+                                        sessionId, draft.type, eventStartEpochMs,
+                                        samples, config.sampleRate, config.micGain,
                                     )
-                                    clipRelPath = clipStore.relativePath(file)
+                                    clipRelPath = clipStore.relativePath(written.file)
                                     clipDuration = samples.size * 1000L / config.sampleRate
-                                    clipSize = file.length()
+                                    clipSize = written.file.length()
                                     clipBytes += clipSize
+                                    clipAppliedGain = written.appliedGain
+                                    clipFilePeakDbfs = written.filePeakDbfs
                                     clipPolicy.onWritten(
                                         draft.peakDbfs,
                                         eventStartEpochMs,
                                         decision == ClipPolicy.Decision.WRITE_LOUD_RESERVE,
+                                        type = draft.type,
+                                        eventEndEpochMs = clipTimeBase + draft.endMs,
                                     )
                                 }.onFailure {
                                     // A failed clip write must never break the capture loop or drop the event.
@@ -459,17 +506,33 @@ class AudioEngine(
                             )
                         }
                     }
+                    ClipPolicy.Decision.SKIP_COOLDOWN -> {
+                        // Inside a bout cooldown with no upgrade — the EXPECTED common case
+                        // under burst-level detection (a 110-burst bout yields ~15 clips).
+                        // Separate event name so cooldown suppression is never misread as
+                        // budget exhaustion. Same once-per-hour-bucket rate limit.
+                        val bucket = eventStartEpochMs / ClipPolicy.HOUR_MS
+                        if (bucket != lastCooldownLogBucket) {
+                            lastCooldownLogBucket = bucket
+                            listener.onLog(
+                                "clip_cooldown_skipped",
+                                "type=${draft.type} meanDbfs=${draft.meanDbfs} total=${clipPolicy.totalWritten}",
+                            )
+                        }
+                    }
                 }
             }
-            listener.onEventFinalized(draft, clipRelPath, clipDuration, clipSize)
+            listener.onEventFinalized(draft, clipRelPath, clipDuration, clipSize, clipAppliedGain, clipFilePeakDbfs)
         }
     }
 
     /**
-     * Digital gain step: scales each raw PCM16 sample by [Config.micGain] in place. Pure int
-     * multiply + clamp (32-bit product, coerced back to Short) — branch-light and allocation-
+     * Digital gain step for the ANALYSIS path: scales each PCM16 sample by [Config.micGain]
+     * in place. Pure multiply + clamp (coerced back to Short) — branch-light and allocation-
      * free, so it is real-time safe on the capture thread. Clamping hard-limits loud snore
-     * peaks to the Short range instead of wrapping on overflow.
+     * peaks to the Short range instead of wrapping on overflow — which is exactly why the
+     * CLIP path no longer runs through it: the ring holds the raw hop and ClipStore re-applies
+     * the gain in float with a block peak-limit at write time.
      */
     private fun applyGain(samples: ShortArray, count: Int) {
         val gain = config.micGain
@@ -501,8 +564,13 @@ class AudioEngine(
         }
     }
 
-    /** Blocking read of exactly [n] samples into [buf]; returns samples read (< n on error/stop). */
-    private fun readBlocking(record: AudioRecord, buf: ShortArray, n: Int): Int {
+    /**
+     * Blocking read of exactly [n] samples into [buf], preserving the raw (pre-gain) samples
+     * into [raw] at the same offsets; returns samples read (< n on error/stop). [buf] leaves
+     * this function gained, exactly as before — only the analysis path consumes it. [raw]
+     * must be at least [n] long (callers pass the matching rawWindowBuf/rawHopBuf scratch).
+     */
+    private fun readBlocking(record: AudioRecord, buf: ShortArray, n: Int, raw: ShortArray): Int {
         var filled = 0
         while (filled < n && running) {
             val got = record.read(buf, filled, n - filled)
@@ -519,7 +587,11 @@ class AudioEngine(
                 }
                 continue
             }
-            applyGain(buf, got) // Gain the raw hop immediately — everything downstream sees the same level.
+            // Keep the raw hop for the clip ring, then gain in place — the analysis path sees
+            // the identical gained samples as before (bit-identical pipeline), the ring feeds
+            // the float-gain + peak-limit clip writer.
+            System.arraycopy(buf, filled, raw, filled, got)
+            applyGain(buf, got)
             filled += got
         }
         return if (running) filled else -1
@@ -528,11 +600,12 @@ class AudioEngine(
     /**
      * Blocking read of the first full window into [buf]. Returns false when the read failed
      * or the engine was stopped mid-fill — the caller must then not analyze the stale or
-     * zero-filled window (readBlocking already reported the error).
+     * zero-filled window (readBlocking already reported the error). The primed window enters
+     * the clip ring RAW (like every hop after it).
      */
     private fun fillBlocking(record: AudioRecord, buf: ShortArray, n: Int): Boolean {
-        val got = readBlocking(record, buf, n)
-        if (got > 0) clipRing.write(buf, got)
+        val got = readBlocking(record, buf, n, rawWindowBuf)
+        if (got > 0) clipRing.write(rawWindowBuf, got)
         return got == n
     }
 }

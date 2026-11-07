@@ -378,11 +378,11 @@ class MonitorService : Service() {
                         sessionId, "recording_stop",
                         "source=$source status=$status windows=${it.windowsProcessed} skipped=${it.windowsSkipped} " +
                             "clips=${it.clipCount} runClipBytes=${it.clipBytesTotal} gateSkip=${it.levelGateSkipped} " +
-                            "thermalEvents=${it.thermalThrottleEvents}"
+                            "thermalEvents=${it.thermalThrottleEvents} ${format(read(this@MonitorService))}"
                     )
                 }
                 val finalized = try {
-                    sessionRepository.finalizeSession(sessionId, status, stats, activeModelVersion)
+                    sessionRepository.finalizeSession(sessionId, status, stats)
                 } catch (t: Throwable) {
                     logger.log(sessionId, "finalize_failed", "${t.javaClass.simpleName}: ${t.message}")
                     false
@@ -470,6 +470,8 @@ class MonitorService : Service() {
             clipRelativePath: String?,
             clipDurationMs: Long,
             clipSizeBytes: Long,
+            appliedGain: Float?,
+            filePeakDbfs: Double?,
         ) {
             val sessionId = activeSessionId
             // Absolute-time base: the epoch of THIS engine's first sample. draft.startMs is
@@ -489,6 +491,8 @@ class MonitorService : Service() {
                         clipRelativePath = clipRelativePath,
                         clipDurationMs = clipDurationMs,
                         clipSizeBytes = clipSizeBytes,
+                        appliedGain = appliedGain,
+                        filePeakDbfs = filePeakDbfs,
                         modelVersion = activeModelVersion,
                     )
                 }.onFailure {
@@ -690,7 +694,8 @@ class MonitorService : Service() {
                     logger.log(
                         activeSessionId, "heartbeat",
                         "windows=${s.windowsProcessed} skipped=${s.windowsSkipped} " +
-                            "clips=${s.clipCount} gateSkip=${s.levelGateSkipped} freeMB=$freeMb$warn"
+                            "clips=${s.clipCount} gateSkip=${s.levelGateSkipped} freeMB=$freeMb$warn " +
+                            format(read(applicationContext))
                     )
                     val sessionId = activeSessionId
                     if (sessionId > 0) {

@@ -1,5 +1,6 @@
 package com.sleepanalysis.monitoring.audio
 
+import com.sleepanalysis.domain.report.AmbientLevelBucket
 import com.sleepanalysis.domain.report.CaptureStats
 import com.sleepanalysis.domain.report.SkippedHopSpan
 
@@ -13,8 +14,10 @@ import com.sleepanalysis.domain.report.SkippedHopSpan
  * merged stats keep the current engine's ambient statistics. Clip counts/bytes are not carried
  * either: finalizeSession takes those from the audio_clip table, which is authoritative across
  * restarts. The level-gate skip counter IS carried (like the window counters) so night-level
- * diagnostics of the level gate survive restarts, and skipped-hop spans are concatenated and
- * sorted (epoch-anchored) so thermal coverage gaps survive restarts too.
+ * diagnostics of the level gate survive restarts; skipped-hop spans and ambient level buckets
+ * are concatenated and sorted (epoch-anchored) so thermal coverage gaps AND pre-restart level
+ * evidence survive — without the bucket carry, a resumed night's pre-restart quiet stretches
+ * would be misclassified as "no capture" (docs/NIGHT_REPORT.md §1).
  */
 data class StatsCarry(
     val windowsProcessed: Long,
@@ -22,6 +25,7 @@ data class StatsCarry(
     val thermalThrottleEvents: Int,
     val levelGateSkipped: Int = 0,
     val skippedHopSpans: List<SkippedHopSpan> = emptyList(),
+    val ambientBuckets: List<AmbientLevelBucket> = emptyList(),
 ) {
     companion object {
         /** Counter carry from heartbeat-persisted stats of earlier engines; null when none saved. */
@@ -33,6 +37,7 @@ data class StatsCarry(
                 thermalThrottleEvents = capture.thermalThrottleEvents ?: 0,
                 levelGateSkipped = capture.levelGateSkipped ?: 0,
                 skippedHopSpans = capture.skippedHopSpans,
+                ambientBuckets = capture.ambientBuckets,
             )
         }
     }
@@ -47,6 +52,13 @@ fun AudioEngine.NightStats.withCarry(carry: StatsCarry?): AudioEngine.NightStats
         thermalThrottleEvents = thermalThrottleEvents + carry.thermalThrottleEvents,
         levelGateSkipped = levelGateSkipped + carry.levelGateSkipped,
         skippedHopSpans = (carry.skippedHopSpans + skippedHopSpans).sortedBy { it.startEpochMs },
+        // The current engine's buckets arrive as monitoring.audio types — carried as the
+        // domain type the capture stats (and the gap classification) consume.
+        ambientBuckets = (
+            carry.ambientBuckets + ambientBuckets.map {
+                AmbientLevelBucket(it.startMs, it.endMs, it.meanDbfs)
+            }
+            ).sortedBy { it.startMs },
     )
 }
 
@@ -58,7 +70,9 @@ fun AudioEngine.NightStats.withCarry(carry: StatsCarry?): AudioEngine.NightStats
  * when audio capture actually began (after the start delay) so health warnings can compare
  * processed windows against the real capture window instead of tap-to-stop wall time. Pure —
  * shared by heartbeat progress writes and finalize. v2 adds thermal_skipped_hops (arrays of
- * [startEpochMs, endEpochMs, hops]); the parser tolerates their absence.
+ * [startEpochMs, endEpochMs, hops]); v3 adds ambient_level_buckets ([startMs, endMs, meanDbfs]
+ * — the per-window level summary that lets event-free gaps be classified quiet vs uncaptured);
+ * the parser tolerates the absence of both.
  */
 fun captureStatsJson(
     stats: AudioEngine.NightStats?,
@@ -75,12 +89,17 @@ fun captureStatsJson(
             } + "]"
     val savedAtJson = savedAtMs?.let { ""","saved_at_ms":$it""" } ?: ""
     val captureStartJson = captureStartMs?.let { ""","capture_started_at":$it""" } ?: ""
-    return """{"schema_version":2,"windows_processed":${stats.windowsProcessed},""" +
+    val bucketsJson = if (stats.ambientBuckets.isEmpty()) "" else
+        ""","ambient_level_buckets":[""" +
+            stats.ambientBuckets.joinToString(",") {
+                "[${it.startMs},${it.endMs},${String.format(java.util.Locale.US, "%.1f", it.meanDbfs)}]"
+            } + "]"
+    return """{"schema_version":3,"windows_processed":${stats.windowsProcessed},""" +
         """"windows_skipped":${stats.windowsSkipped},""" +
         """"ambient_dbfs_median":${stats.ambientDbfsMedian ?: "null"},""" +
         """"ambient_dbfs_p95":${stats.ambientDbfsP95 ?: "null"},""" +
         """"clip_count":$clipCount,""" +
         """"thermal_throttle_events":${stats.thermalThrottleEvents},""" +
         """"level_gate_skipped":${stats.levelGateSkipped}""" +
-        savedAtJson + captureStartJson + spansJson + "}"
+        savedAtJson + captureStartJson + spansJson + bucketsJson + "}"
 }

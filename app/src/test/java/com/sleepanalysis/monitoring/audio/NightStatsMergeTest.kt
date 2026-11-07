@@ -134,4 +134,31 @@ class NightStatsMergeTest {
         val parsed = CaptureStats.parse(captureStatsJson(null))!!
         assertNull(parsed.windowsProcessed)
     }
+    @Test
+    fun `capture stats v3 round-trips ambient level buckets`() {
+        val stats = AudioEngine.NightStats(
+            windowsProcessed = 100, windowsSkipped = 2,
+            ambientDbfsMedian = -83.0, ambientDbfsP95 = -40.0,
+            clipCount = 3, clipBytesTotal = 96_000, thermalThrottleEvents = 0,
+            levelGateSkipped = 1,
+            skippedHopSpans = emptyList(),
+            ambientBuckets = listOf(
+                com.sleepanalysis.domain.report.AmbientLevelBucket(1_000L, 301_000L, -84.5),
+                com.sleepanalysis.domain.report.AmbientLevelBucket(301_000L, 601_000L, -79.0),
+            ),
+        )
+        val json = captureStatsJson(stats, clipCountOverride = 3)
+        assertTrue(json.contains("\"schema_version\":3"))
+        assertTrue(json.contains("ambient_level_buckets"))
+        val parsed = com.sleepanalysis.domain.report.CaptureStats.parse(json)!!
+        assertEquals(2, parsed.ambientBuckets.size)
+        assertEquals(1_000L, parsed.ambientBuckets[0].startMs)
+        assertEquals(-84.5, parsed.ambientBuckets[0].meanDbfs, 0.0001)
+        // v2-era JSON (no buckets) parses with an empty timeline.
+        val legacy = com.sleepanalysis.domain.report.CaptureStats.parse(
+            "{\"schema_version\":2,\"windows_processed\":10,\"windows_skipped\":0," +
+                "\"clip_count\":1,\"thermal_throttle_events\":0,\"level_gate_skipped\":0}",
+        )!!
+        assertTrue(legacy.ambientBuckets.isEmpty())
+    }
 }

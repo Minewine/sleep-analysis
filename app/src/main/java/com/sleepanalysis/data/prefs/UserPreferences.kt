@@ -3,10 +3,12 @@ package com.sleepanalysis.data.prefs
 import android.content.Context
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.booleanPreferencesKey
+import androidx.datastore.preferences.core.doublePreferencesKey
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
+import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.sleepanalysis.domain.policy.StartDelayPolicy
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -31,6 +33,29 @@ data class RetentionSettings(
 @Singleton
 class UserPreferences @Inject constructor(@ApplicationContext context: Context) {
 
+    object GarminRetryBounds {
+        /** One silent re-attempt per wake date, then at most one more after this cooldown. */
+        const val AUTO_RETRY_COOLDOWN_MS: Long = 6 * 60 * 60 * 1000L
+
+        /** Attempts allowed per wake date (the initial try + one cooldown retry). */
+        const val MAX_ATTEMPTS_PER_DATE: Int = 2
+
+
+        /**
+         * Pure gate: a new date always allows; the same date allows only while fewer than
+         * [MAX_ATTEMPTS_PER_DATE] attempts were made AND the cooldown has elapsed.
+         */
+        fun retryAllowed(
+            lastDate: String?,
+            lastMs: Long,
+            lastCount: Int,
+            date: String,
+            nowMs: Long,
+        ): Boolean =
+            lastDate != date ||
+                (lastCount < MAX_ATTEMPTS_PER_DATE && nowMs - lastMs >= AUTO_RETRY_COOLDOWN_MS)
+    }
+
     private val dataStore = context.dataStore
 
     private object Keys {
@@ -44,6 +69,10 @@ class UserPreferences @Inject constructor(@ApplicationContext context: Context) 
         val SCHEDULE_END_MINUTES = intPreferencesKey("schedule_end_minutes")
         val SCHEDULE_SKIP_EPOCH_DAY = longPreferencesKey("schedule_skip_epoch_day")
         val START_DELAY_MINUTES = intPreferencesKey("start_delay_minutes")
+        val GARMIN_AUTO_RETRY_DATE = stringPreferencesKey("garmin_auto_retry_date")
+        val GARMIN_AUTO_RETRY_MS = longPreferencesKey("garmin_auto_retry_ms")
+        val GARMIN_AUTO_RETRY_COUNT = intPreferencesKey("garmin_auto_retry_count")
+        val NOISE_DISPLAY_MIN_CONFIDENCE = doublePreferencesKey("noise_display_min_confidence")
     }
 
     val disclaimerAcceptedAt: Flow<Long?> = dataStore.data.map { it[Keys.DISCLAIMER_ACCEPTED_AT] }
@@ -143,6 +172,53 @@ class UserPreferences @Inject constructor(@ApplicationContext context: Context) 
     }
 
     /**
+     * Auto-backfill gate for the report's silent Garmin retry (docs/NIGHT_REPORT.md §Garmin):
+     * one attempt per wake date, plus at most one more after the cooldown — a morning that
+     * synced too early (Garmin's payload not ready) gets exactly one later try, never an
+     * unbounded re-import series. Call [markGarminAutoRetry] after every attempt (auto OR
+     * manual — a manual import also consumes the date's auto attempt).
+     */
+    suspend fun garminAutoRetryAllowed(date: String, nowMs: Long): Boolean {
+        val prefs = dataStore.data.first()
+        return GarminRetryBounds.retryAllowed(
+            lastDate = prefs[Keys.GARMIN_AUTO_RETRY_DATE],
+            lastMs = prefs[Keys.GARMIN_AUTO_RETRY_MS] ?: 0L,
+            lastCount = prefs[Keys.GARMIN_AUTO_RETRY_COUNT] ?: 0,
+            date = date,
+            nowMs = nowMs,
+        )
+    }
+
+    /**
+     * Display threshold for low-confidence OTHER_NOISE events (docs/NIGHT_REPORT.md §4):
+     * noise events below it are hidden from the report (counts/timeline/episodes) with an
+     * integrity note; rows stay in the DB. 0.0 disables the filter. Configurable — the
+     * clutter/benefit trade-off is a user call, not a constant.
+     */
+    val noiseDisplayMinConfidence: Flow<Double> = dataStore.data.map {
+        PreferenceBounds.sanitizeConfidenceOrDefault(
+                it[Keys.NOISE_DISPLAY_MIN_CONFIDENCE],
+                PreferenceBounds.DEFAULT_NOISE_MIN_CONFIDENCE,
+            )
+    }
+
+    suspend fun noiseDisplayMinConfidenceNow(): Double = noiseDisplayMinConfidence.first()
+
+    suspend fun setNoiseDisplayMinConfidence(value: Double) {
+        dataStore.edit { it[Keys.NOISE_DISPLAY_MIN_CONFIDENCE] = PreferenceBounds.sanitizeConfidence(value) }
+    }
+
+    suspend fun markGarminAutoRetry(date: String, nowMs: Long = System.currentTimeMillis()) {
+        dataStore.edit { prefs ->
+            val sameDate = prefs[Keys.GARMIN_AUTO_RETRY_DATE] == date
+            prefs[Keys.GARMIN_AUTO_RETRY_DATE] = date
+            prefs[Keys.GARMIN_AUTO_RETRY_MS] = nowMs
+            prefs[Keys.GARMIN_AUTO_RETRY_COUNT] =
+                if (sameDate) (prefs[Keys.GARMIN_AUTO_RETRY_COUNT] ?: 0) + 1 else 1
+        }
+    }
+
+    /**
      * Capture start delay in minutes (0 = off, night-2 dogfood idea): after the user taps start,
      * audio capture begins this many minutes later so falling-asleep noise stays out of events
      * and clips. The session row and time-in-bed still start at the tap; the wait happens inside
@@ -177,6 +253,11 @@ object PreferenceBounds {
     const val MIN_MINUTE_OF_DAY = 0
     const val MAX_MINUTE_OF_DAY = 24 * 60 - 1
 
+    /** Low-confidence noise display filter: default and bounds (0 = filter off). */
+    const val DEFAULT_NOISE_MIN_CONFIDENCE = 0.5
+    const val MIN_CONFIDENCE_BOUND = 0.0
+    const val MAX_CONFIDENCE_BOUND = 0.9
+
     fun sanitizeRetentionDays(raw: Int): Int = raw.coerceIn(MIN_RETENTION_DAYS, MAX_RETENTION_DAYS)
 
     fun sanitizeMinuteOfDay(raw: Int): Int = raw.coerceIn(MIN_MINUTE_OF_DAY, MAX_MINUTE_OF_DAY)
@@ -185,4 +266,10 @@ object PreferenceBounds {
     fun sanitizeRetentionDaysOrDefault(raw: Int?, default: Int): Int = sanitizeRetentionDays(raw ?: default)
 
     fun sanitizeMinuteOfDayOrDefault(raw: Int?, default: Int): Int = sanitizeMinuteOfDay(raw ?: default)
+
+    fun sanitizeConfidence(raw: Double): Double =
+        if (raw.isNaN()) DEFAULT_NOISE_MIN_CONFIDENCE else raw.coerceIn(MIN_CONFIDENCE_BOUND, MAX_CONFIDENCE_BOUND)
+
+    fun sanitizeConfidenceOrDefault(raw: Double?, default: Double): Double =
+        sanitizeConfidence(raw ?: default)
 }

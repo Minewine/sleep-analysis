@@ -7,6 +7,11 @@ import java.io.FileOutputStream
 
 /**
  * Minimal PCM16 mono WAV writer (44-byte RIFF header). Pure JVM — unit tested.
+ *
+ * Encodes the samples it is given verbatim — no scaling, no clamping. Clip callers pass
+ * already-gained, block-peak-limited audio ([ClipStore.gainAndLimit] applies the mic gain
+ * in float and limits the whole clip to −1 dBFS peak), so a loud event's file can never
+ * clip to full scale here.
  */
 object WavWriter {
 

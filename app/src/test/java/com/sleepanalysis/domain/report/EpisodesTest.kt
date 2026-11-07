@@ -40,6 +40,7 @@ class EpisodesTest {
         durationMs = 8000,
         intensityTier = "QUIET",
         eventType = EventType.SNORE,
+        peakDbfs = -30.0,
     )
 
     @Test

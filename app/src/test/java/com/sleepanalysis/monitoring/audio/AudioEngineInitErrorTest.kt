@@ -35,6 +35,8 @@ class AudioEngineInitErrorTest {
                     clipRelativePath: String?,
                     clipDurationMs: Long,
                     clipSizeBytes: Long,
+                    appliedGain: Float?,
+                    filePeakDbfs: Double?,
                 ) = Unit
 
                 override fun onCaptureError(throwable: Throwable) {
