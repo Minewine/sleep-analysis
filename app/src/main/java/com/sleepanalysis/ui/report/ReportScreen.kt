@@ -146,6 +146,11 @@ fun ReportScreen(
                         onPlay = viewModel::playClip,
                         onStop = viewModel::stopPlayback,
                         onSelect = { selectedEventId = it },
+                        labelFor = { id -> r.events.firstOrNull { it.id == id }?.userLabel },
+                        onLabel = { id, label ->
+                            val current = r.events.firstOrNull { it.id == id }?.userLabel
+                            viewModel.labelEvent(id, if (current == label.name) null else label)
+                        },
                     )
                 }
             }
@@ -453,6 +458,8 @@ private fun TopClipsCard(
     onPlay: (com.sleepanalysis.domain.report.ClipRef) -> Unit,
     onStop: () -> Unit,
     onSelect: (Long) -> Unit,
+    labelFor: (Long) -> String?,
+    onLabel: (Long, com.sleepanalysis.domain.labels.EventUserLabel) -> Unit,
 ) {
     Card {
         Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -464,6 +471,11 @@ private fun TopClipsCard(
             Text(
                 stringResource(R.string.report_top_clips_note),
                 style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                stringResource(R.string.report_label_caption),
+                style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             worstBoutClip?.let { clip ->
@@ -491,6 +503,11 @@ private fun TopClipsCard(
                         Button(onClick = { onPlay(clip) }) { Text(stringResource(R.string.report_play)) }
                     }
                 }
+                ClipLabelChips(
+                    eventId = clip.eventId,
+                    current = labelFor(clip.eventId),
+                    onLabel = onLabel,
+                )
             }
             clips.filter { it.eventId != worstBoutClip?.eventId }.forEach { clip ->
                 val playing = clip.eventId == playingEventId
@@ -517,7 +534,33 @@ private fun TopClipsCard(
                         Button(onClick = { onPlay(clip) }) { Text(stringResource(R.string.report_play)) }
                     }
                 }
+                ClipLabelChips(
+                    eventId = clip.eventId,
+                    current = labelFor(clip.eventId),
+                    onLabel = onLabel,
+                )
             }
+        }
+    }
+}
+
+/** Label chips under a clip row — same dataset contract as SelectedEventCard: user ground truth, never a score. */
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+@Composable
+private fun ClipLabelChips(
+    eventId: Long,
+    current: String?,
+    onLabel: (Long, com.sleepanalysis.domain.labels.EventUserLabel) -> Unit,
+) {
+    androidx.compose.foundation.layout.FlowRow(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        com.sleepanalysis.domain.labels.EventUserLabel.entries.forEach { label ->
+            FilterChip(
+                selected = current == label.name,
+                onClick = { onLabel(eventId, label) },
+                label = { Text(label.label) },
+            )
         }
     }
 }
