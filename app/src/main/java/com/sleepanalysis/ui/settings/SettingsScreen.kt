@@ -118,6 +118,9 @@ class SettingsViewModel @Inject constructor(
     private val _startDelayMinutes = MutableStateFlow(0)
     val startDelayMinutes: StateFlow<Int> = _startDelayMinutes.asStateFlow()
 
+    private val _noiseMinConfidence = MutableStateFlow(0.5)
+    val noiseMinConfidence: StateFlow<Double> = _noiseMinConfidence.asStateFlow()
+
     init {
         viewModelScope.launch { _debugEnter1.value = prefs.debugEnterWindows1Now() }
         refreshExactAlarmPermission()
@@ -128,6 +131,7 @@ class SettingsViewModel @Inject constructor(
             _scheduleStartMinutes.value = prefs.scheduleStartMinutesNow()
             _scheduleEndMinutes.value = prefs.scheduleEndMinutesNow()
             _startDelayMinutes.value = prefs.startDelayMinutesNow()
+            _noiseMinConfidence.value = prefs.noiseDisplayMinConfidenceNow()
             _nextScheduledStart.value = scheduler.nextStartOrNull(ZonedDateTime.now())
         }
     }
@@ -136,6 +140,12 @@ class SettingsViewModel @Inject constructor(
     fun setStartDelayMinutes(minutes: Int) {
         _startDelayMinutes.value = minutes
         viewModelScope.launch { prefs.setStartDelayMinutes(minutes) }
+    }
+
+    /** Report display filter for low-confidence noise; 0 = off. Affects the next report build. */
+    fun setNoiseMinConfidence(value: Double) {
+        _noiseMinConfidence.value = value
+        viewModelScope.launch { prefs.setNoiseDisplayMinConfidence(value) }
     }
 
     fun setDebugEnter1(enabled: Boolean) {
@@ -278,6 +288,7 @@ fun SettingsScreen(
     val canScheduleExactAlarms by viewModel.canScheduleExactAlarms.collectAsStateWithLifecycle()
     val notificationsEnabled by viewModel.notificationsEnabled.collectAsStateWithLifecycle()
     val startDelayMinutes by viewModel.startDelayMinutes.collectAsStateWithLifecycle()
+    val noiseMinConfidence by viewModel.noiseMinConfidence.collectAsStateWithLifecycle()
     val scheduleOn = scheduleEnabled && recordingEnabled
     val context = androidx.compose.ui.platform.LocalContext.current
 
@@ -363,6 +374,10 @@ fun SettingsScreen(
                     StartDelayRow(
                         selectedMinutes = startDelayMinutes,
                         onSelect = { viewModel.setStartDelayMinutes(it) },
+                    )
+                    NoiseFilterRow(
+                        selected = noiseMinConfidence,
+                        onSelect = { viewModel.setNoiseMinConfidence(it) },
                     )
                     TimeRow(
                         label = stringResource(R.string.settings_schedule_start),
@@ -588,6 +603,39 @@ private fun TimeRow(label: String, value: String, enabled: Boolean, onClick: () 
 
 /** Presets for the capture start delay; 0 = off. Values in minutes (night-2 dogfood idea). */
 private val START_DELAY_OPTIONS = intArrayOf(0, 15, 30, 45, 60, 90)
+
+/** Presets for the low-confidence noise display filter; 0.0 = off (docs/NIGHT_REPORT.md §4). */
+private val NOISE_FILTER_OPTIONS = doubleArrayOf(0.0, 0.5, 0.7, 0.9)
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun NoiseFilterRow(selected: Double, onSelect: (Double) -> Unit) {
+    Column(Modifier.fillMaxWidth()) {
+        Text(stringResource(R.string.settings_noise_filter_title), style = MaterialTheme.typography.bodyMedium)
+        Text(
+            stringResource(R.string.settings_noise_filter_subtitle),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            NOISE_FILTER_OPTIONS.forEach { value ->
+                FilterChip(
+                    selected = kotlin.math.abs(value - selected) < 0.01,
+                    onClick = { onSelect(value) },
+                    label = {
+                        Text(
+                            if (value == 0.0) stringResource(R.string.settings_noise_filter_off)
+                            else String.format(java.util.Locale.US, "≥ %.2f", value)
+                        )
+                    },
+                )
+            }
+        }
+    }
+}
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
