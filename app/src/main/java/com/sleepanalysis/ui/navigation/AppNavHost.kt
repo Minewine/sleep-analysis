@@ -18,6 +18,7 @@ object Routes {
     const val REPORT = "report/{sessionId}"
     const val REPORT_LOG = "report/{sessionId}/log"
     const val HISTORY = "history"
+    const val TRENDS = "trends"
     const val BASELINE = "baseline"
     const val SETTINGS = "settings"
     const val DAILY_LOG = "dailylog"
@@ -57,6 +58,13 @@ fun AppNavHost() {
         }
         composable(Routes.HISTORY) {
             HistoryScreen(
+                onBack = { navController.popBackStack() },
+                onOpenReport = { navController.navigate(Routes.report(it)) },
+                onOpenTrends = { navController.navigate(Routes.TRENDS) },
+            )
+        }
+        composable(Routes.TRENDS) {
+            com.sleepanalysis.ui.trends.TrendsScreen(
                 onBack = { navController.popBackStack() },
                 onOpenReport = { navController.navigate(Routes.report(it)) },
             )

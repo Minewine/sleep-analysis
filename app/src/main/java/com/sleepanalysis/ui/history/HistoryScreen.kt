@@ -77,6 +77,7 @@ class HistoryViewModel @Inject constructor(
 fun HistoryScreen(
     onBack: () -> Unit,
     onOpenReport: (Long) -> Unit,
+    onOpenTrends: () -> Unit = {},
     viewModel: HistoryViewModel = hiltViewModel(),
 ) {
     val sessions by viewModel.sessions.collectAsStateWithLifecycle()
@@ -97,6 +98,9 @@ fun HistoryScreen(
                     }
                 },
                 actions = {
+                    TextButton(onClick = onOpenTrends) {
+                        Text(stringResource(R.string.history_trends))
+                    }
                     TextButton(onClick = { confirmDeleteAll = true }) {
                         Text(stringResource(R.string.history_delete_all))
                     }
