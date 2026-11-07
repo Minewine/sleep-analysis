@@ -226,6 +226,141 @@ class GarminJsonParsersTest {
     }
 
     @Test
+    fun `sleep-service detail endpoint shapes parse (DTO wrapper, bare array, numeric levels)`() {
+        // GET /sleep-service/sleep/{date}: the DTO wrapper with the levels array populated.
+        val dto = """
+            {"dailySleepDTO":{"sleepTimeSeconds":22320,
+              "sleepLevels":[
+                {"startGMT":"2026-11-06T23:48:39","endGMT":"2026-11-07T00:48:39","level":"deep"},
+                {"startGMT":"2026-11-07T00:48:39","endGMT":"2026-11-07T01:48:39","level":1},
+                {"startGMT":"2026-11-07T01:48:39","endGMT":"2026-11-07T02:48:39","level":"rem"}]}}
+        """.trimIndent()
+        val spans = GarminJsonParsers.parseSleepLevels(dto)
+        assertEquals(listOf("DEEP", "LIGHT", "REM"), spans.map { it.stage })
+        assertEquals(3_600_000L, spans[0].endMs - spans[0].startMs)
+
+        // Bare top-level array (no wrapper).
+        val bare = """[{"startGMT":1000,"endGMT":2000,"level":"light"}]"""
+        assertEquals("LIGHT", GarminJsonParsers.parseSleepLevels(bare).single().stage)
+
+        // The verified dailySleep payload (totals only, no sleepLevels) still yields empty —
+        // the timeline endpoint is the source of truth for the timeline.
+        val totalsOnly = """
+            {"sleepTimeSeconds":22320,"sleepStartTimestampGMT":1793920119000,
+             "sleepScores":{"overall":{"value":71}}}
+        """.trimIndent()
+        assertTrue(GarminJsonParsers.parseSleepLevels(totalsOnly).isEmpty())
+    }
+
+    @Test
+    fun `verified live shape parses score from sleepScores overall and window`() {
+        // Field names verified against the live 2026-11-06 dailySleep response (the plural
+        // "sleepScores" object; the headline 0–100 at sleepScores.overall.value).
+        val json = """
+            {"sleepTimeSeconds":22320,"napTimeSeconds":0,
+             "sleepStartTimestampGMT":1793920119000,"sleepEndTimestampGMT":1793943159000,
+             "deepSleepSeconds":3000,"lightSleepSeconds":15120,"remSleepSeconds":4200,
+             "awakeSleepSeconds":720,"awakeCount":1,"avgHeartRate":67.0,
+             "averageRespirationValue":19.0,"avgSleepStress":24.0,
+             "sleepScores":{"overall":{"value":71,"qualifierKey":"FAIR"},
+                            "totalDuration":{"value":55,"qualifierKey":"FAIR"},
+                            "stress":{"value":40,"qualifierKey":"FAIR"},
+                            "awakeCount":{"value":91,"qualifierKey":"GOOD"},
+                            "remPercentage":{"value":20,"qualifierKey":"FAIR"},
+                            "restlessness":{"value":2,"qualifierKey":"GOOD"}},
+             "sleepNeed":{"baseline":460,"actual":420}}
+        """.trimIndent()
+        val byType = GarminJsonParsers.parseDailySleep(json, dayStart).associateBy { it.type }
+        assertEquals(71.0, byType.getValue(MeasurementType.VENDOR_SLEEP_SCORE).value, 0.0001)
+        // Verified sub-scores map; unknown shapes (awakeCount/remPercentage/restlessness) skip.
+        assertEquals(55.0, byType.getValue(MeasurementType.VENDOR_SLEEP_FACTOR_DURATION).value, 0.0001)
+        assertEquals(40.0, byType.getValue(MeasurementType.VENDOR_SLEEP_FACTOR_STRESS).value, 0.0001)
+        // 91/20/2 belong to skipped sub-scores only (19 is the payload's real respiration value).
+        assertTrue(byType.values.none { it.value == 91.0 || it.value == 20.0 || it.value == 2.0 })
+
+        val window = GarminJsonParsers.parseSleepWindow(json)!!
+        assertEquals(1793920119000L, window.startMs)
+        assertEquals(1793943159000L, window.endMs)
+    }
+
+    @Test
+    fun `sleep window falls back to local timestamps and rejects degenerate spans`() {
+        val local = """{"sleepStartTimestampLocal":1000,"sleepEndTimestampLocal":2000}"""
+        assertEquals(1000L, GarminJsonParsers.parseSleepWindow(local)!!.startMs)
+        assertNull(GarminJsonParsers.parseSleepWindow("""{"sleepStartTimestampGMT":2000,"sleepEndTimestampGMT":2000}"""))
+        assertNull(GarminJsonParsers.parseSleepWindow("""{"unrelated":1}"""))
+        assertNull(GarminJsonParsers.parseSleepWindow("not json {"))
+    }
+
+    @Test
+    fun `sleepLevels array shape with ISO timestamps parses canonical stages`() {
+        // The classic wellness-API shape: an array of {startGMT, endGMT, level} with ISO times.
+        val json = """
+            {"sleepLevels":[
+              {"startGMT":"2026-11-05T23:48:39","endGMT":"2026-11-06T00:20:39","level":"deep"},
+              {"startGMT":"2026-11-06T00:20:39","endGMT":"2026-11-06T00:50:39","level":"light"},
+              {"startGMT":"2026-11-06T01:30:39","endGMT":"2026-11-06T01:40:39","level":"rem"},
+              {"startGMT":"2026-11-06T02:00:39","endGMT":"2026-11-06T02:12:39","level":"awake"},
+              {"startGMT":"2026-11-06T03:00:39","endGMT":"2026-11-06T02:00:39","level":"deep"}]}
+        """.trimIndent()
+        val spans = GarminJsonParsers.parseSleepLevels(json)
+        assertEquals(4, spans.size) // the degenerate (end ≤ start) span is dropped
+        assertEquals(listOf("DEEP", "LIGHT", "REM", "AWAKE"), spans.map { it.stage })
+        assertEquals(1_793_922_519_000L, spans[0].startMs) // 23:48:39 UTC parsed as epoch ms
+        assertTrue(spans == spans.sortedBy { it.startMs })
+    }
+
+    @Test
+    fun `sleepLevels object-of-arrays shape maps by key`() {
+        val json = """
+            {"sleepLevels":{
+              "deep":[{"startTimeGMT":1000,"endTimeGMT":2000}],
+              "light":[{"startTimeGMT":2000,"endTimeGMT":5000}],
+              "awake_sleep":[{"startTimeGMT":5000,"endTimeGMT":6000}]}}
+        """.trimIndent()
+        val spans = GarminJsonParsers.parseSleepLevels(json)
+        assertEquals(listOf("DEEP", "LIGHT", "AWAKE"), spans.map { it.stage })
+        assertEquals(2000L, spans[1].startMs)
+    }
+
+    @Test
+    fun `sleepLevels absent or garbage yields empty`() {
+        assertTrue(GarminJsonParsers.parseSleepLevels("""{"sleepTimeSeconds":100}""").isEmpty())
+        assertTrue(GarminJsonParsers.parseSleepLevels("""{"sleepLevels":42}""").isEmpty())
+        assertTrue(GarminJsonParsers.parseSleepLevels("not json {").isEmpty())
+        // Unknown labels are kept verbatim, never dropped.
+        val unknown = GarminJsonParsers.parseSleepLevels("""{"sleepLevels":[{"startGMT":1,"endGMT":2,"level":"asleep"}]}""")
+        assertEquals("ASLEEP", unknown.single().stage)
+    }
+
+    @Test
+    fun `sleepLevels numeric encoding maps per the documented 0-3 scheme`() {
+        val json = """
+            {"sleepLevels":[
+              {"startGMT":1000,"endGMT":2000,"level":0},
+              {"startGMT":2000,"endGMT":3000,"level":1},
+              {"startGMT":3000,"endGMT":4000,"level":2},
+              {"startGMT":4000,"endGMT":5000,"level":3},
+              {"startGMT":5000,"endGMT":6000,"level":9}]}
+        """.trimIndent()
+        val spans = GarminJsonParsers.parseSleepLevels(json)
+        // 0–3 map to the documented stages; the out-of-range label is kept verbatim rather
+        // than dropping the span.
+        assertEquals(listOf("AWAKE", "LIGHT", "DEEP", "REM", "9"), spans.map { it.stage })
+    }
+
+    @Test
+    fun `sleepLevels entries without a usable level label are dropped`() {
+        // No level/stage/name key — a span with no meaning is worse than no span.
+        assertTrue(
+            GarminJsonParsers.parseSleepLevels("""{"sleepLevels":[{"startGMT":1,"endGMT":2}]}""").isEmpty(),
+        )
+        // Epoch numbers may arrive as doubles (1e9): Number.toLong() handles them.
+        val doubles = GarminJsonParsers.parseSleepLevels("""{"sleepLevels":[{"startGMT":1000000000,"endGMT":1000001000,"level":"deep"}]}""")
+        assertEquals("DEEP", doubles.single().stage)
+    }
+
+    @Test
     fun `bounded search does not traverse absurdly deep structures`() {
         val deep = buildString {
             append("{")

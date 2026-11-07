@@ -45,7 +45,7 @@ class GarminClient @Inject constructor(
     @Volatile private var cachedToken: String? = null
     @Volatile private var tokenExpiresAtMs = 0L
 
-    /** Fetches all five endpoints for [date]. Each endpoint fails independently. */
+    /** Fetches all six endpoints for [date]. Each endpoint fails independently. */
     suspend fun fetchDay(date: String): GarminDayResult = withContext(Dispatchers.IO) {
         val apiKey = keyStore.load()
             ?: throw GarminException("No Garmin API key stored — add one in Settings first.")
@@ -55,6 +55,11 @@ class GarminClient @Inject constructor(
         // EP_* constants); range endpoints carry dates in path or query but share one label.
         val endpoints: List<Pair<String, String>> = listOf(
             "/sleep-service/sleep/dailySleep?date=$date" to "/sleep-service/sleep/dailySleep",
+            // Stage-timeline endpoint (schema v9 sleep_stage source): same service, path-style
+            // date. Returns the detailed sleep DTO with a sleepLevels array on surfaces that
+            // expose it; 404/empty on others — the import treats it as optional (docs/
+            // GARMIN_INTEGRATION.md §6).
+            "/sleep-service/sleep/$date" to "/sleep-service/sleep",
             "/hrv-service/hrv/$date" to "/hrv-service/hrv",
             // Range endpoints (verified against the Personal API surface, GARMIN_INTEGRATION.md §4):
             // these take startDate/endDate, NOT date — a ?date= param is ignored/rejected.

@@ -62,7 +62,7 @@ class MeasurementRecorder @Inject constructor(
         timestamp: Long = System.currentTimeMillis(),
     ) {
         checkGarminType(type)
-        dao.insert(garminRow(type, value, periodStart, periodEnd, notes, timestamp))
+        dao.insert(garminRow(type, value, periodStart, periodEnd, notes, timestamp, sessionId = null))
     }
 
     /**
@@ -79,12 +79,15 @@ class MeasurementRecorder @Inject constructor(
         metrics: List<Pair<MeasurementType, Double>>,
         notes: String? = null,
         timestamp: Long = System.currentTimeMillis(),
+        sessionId: Long? = null,
     ) {
         if (metrics.isEmpty()) return
         metrics.forEach { (type, _) -> checkGarminType(type) }
         dao.replaceGarminForDay(
             periodStart,
-            metrics.map { (type, value) -> garminRow(type, value, periodStart, periodEnd, notes, timestamp) },
+            metrics.map { (type, value) ->
+                garminRow(type, value, periodStart, periodEnd, notes, timestamp, sessionId)
+            },
         )
     }
 
@@ -102,8 +105,11 @@ class MeasurementRecorder @Inject constructor(
         periodEnd: Long,
         notes: String?,
         timestamp: Long,
+        sessionId: Long?,
     ) = MeasurementEntity(
-        sessionId = null, // imported outside any session; joined to reports by day window
+        // Linked to the best time-overlapping session when the import can identify one
+        // (docs/GARMIN_INTEGRATION.md §6); null leaves the date-window join as the fallback.
+        sessionId = sessionId,
         timestamp = timestamp,
         sourceType = SourceTypes.GARMIN,
         method = Methods.DEVICE_REPORTED,

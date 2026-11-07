@@ -50,6 +50,22 @@ class MeasurementRecorderTest {
     }
 
     @Test
+    fun `session linking stamps the batch rows when a session overlaps`() = runTest {
+        val dao = FakeMeasurementDao()
+        val recorder = MeasurementRecorder(dao)
+        val metrics = listOf(MeasurementType.VENDOR_SLEEP_SCORE to 71.0)
+
+        recorder.replaceGarminEstimates(
+            periodStart = dayStart, periodEnd = dayEnd, metrics = metrics, sessionId = 3,
+        )
+        assertEquals(3L, dao.rows.single().sessionId)
+
+        // No identifiable session → rows stay date-linked (null), the historical behavior.
+        recorder.replaceGarminEstimates(periodStart = dayStart, periodEnd = dayEnd, metrics = metrics)
+        assertNull(dao.rows.single().sessionId)
+    }
+
+    @Test
     fun `replace deletes the prior day rows before inserting the new ones`() = runTest {
         val dao = FakeMeasurementDao()
         val recorder = MeasurementRecorder(dao)
