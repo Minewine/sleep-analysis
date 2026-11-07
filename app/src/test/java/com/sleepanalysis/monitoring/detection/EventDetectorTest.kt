@@ -13,6 +13,13 @@ class EventDetectorTest {
 
     private val detector = EventDetector()
 
+    /**
+     * The same machinery with the pre-v2 merge gap, for pinning the folding mechanism
+     * (deferred emission, fold aggregation, hold caps) independently of the shipped
+     * burst-level default ([DetectorConfig.MERGE_GAP_MS] = 0).
+     */
+    private val merging = EventDetector(mergeGapMs = 2_000L)
+
     // Fixed synthetic window values: dbfs -15 over floor -40 => SNR 25 dB.
     private fun features(ts: Long, dbfs: Double = -15.0, ratio: Double = 0.8, floor: Double = -40.0) =
         AudioFeatures(windowDbfs = dbfs, noiseFloorDbfs = floor, lowBandRatio = ratio, timestampMs = ts)
@@ -282,14 +289,74 @@ class EventDetectorTest {
         assertEquals("OTHER_NOISE", events.single().type)
     }
 
-    // --- Gap merging via deferred emission (EventDetector class KDoc) -----------------
+    // --- Burst-level events (shipped default: MERGE_GAP_MS = 0) ------------------------
 
     @Test
-    fun `same-type events separated by exactly mergeGapMs merge into one`() {
+    fun `a 2 s silence splits the chain into separate burst events`() {
+        // 4 quiet hops = EXIT_WINDOWS × HOP_MS = 2 s: the machine closes, and with no
+        // cross-draft merging the next burst is a NEW event — the v1 300+ s chains are gone.
+        val events = feed(detector, pattern = snore(4) + quiet(4) + snore(4) + quiet(4)) +
+            detector.flush()
+        assertEquals(2, events.size)
+        assertEquals(0L, events[0].startMs)
+        assertEquals(2500L, events[0].endMs)
+        // Second burst: start backdated one window from its first pending window (5000).
+        assertEquals(4000L, events[1].startMs)
+        assertEquals(6500L, events[1].endMs)
+    }
+
+    @Test
+    fun `pauses shorter than 2 s do not split (machine never closes)`() {
+        // 3 quiet hops = 1.5 s: below the exit hysteresis, so the burst continues — a pause
+        // that is not a >2 s silence is not a burst boundary, by definition.
+        val events = feed(detector, pattern = snore(4) + quiet(3) + snore(4) + quiet(4)) +
+            detector.flush()
+        assertEquals(1, events.size)
+        assertEquals(0L, events.single().startMs)
+        assertEquals(6000L, events.single().endMs) // last active window; the pause stays out
+    }
+
+    @Test
+    fun `a long multi-burst chain splits fully and preserves the snoring time`() {
+        // The v1 complaint, as a test: three 3 s bursts separated by 2.5 s silences used to
+        // arrive as ONE 15 s event (fold glue). Now: three burst events, each 2.5 s span
+        // (start backdated one window), and the union of their spans equals the sum —
+        // splitting never invents or loses snoring time.
+        val events = feed(
+            detector,
+            pattern = snore(6) + quiet(5) + snore(6) + quiet(5) + snore(6) + quiet(4),
+        ) + detector.flush()
+        assertEquals(3, events.size)
+        // Starts are backdated one window from each burst's first pending window; ends are
+        // the last active window of each burst.
+        assertEquals(listOf(0L, 5500L, 11000L), events.map { it.startMs })
+        assertEquals(listOf(3500L, 9000L, 14500L), events.map { it.endMs })
+        // Union of the split spans: 3 × 3.5 s = 10.5 s, no overlap — splitting neither
+        // invents nor loses snoring time.
+        val union = com.sleepanalysis.domain.scoring.SnoreMath
+            .unionDurationMs(events.map { it.startMs to it.endMs })
+        assertEquals(10_500L, union)
+    }
+
+    @Test
+    fun `burst-level events are also emitted while the night continues (expiry, not just flush)`() {
+        // The first burst's final is emitted during the silence; the second arrives later.
+        val first = feed(detector, pattern = snore(4) + quiet(6))
+        assertEquals(1, first.size) // emitted by expiry once the silence is provably over
+        assertEquals(0L, first.single().startMs)
+        val second = feed(detector, pattern = snore(4) + quiet(4), startTsMs = 6000) + detector.flush()
+        assertEquals(1, second.size)
+        assertEquals(5000L, second.single().startMs)
+    }
+
+    // --- Gap merging via deferred emission (mechanism pinned at an explicit 2 s gap) ---
+
+    @Test
+    fun `same-type events separated by exactly the merge gap merge into one`() {
         // Event A: 0..2500 (closes at 4500). Event B starts at 4500 (first pending window
         // 5500) — gap exactly MERGE_GAP_MS — and closes at 9000, within the deferred hold.
-        val events = feed(detector, pattern = snore(4) + quiet(5) + snore(4) + quiet(4)) +
-            detector.flush()
+        val events = feed(merging, pattern = snore(4) + quiet(5) + snore(4) + quiet(4)) +
+            merging.flush()
         assertEquals(1, events.size)
         val merged = events.single()
         assertEquals("SNORE", merged.type)
@@ -298,11 +365,11 @@ class EventDetectorTest {
     }
 
     @Test
-    fun `same-type events separated by more than mergeGapMs stay separate`() {
+    fun `same-type events separated by more than the merge gap stay separate`() {
         // Event B starts at 5000 (first pending window 6000): gap 2500 > MERGE_GAP_MS. The
         // held final is emitted at ts 6000, the moment both machines are idle past its bound.
-        val events = feed(detector, pattern = snore(4) + quiet(6) + snore(4) + quiet(4)) +
-            detector.flush()
+        val events = feed(merging, pattern = snore(4) + quiet(6) + snore(4) + quiet(4)) +
+            merging.flush()
         assertEquals(2, events.size)
         assertEquals("SNORE", events[0].type)
         assertEquals(0L, events[0].startMs)
@@ -314,9 +381,9 @@ class EventDetectorTest {
 
     @Test
     fun `deferred emission - closing step returns empty and the draft appears after the gap`() {
-        val whileClosing = feed(detector, pattern = snore(4) + quiet(4))
+        val whileClosing = feed(merging, pattern = snore(4) + quiet(4))
         assertTrue(whileClosing.isEmpty()) // the closed draft is held, not returned
-        val later = feed(detector, pattern = quiet(6), startTsMs = 5500)
+        val later = feed(merging, pattern = quiet(6), startTsMs = 5500)
         assertEquals(1, later.size) // timestamps advanced past the merge window: emitted now
         assertEquals(0L, later.single().startMs)
         assertEquals(2500L, later.single().endMs)
@@ -325,18 +392,18 @@ class EventDetectorTest {
     @Test
     fun `deferred final emits exactly one hop past its expiry bound`() {
         // Event A: 0..2500, closed at 4500 and held. Idle expiry bound =
-        // endMs + MERGE_GAP_MS + WINDOW_MS = 5500: the ts-5500 window sits exactly on the
+        // endMs + mergeGapMs(2 s) + WINDOW_MS = 5500: the ts-5500 window sits exactly on the
         // bound (strictly greater required — no emission); ts 6000 must emit.
         var ts = 1000L
         repeat(4) {
-            detector.update(ts, features(ts), result(snore = true))
+            merging.update(ts, features(ts), result(snore = true))
             ts += 500
         }
         repeat(6) { // quiet: closes at 4500 (held), then 5000 and 5500 stay inside the bound
-            assertTrue(detector.update(ts, features(ts), result(snore = false, loud = false)).isEmpty())
+            assertTrue(merging.update(ts, features(ts), result(snore = false, loud = false)).isEmpty())
             ts += 500
         }
-        val emitted = detector.update(ts, features(ts), result(snore = false, loud = false))
+        val emitted = merging.update(ts, features(ts), result(snore = false, loud = false))
         assertEquals(1, emitted.size)
         assertEquals(0L, emitted.single().startMs)
         assertEquals(2500L, emitted.single().endMs)
@@ -348,7 +415,7 @@ class EventDetectorTest {
         // snore machine busy, suppressing idle expiry for the OTHER_NOISE bucket. The hard
         // hold cap (endMs + MERGE_GAP_MS + 10 hops = 9500) must emit it mid-spell (first
         // tick past the cap: ts 10000) regardless of the busy machine — and exactly once.
-        val events = feed(detector, pattern = loudOnly(4) + quiet(4) + snore(30, loud = false))
+        val events = feed(merging, pattern = loudOnly(4) + quiet(4) + snore(30, loud = false))
         val held = events.filter { it.type == "OTHER_NOISE" }
         assertEquals(1, held.size)
         assertEquals(0L, held.single().startMs)
@@ -359,7 +426,7 @@ class EventDetectorTest {
     fun `mixed types within the gap do not merge`() {
         // OTHER_NOISE starts at 3500 — 1000 ms after the SNORE final ends, well within
         // MERGE_GAP_MS — but SNORE and OTHER_NOISE never merge with each other.
-        val events = feed(detector, pattern = snore(4) + loudOnly(6) + quiet(4)) + detector.flush()
+        val events = feed(merging, pattern = snore(4) + loudOnly(6) + quiet(4)) + merging.flush()
         assertEquals(2, events.size)
         assertEquals("SNORE", events[0].type)
         assertEquals(0L, events[0].startMs)
@@ -373,17 +440,17 @@ class EventDetectorTest {
         // OTHER_NOISE event 0..2500 held as the deferred final. A later snore spell whose
         // mean sits below the relative level gate (−60 over floor −40 → threshold −30) is
         // downgraded to OTHER_NOISE — same FINAL type — so it folds into the held final.
-        feed(detector, pattern = loudOnly(4) + quiet(4))
+        feed(merging, pattern = loudOnly(4) + quiet(4))
         var ts = 5500L
         repeat(4) {
-            detector.update(ts, features(ts, dbfs = -60.0), result(snore = true))
+            merging.update(ts, features(ts, dbfs = -60.0), result(snore = true))
             ts += 500
         }
         repeat(4) {
-            detector.update(ts, features(ts, dbfs = -90.0), result(snore = false))
+            merging.update(ts, features(ts, dbfs = -90.0), result(snore = false))
             ts += 500
         }
-        val events = detector.flush()
+        val events = merging.flush()
         assertEquals(1, events.size)
         assertEquals("OTHER_NOISE", events.single().type)
         assertEquals(0L, events.single().startMs) // merged onto the prior OTHER_NOISE final
@@ -395,17 +462,17 @@ class EventDetectorTest {
         // Merge-before-discard: the second spell is 1.5 s alone (below MIN_DURATION_MS) yet
         // within the gap of the held final, so it survives inside the merge instead of being
         // dropped as it would be without a partner.
-        feed(detector, pattern = snore(4) + quiet(4)) // SNORE 0..2500 deferred
+        feed(merging, pattern = snore(4) + quiet(4)) // SNORE 0..2500 deferred
         var ts = 5500L
         repeat(2) { // opens at the second window (start 4500), active 4500..6000
-            detector.update(ts, features(ts), result(snore = true))
+            merging.update(ts, features(ts), result(snore = true))
             ts += 500
         }
         repeat(4) {
-            detector.update(ts, features(ts), result(snore = false))
+            merging.update(ts, features(ts), result(snore = false))
             ts += 500
         }
-        val events = detector.flush()
+        val events = merging.flush()
         assertEquals(1, events.size)
         assertEquals(0L, events.single().startMs)
         assertEquals(6000L, events.single().endMs)
@@ -414,20 +481,20 @@ class EventDetectorTest {
 
     @Test
     fun `flush emits remaining deferred finals and a second flush is a no-op`() {
-        feed(detector, pattern = snore(4) + quiet(4))
-        val flushed = detector.flush()
+        feed(merging, pattern = snore(4) + quiet(4))
+        val flushed = merging.flush()
         assertEquals(1, flushed.size)
         assertEquals(0L, flushed.single().startMs)
         assertEquals(2500L, flushed.single().endMs)
-        assertTrue(detector.flush().isEmpty())
+        assertTrue(merging.flush().isEmpty())
     }
 
     @Test
     fun `flush-closed draft merges with a pending deferred final within the gap`() {
         // The second event is still open when the feed ends; flush closes it and folds it
         // into the held first final (gap exactly MERGE_GAP_MS: B starts at 4500).
-        feed(detector, pattern = snore(4) + quiet(5) + snore(4))
-        val events = detector.flush()
+        feed(merging, pattern = snore(4) + quiet(5) + snore(4))
+        val events = merging.flush()
         assertEquals(1, events.size)
         assertEquals(0L, events.single().startMs)
         assertEquals(7000L, events.single().endMs)
@@ -439,22 +506,22 @@ class EventDetectorTest {
         // second event's; the mean is the window-weighted average over all six windows.
         var ts = 1000L
         repeat(4) {
-            detector.update(ts, features(ts, dbfs = -30.0), result(snore = true))
+            merging.update(ts, features(ts, dbfs = -30.0), result(snore = true))
             ts += 500
         }
         repeat(4) { // quiet closes the first event at ts 4500 (held as deferred final)
-            detector.update(ts, features(ts, dbfs = -90.0), result(snore = false))
+            merging.update(ts, features(ts, dbfs = -90.0), result(snore = false))
             ts += 500
         }
         repeat(4) { // second event 4000..6500 — within the gap, folds into the held final
-            detector.update(ts, features(ts, dbfs = -10.0), result(snore = true))
+            merging.update(ts, features(ts, dbfs = -10.0), result(snore = true))
             ts += 500
         }
         repeat(4) {
-            detector.update(ts, features(ts, dbfs = -90.0), result(snore = false))
+            merging.update(ts, features(ts, dbfs = -90.0), result(snore = false))
             ts += 500
         }
-        val events = detector.flush()
+        val events = merging.flush()
         assertEquals(1, events.size)
         val merged = events.single()
         assertEquals(-10.0, merged.peakDbfs, 0.0001) // max, not first
@@ -480,7 +547,7 @@ class EventDetectorTest {
         var ts = 1000L
         val drafts = mutableListOf<EventDetector.EventDraft>()
         fun step(snore: Boolean, loud: Boolean) {
-            drafts += detector.update(ts, features(ts), result(snore, loud))
+            drafts += merging.update(ts, features(ts), result(snore, loud))
             ts += 500
         }
         repeat(4) { step(snore = true, loud = true) }    // A opens: 1000..2500
@@ -505,7 +572,7 @@ class EventDetectorTest {
         assertEquals(7500L, successor.endMs)
 
         // Exactly two events total, each emitted exactly once.
-        assertTrue(detector.flush().isEmpty())
+        assertTrue(merging.flush().isEmpty())
     }
 
     // --- Stride-aware hard hold cap (thermal throttling) --------------------------------
@@ -517,7 +584,7 @@ class EventDetectorTest {
         // 7000 + 1000 = the 8 s clip ring horizon exactly — a snapshot with zero event
         // audio (AudioEngine.deliver). The stride-aware cap emits one stamp past
         // endMs + 6500 instead, keeping the event's tail inside the ring.
-        val throttled = EventDetector()
+        val throttled = EventDetector(mergeGapMs = 2_000L)
         var ts = 1000L
         val drafts = mutableListOf<EventDetector.EventDraft>()
         fun step(snore: Boolean, loud: Boolean) {
@@ -542,11 +609,11 @@ class EventDetectorTest {
     fun `hard hold cap emission timing is unchanged at the normal 500 ms stride`() {
         // Same shape as the throttled variant at hopMs stride: the cap slack is zero, so the
         // emission stamp is exactly the historical first stamp past endMs + maxHoldMs
-        // (2500 + 7000 = 9500, strictly greater → 10000 on the 500 ms grid).
+        // (2500 + 7000 = 9500 at this detector's explicit 2 s gap; strictly greater → 10000 on the 500 ms grid).
         var ts = 1000L
         val drafts = mutableListOf<EventDetector.EventDraft>()
         fun step(snore: Boolean, loud: Boolean) {
-            drafts += detector.update(ts, features(ts), result(snore, loud))
+            drafts += merging.update(ts, features(ts), result(snore, loud))
             ts += 500
         }
         repeat(4) { step(snore = false, loud = true) }   // OTHER_NOISE 0..2500 opens

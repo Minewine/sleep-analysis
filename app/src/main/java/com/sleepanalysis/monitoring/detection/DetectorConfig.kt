@@ -4,7 +4,7 @@ import com.sleepanalysis.domain.scoring.SnoreScore
 
 /**
  * Tuning constants for the Phase 1 acoustic pipeline. The shipped detector is the
- * documented energy-heuristic-v1-spectral (energy/band + spectral gates + rhythm gate); a
+ * shipped energy-heuristic-v2-burst (v1-spectral classification + burst-level event shaping); a
  * learned model remains a Phase 2 concern — the interface (SnoreDetector) is the swap point
  * (docs/MVP_SCOPE.md F4, docs/ARCHITECTURE.md §8).
  */
@@ -62,10 +62,28 @@ object DetectorConfig {
      * the 23:00 hour's 8 were already spent. Events whose PEAK clears [LOUD_CLIP_PEAK_DBFS]
      * bypass the hourly/nightly budgets while a small nightly reserve lasts; the mean-level
      * gate above still applies (a momentary peak in rumble earns no clip). Peak, not mean:
-     * event means drag toward the quiet windows between breath cycles.
+     * event means drag toward the quiet windows between breath cycles. Raised 15 → 25 after
+     * night 4 (1,048 bursts → 60 clips): a long bout outruns the ordinary budget, and the
+     * reserve is what guarantees its loudest moments land.
      */
     const val LOUD_CLIP_PEAK_DBFS = -25.0
-    const val LOUD_CLIP_RESERVE_PER_NIGHT = 15
+    const val LOUD_CLIP_RESERVE_PER_NIGHT = 25
+
+    /**
+     * Bout-cooldown clip selection (night 4 dogfood: 1,048 snore bursts, median 2.5 s,
+     * produced only 60 clips — 4% of snore time — because one 04:14–04:25 bout of 110 bursts
+     * spent ~15 of the night's 50 clips on indistinguishable audio). After a clip is written
+     * for an event type, same-type events whose start falls within [BOUT_COOLDOWN_MS] of that
+     * write's end are skipped (SKIP_BUDGET) unless they are an upgrade: peak at least
+     * [CLIP_UPGRADE_DB] louder than the written clip's peak. An upgrade writes (within the
+     * nightly/hourly caps) and re-anchors the cooldown with its own peak; loudness-reserve
+     * events bypass the cooldown and re-anchor it too. A bout therefore costs ~1 clip per
+     * cooldown window plus one clip per intensity step — the night's worst moments are
+     * guaranteed playable audio and the budget spreads across the night. Two values of state
+     * per type: streaming-friendly, no whole-night buffering. See ClipPolicy (monitoring/audio).
+     */
+    const val BOUT_COOLDOWN_MS = 45_000L
+    const val CLIP_UPGRADE_DB = 3.0
 
     // Energy detector thresholds (relative to the rolling noise floor — never absolute SPL).
     const val NOISE_FLOOR_PERCENTILE = 0.20
@@ -110,7 +128,21 @@ object DetectorConfig {
     const val ENTER_WINDOWS = 2       // 2 consecutive active hops (1.0 s) to open an event
     const val EXIT_WINDOWS = 4        // 4 consecutive quiet hops (2.0 s) to close it
     const val MIN_DURATION_MS = 2_000L
-    const val MERGE_GAP_MS = 2_000L
+
+    /**
+     * Cross-draft merge gap — **0 (burst-level events) since detector v2**: a closed draft is
+     * never folded into a later one, so every machine-open span is one event and any internal
+     * silence > [EXIT_WINDOWS]×[HOP_MS] (2 s) splits the chain. This is what stopped the
+     * 300+ s "events" that were breath trains glued back together by the v1 fold (the exit
+     * hysteresis already closed the machine at ≥2 s silences — the fold was the glue).
+     *
+     * The folding MACHINERY stays (deferred emission, min-duration absorb, hold caps — all
+     * still needed) and remains parameterized: [EventDetectorTest] pins it at an explicit
+     * 2 s gap, and the pre-v2 merged-chains view is recoverable as bouts with a 2 s gap.
+     * Train-level aggregation is the report's job now: bouts at ≤5 s and ≤10 s
+     * (domain/report/Bouts.kt), so a single number never depends on the detector's merge.
+     */
+    const val MERGE_GAP_MS = 0L
 
     /** Relative intensity bands (docs/MEASUREMENT_RELIABILITY.md M2 — relative, not SPL). */
     const val EPIC_DBFS = -10.0

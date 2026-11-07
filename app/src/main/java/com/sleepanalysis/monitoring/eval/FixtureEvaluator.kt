@@ -246,6 +246,6 @@ class FixtureEvaluator {
          * `SessionRepository.MODEL_VERSION` (data layer — not importable from pure-JVM eval
          * code); update both together when the detector model id changes.
          */
-        const val DETECTOR_VERSION = "energy-heuristic-v1-spectral"
+        const val DETECTOR_VERSION = "energy-heuristic-v2-burst"
     }
 }

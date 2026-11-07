@@ -20,20 +20,26 @@ import com.sleepanalysis.data.db.entity.EventType
  * stays in the database as an event but is never labeled snore and (via ClipPolicy) never
  * persists a clip. Relative to the floor, the gate self-calibrates across rooms/mic placements.
  *
- * ## Gap merging via deferred emission (docs/ARCHITECTURE.md §4 "merge gaps ≤ 2 s")
+ * ## Deferred emission (docs/ARCHITECTURE.md §4; merging parameterized, shipped at 0)
  *
- * Real snore trains arrive in breath groups separated by 1–2 s quiet gaps — shorter than the
- * 2 s exit hysteresis needs to be provably quiet, so the exit timeout shattered session 10 into
- * 1,306 events of which 69% were bare 2–3 s minimum-duration fragments. Merging therefore
- * happens on already-CLOSED drafts, with deferred emission so a returned draft never needs
- * amending (callers — AudioEngine's clip snapshot and DB row — see each event exactly once):
+ * v1 history: real snore trains arrive in breath groups separated by 1–2 s quiet gaps —
+ * shorter than the 2 s exit hysteresis needs to be provably quiet — so v1 folded within-gap
+ * drafts to keep trains as one event; that glue is what produced the 300+ s merged trains
+ * (session 11: up to 313 s). v2 ships [MERGE_GAP_MS] = 0: drafts are never folded, every
+ * machine-open span is one BURST-level event, and the 2 s exit hysteresis is the split bound
+ * (a >2 s internal silence closes the machine and the chain splits). Train-level aggregation
+ * is the report's job (bouts ≤5/≤10 s, domain/report/Bouts.kt); the pre-v2 merged-chains view
+ * is recoverable as bouts with a 2 s gap. The deferred-emission MACHINERY is unchanged and
+ * still required — minimum-duration absorb, single-emission guarantees, hold caps — and is
+ * parameterized, pinned by [EventDetectorTest] at an explicit 2 s gap:
  *
  *  - A closed draft is NOT returned immediately; it is held as the deferred final for its
  *    FINAL (post-gate-downgrade) type. When the next same-type draft closes within
  *    [mergeGapMs] of the held final's end (draft.startMs − deferred.endMs ≤ mergeGapMs), the
  *    two fold into one held draft (peak = max, window-count-weighted means from the raw
  *    per-window sums, openWindows summed, start of the first preserved) instead of being
- *    emitted — so a whole train is delivered as one event.
+ *    emitted. At the shipped gap of 0 this fold can never fire across drafts — with the 2 s
+ *    test gap it delivers a whole train as one event.
  *  - Merge-before-discard: a closing draft shorter than [minDurationMs] folds into a
  *    within-gap same-type deferred final BEFORE the too-short discard applies; without a
  *    partner it is discarded exactly as before merging existed.
@@ -45,26 +51,27 @@ import com.sleepanalysis.data.db.entity.EventType
  *    within-gap held final first).
  *
  *    "Provably closed" needs care: a successor draft only EXISTS at its close, which is at
- *    least (enterWindows − 1 + exitWindows) hops after its first pending window. With
- *    MERGE_GAP_MS (2 s) equal to EXIT_WINDOWS×HOP_MS (2 s), comparing the current timestamp
- *    against deferred.endMs + mergeGapMs alone would expire every held final one hop after
- *    its close — before any successor draft could exist — and no same-type merge would ever
- *    fire. The hold therefore lasts until BOTH machines are idle (no pending and no active
- *    windows — while either is busy a draft may still arrive and merge, checked at absorb
- *    time) AND the timestamp exceeds deferred.endMs + mergeGapMs + [windowMs] (the +windowMs
- *    accounts for event starts being backdated one window from the first pending stamp).
- *    With the defaults this emits ≤ ~3.5 s after the event's last active window — inside the
- *    live ring buffer's 8 s clip horizon (see AudioEngine.deliver).
+ *    least (enterWindows − 1 + exitWindows) hops after its first pending window — comparing
+ *    the current timestamp against deferred.endMs + mergeGapMs alone would expire every held
+ *    final before any successor draft could exist. The hold therefore lasts until BOTH
+ *    machines are idle (no pending and no active windows — while either is busy a draft may
+ *    still arrive and merge, checked at absorb time) AND the timestamp exceeds
+ *    deferred.endMs + mergeGapMs + [windowMs] (the +windowMs accounts for event starts being
+ *    backdated one window from the first pending stamp). At the shipped gap of 0 this emits
+ *    ≤ ~2.5 s after the event's last active window — well inside the live ring buffer's 8 s
+ *    clip horizon (see AudioEngine.deliver).
  *
  *    The idle condition alone could pin a held final indefinitely behind an unrelated open
  *    event (a continuously-open snore spell suppressing the OTHER_NOISE bucket), so a hard
  *    hold cap applies independent of machine-busy: held finals are emitted once the timestamp
- *    exceeds deferred.endMs + [maxHoldMs] (7 s at defaults). A merging successor's draft
+ *    exceeds deferred.endMs + [maxHoldMs] (5 s at the shipped gap of 0, 7 s at the 2 s test
+ *    gap). A merging successor's draft
  *    closes at gap + successorSpan + exitSpan after the held final's end, so the cap covers
  *    every successor with span ≤ (exitWindows + 2) hops (3 s — the observed fragment span);
  *    longer downgrade-ambiguous successors are sacrificed by the cap rather than pinning the
- *    held final past the live ring buffer's 8 s clip horizon: emission happens ≤ endMs +
- *    maxHoldMs + one hop = 7.5 s after the tail, 0.5 s inside the ring (AudioEngine.deliver).
+ *    held final past the live ring buffer's 8 s clip horizon: at the shipped gap emission
+ *    happens ≤ endMs + maxHoldMs + one hop = 5.5 s after the tail — 2.5 s inside the ring
+ *    (AudioEngine.deliver); the 2 s test gap gives the historical 7.5 s, 0.5 s inside.
  *
  *    A later same-type draft that does not merge CAN arrive while its predecessor is still
  *    held — expiry uses the hard cap whenever EITHER machine is busy, so e.g. a single
@@ -179,7 +186,7 @@ class EventDetector(
 
     /**
      * Hard hold cap, independent of machine-busy: `mergeGapMs + (2·exitWindows + 2) × hopMs`
-     * = 7 s at defaults. A merging successor's draft closes at `gap + successorSpan +
+     * = 5 s at the shipped gap of 0 (7 s at the 2 s test gap). A merging successor's draft closes at `gap + successorSpan +
      * exitSpan` after the held final's end, so with gap ≤ [mergeGapMs] and successor span ≤
      * (exitWindows + 2) hops (3 s — the observed session-10 fragment span) the fold lands
      * at ≤ 7 s and survives the cap; longer successors are sacrificed rather than pinning

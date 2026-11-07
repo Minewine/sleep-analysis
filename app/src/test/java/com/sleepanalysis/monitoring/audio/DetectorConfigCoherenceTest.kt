@@ -51,10 +51,27 @@ class DetectorConfigCoherenceTest {
             return stamps + detector.flush().map { it.startMs to it.endMs }
         }
 
-        // Both merge the two spells into one event spanning 0..7000 (starts backdated by the
-        // same windowMs), emitted at the same stamps.
-        assertEquals(listOf(0L to 7000L), run(EventDetector()))
-        assertEquals(listOf(0L to 7000L), run(explicit))
+        // Burst-level default (MERGE_GAP_MS = 0): the 2.5 s silence splits the chain —
+        // identical spans for the default constructor and the explicitly-passed config,
+        // which is the coherence this test pins.
+        val burst = listOf(0L to 2500L, 4500L to 7000L)
+        assertEquals(burst, run(EventDetector()))
+        assertEquals(burst, run(explicit))
+
+        // The merge pass-through is pinned too: an explicit 2 s gap merges the same pattern
+        // into one event on BOTH construction paths.
+        val mergingExplicit = EventDetector(
+            enterWindows = DetectorConfig.ENTER_WINDOWS,
+            exitWindows = DetectorConfig.EXIT_WINDOWS,
+            minDurationMs = DetectorConfig.MIN_DURATION_MS,
+            mergeGapMs = 2_000L,
+            windowMs = DetectorConfig.WINDOW_MS,
+            hopMs = DetectorConfig.HOP_MS,
+            gateMarginDb = DetectorConfig.GATE_MARGIN_DB,
+            gateHardFloorDbfs = DetectorConfig.MIN_GATE_DBFS,
+        )
+        assertEquals(listOf(0L to 7000L), run(EventDetector(mergeGapMs = 2_000L)))
+        assertEquals(listOf(0L to 7000L), run(mergingExplicit))
     }
 
     private fun features(ts: Long) = AudioFeatures(

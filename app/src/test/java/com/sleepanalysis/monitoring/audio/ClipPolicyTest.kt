@@ -1,5 +1,6 @@
 package com.sleepanalysis.monitoring.audio
 
+import com.sleepanalysis.data.db.entity.EventType
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -8,7 +9,9 @@ import org.junit.Test
 /**
  * Clip gating tests: relative level gate (noise floor + margin, hard absolute floor), the
  * settling window, the loudness reserve (night 3: the loudest snore missed its clip because
- * the hour's budget was spent), the per-wall-clock-hour budget, and the per-night backstop.
+ * the hour's budget was spent), the bout cooldown (night 4: a single 110-burst bout ate the
+ * budget — clips now follow a per-type cooldown with upgrade writes), the per-wall-clock-hour
+ * budget, and the per-night backstop.
  */
 class ClipPolicyTest {
 
@@ -116,7 +119,9 @@ class ClipPolicyTest {
             policy.onWritten(-20.0, nightStartMs + it * 60_000, viaLoudReserve = true)
         }
         // Reserve spent: the same loud event now falls through to the (full) hourly budget.
-        assertFalse(policy.loud(peakDbfs = -20.0))
+        // (Checked two minutes on, past the bout cooldown the second write armed, so the skip
+        // is purely a budget skip.)
+        assertFalse(policy.loud(peakDbfs = -20.0, at = nightStartMs + 2 * 60_000))
         assertEquals(2, policy.loudWritten)
     }
 
@@ -143,6 +148,155 @@ class ClipPolicyTest {
         policy.onWritten(-35.0, nightStartMs)           // ordinary write
         assertEquals(0, policy.loudWritten)
         assertTrue(policy.loud(peakDbfs = -16.0))       // reserve untouched
+    }
+
+    // --- Bout cooldown (night 4: one 110-burst bout ate ~15 of the 50 clips) ---------
+
+    /** Median v2-burst event length; the tests' burst trains use it as the clip's anchor. */
+    private val burstMs = 2_500L
+
+    /** Burst starts 5.5 s apart (3 s of silence between bursts, as EXIT_WINDOWS splits them). */
+    private fun burstStart(index: Int) = nightStartMs + index * (burstMs + 3_000L)
+
+    @Test
+    fun `burst train inside the bout cooldown writes once then budget-skips the rest`() {
+        val policy = ClipPolicy()
+        assertEquals(ClipPolicy.Decision.WRITE, policy.decide(-20.0, -40.0, -35.0, nightStartMs, captureStartMs))
+        policy.onWritten(-35.0, nightStartMs, eventEndEpochMs = nightStartMs + burstMs)
+        // Bursts 5.5 s apart all start inside the 45 s window (last start: +27.5 s < +47.5 s):
+        // one clip per cooldown window, the train's repeats are budget skips.
+        for (i in 1 until 6) {
+            assertEquals(
+                ClipPolicy.Decision.SKIP_COOLDOWN,
+                policy.decide(-20.0, -40.0, -35.0, burstStart(i), captureStartMs),
+            )
+        }
+        // Skips book nothing — the bout has cost one clip so far.
+        assertEquals(1, policy.totalWritten)
+    }
+
+    @Test
+    fun `louder burst inside the cooldown is an upgrade and re-anchors`() {
+        val policy = ClipPolicy()
+        assertEquals(ClipPolicy.Decision.WRITE, policy.decide(-20.0, -40.0, -35.0, nightStartMs, captureStartMs))
+        policy.onWritten(-35.0, nightStartMs, eventEndEpochMs = nightStartMs + burstMs)
+        val louder = nightStartMs + 10_000L
+        // +2.9 dB over the anchor: not an upgrade, still a skip.
+        assertEquals(ClipPolicy.Decision.SKIP_COOLDOWN, policy.decide(-20.0, -40.0, -32.1, louder, captureStartMs))
+        // Exactly +3 dB (boundary inclusive): the upgrade writes inside the open cooldown.
+        assertEquals(ClipPolicy.Decision.WRITE, policy.decide(-20.0, -40.0, -32.0, louder, captureStartMs))
+        policy.onWritten(-32.0, louder, eventEndEpochMs = louder + burstMs)
+        // Re-anchored at −32: the same level again is no longer an upgrade and skips.
+        assertEquals(
+            ClipPolicy.Decision.SKIP_COOLDOWN,
+            policy.decide(-20.0, -40.0, -32.0, louder + 10_000L, captureStartMs),
+        )
+        assertEquals(2, policy.totalWritten)
+    }
+
+    @Test
+    fun `a burst after the bout cooldown expires writes again`() {
+        val policy = ClipPolicy()
+        assertEquals(ClipPolicy.Decision.WRITE, policy.decide(-20.0, -40.0, -35.0, nightStartMs, captureStartMs))
+        policy.onWritten(-35.0, nightStartMs, eventEndEpochMs = nightStartMs + burstMs)
+        // 44.9 s after the anchor's end: still inside the window (skipped bursts never re-arm).
+        assertEquals(
+            ClipPolicy.Decision.SKIP_COOLDOWN,
+            policy.decide(-20.0, -40.0, -35.0, nightStartMs + burstMs + 44_999L, captureStartMs),
+        )
+        // At exactly 45 s the window ends — strict less-than, like the settling window.
+        assertEquals(
+            ClipPolicy.Decision.WRITE,
+            policy.decide(-20.0, -40.0, -35.0, nightStartMs + burstMs + 45_000L, captureStartMs),
+        )
+    }
+
+    @Test
+    fun `reserve-eligible loud event inside the cooldown still writes`() {
+        val policy = ClipPolicy()
+        assertEquals(ClipPolicy.Decision.WRITE, policy.decide(-20.0, -40.0, -35.0, nightStartMs, captureStartMs))
+        policy.onWritten(-35.0, nightStartMs, eventEndEpochMs = nightStartMs + burstMs)
+        val loud = nightStartMs + 10_000L
+        // Peak −16.6 clears LOUD_CLIP_PEAK_DBFS: the reserve bypasses the cooldown (gate 2
+        // answers before gate 3), as night 3's loudest snore deserves.
+        assertEquals(ClipPolicy.Decision.WRITE_LOUD_RESERVE, policy.decide(-20.0, -40.0, -16.6, loud, captureStartMs))
+        policy.onWritten(-16.6, loud, eventEndEpochMs = loud + burstMs, viaLoudReserve = true)
+        assertEquals(2, policy.totalWritten)
+        assertEquals(1, policy.loudWritten)
+        // The reserve write re-anchors at its own peak: a −28 burst — which against the old
+        // −35 anchor would have been a +7 dB upgrade — now skips.
+        assertEquals(
+            ClipPolicy.Decision.SKIP_COOLDOWN,
+            policy.decide(-20.0, -40.0, -28.0, loud + 10_000L, captureStartMs),
+        )
+    }
+
+    @Test
+    fun `worst bout keeps its loudest burst even mid-cooldown`() {
+        // The shipped reserve would grant every −20 dBFS peak a reserve write and mask the
+        // cooldown under test — zeroed here; in production the reserve composes with the
+        // cooldown by re-anchor (see the reserve test above).
+        val policy = ClipPolicy(loudReservePerNight = 0)
+        // 20 bursts peaking −20 dBFS: one clip per 45 s window (bursts 1, 10, 19 — the window
+        // covers 8 burst starts after each anchor's end), skips in between.
+        repeat(20) { i ->
+            val expected = if (i == 0 || i == 9 || i == 18) {
+                ClipPolicy.Decision.WRITE
+            } else {
+                ClipPolicy.Decision.SKIP_COOLDOWN
+            }
+            assertEquals(expected, policy.decide(-20.0, -40.0, -20.0, burstStart(i), captureStartMs))
+            if (expected == ClipPolicy.Decision.WRITE) {
+                policy.onWritten(-20.0, burstStart(i), eventEndEpochMs = burstStart(i) + burstMs)
+            }
+        }
+        assertEquals(3, policy.totalWritten)
+        // The bout's worst burst — 8 dB over the train, mid-cooldown by construction — writes.
+        val worst = burstStart(19) + 10_000L
+        assertTrue(worst < burstStart(18) + burstMs + 45_000L)  // sanity: inside the cooldown
+        assertEquals(ClipPolicy.Decision.WRITE, policy.decide(-20.0, -40.0, -12.0, worst, captureStartMs))
+        policy.onWritten(-12.0, worst, eventEndEpochMs = worst + burstMs)
+        assertEquals(4, policy.totalWritten)
+        // Re-anchored at −12: the train's ordinary level is a downgrade and skips again.
+        assertEquals(
+            ClipPolicy.Decision.SKIP_COOLDOWN,
+            policy.decide(-20.0, -40.0, -20.0, worst + 10_000L, captureStartMs),
+        )
+    }
+
+    @Test
+    fun `upgrades still respect the hourly and nightly caps`() {
+        // Nightly cap reached: an in-cooldown upgrade is a budget skip, not a free write.
+        val nightly = ClipPolicy(maxTotal = 1)
+        nightly.onWritten(-35.0, nightStartMs, eventEndEpochMs = nightStartMs + burstMs)
+        assertEquals(
+            ClipPolicy.Decision.SKIP_BUDGET,
+            nightly.decide(-20.0, -40.0, -28.0, nightStartMs + 10_000L, captureStartMs),
+        )
+        // Hourly cap reached: same skip; a fresh hour re-opens for the upgrade.
+        val hourly = ClipPolicy(maxPerHour = 1)
+        hourly.onWritten(-35.0, nightStartMs, eventEndEpochMs = nightStartMs + burstMs)
+        assertEquals(
+            ClipPolicy.Decision.SKIP_BUDGET,
+            hourly.decide(-20.0, -40.0, -28.0, nightStartMs + 10_000L, captureStartMs),
+        )
+        assertEquals(
+            ClipPolicy.Decision.WRITE,
+            hourly.decide(-20.0, -40.0, -28.0, nightStartMs + hourMs + 10_000L, captureStartMs),
+        )
+    }
+
+    @Test
+    fun `bout cooldown is per type`() {
+        val policy = ClipPolicy()
+        policy.onWritten(-35.0, nightStartMs, eventEndEpochMs = nightStartMs + burstMs, type = EventType.SNORE)
+        // Same instant, different type: the snore train's cooldown does not apply to it…
+        assertEquals(
+            ClipPolicy.Decision.WRITE,
+            policy.decide(-20.0, -40.0, -35.0, nightStartMs, captureStartMs, type = EventType.OTHER_NOISE),
+        )
+        // …while a same-type burst at that instant is inside the cooldown.
+        assertEquals(ClipPolicy.Decision.SKIP_COOLDOWN, policy.decide(-20.0, -40.0, -35.0, nightStartMs, captureStartMs))
     }
 
     // --- Hourly / nightly budgets (unchanged paths) ----------------------------------
@@ -175,9 +329,11 @@ class ClipPolicyTest {
         val policy = ClipPolicy(maxTotal = 4, maxPerHour = 2)
         val hours = List(3) { nightStartMs + it * hourMs }
         hours.take(2).forEach { h ->
-            repeat(2) {
-                assertTrue(policy.loud(at = h))
-                policy.onWritten(-35.0, h)
+            // Writes a minute apart — past the bout cooldown each write arms — so both go
+            // through the budget path the test exercises.
+            repeat(2) { i ->
+                assertTrue(policy.loud(at = h + i * 60_000))
+                policy.onWritten(-35.0, h + i * 60_000)
             }
         }
         // 4 clips written, cap reached: further events get no clip even in a fresh hour.
@@ -190,13 +346,14 @@ class ClipPolicyTest {
         // START_STICKY restart: the session already spent its whole budget before the crash.
         val policy = ClipPolicy(maxTotal = 50, initialTotal = 50)
         assertFalse(policy.loud(at = nightStartMs + hourMs))
-        // Partial inheritance leaves exactly the remainder.
+        // Partial inheritance leaves exactly the remainder. Writes a minute apart to stay
+        // outside the bout cooldown each write arms (night 4 change).
         val resumed = ClipPolicy(maxTotal = 50, maxPerHour = 8, initialTotal = 45)
-        repeat(5) {
-            assertTrue(resumed.loud(at = nightStartMs))
-            resumed.onWritten(-35.0, nightStartMs)
+        repeat(5) { i ->
+            assertTrue(resumed.loud(at = nightStartMs + i * 60_000))
+            resumed.onWritten(-35.0, nightStartMs + i * 60_000)
         }
-        assertFalse(resumed.loud(at = nightStartMs))
+        assertFalse(resumed.loud(at = nightStartMs + 5 * 60_000))
         assertEquals(50, resumed.totalWritten)
     }
 
@@ -213,10 +370,11 @@ class ClipPolicyTest {
         val policy = ClipPolicy(maxPerHour = 1)
         assertEquals(ClipPolicy.Decision.WRITE, policy.decide(-20.0, -40.0, -35.0, nightStartMs, captureStartMs))
         assertEquals(ClipPolicy.Decision.SKIP_LEVEL, policy.decide(-60.0, -40.0, -35.0, nightStartMs, captureStartMs))
-        policy.onWritten(-35.0, nightStartMs) // hour budget spent
-        // Both exhausted: a quiet event is a LEVEL skip (not budget), a loud one a BUDGET skip.
-        assertEquals(ClipPolicy.Decision.SKIP_LEVEL, policy.decide(-60.0, -40.0, -35.0, nightStartMs, captureStartMs))
-        assertEquals(ClipPolicy.Decision.SKIP_BUDGET, policy.decide(-20.0, -40.0, -35.0, nightStartMs, captureStartMs))
+        policy.onWritten(-35.0, nightStartMs) // hour budget spent (also arms the bout cooldown)
+        // Both exhausted — checked a minute on, past the bout cooldown, so the loud skip is
+        // the budget's: a quiet event is a LEVEL skip (not budget), a loud one a BUDGET skip.
+        assertEquals(ClipPolicy.Decision.SKIP_LEVEL, policy.decide(-60.0, -40.0, -35.0, nightStartMs + 60_000, captureStartMs))
+        assertEquals(ClipPolicy.Decision.SKIP_BUDGET, policy.decide(-20.0, -40.0, -35.0, nightStartMs + 60_000, captureStartMs))
         // Budget skips reset with the hour; the level gate never does.
         assertEquals(ClipPolicy.Decision.WRITE, policy.decide(-20.0, -40.0, -35.0, nightStartMs + hourMs, captureStartMs))
         assertEquals(
