@@ -55,7 +55,7 @@ Every normalized metric is written through `MeasurementRecorder.recordGarminEsti
 | `method` | `DEVICE_REPORTED` |
 | `isClinical` | `false` |
 | `tier` | `ESTABLISHED` (as device-reported pass-through, per M10–M13/M18) |
-| `sessionId` | `null` — imported outside any session; joined to reports by day window |
+| `sessionId` | the best time-overlapping acoustic session when one exists (the payload's own sleep window, else the day window, must overlap the session's window) — `null` keeps the date-window join as the fallback (schema v9 behavior; older rows stay NULL until re-imported) |
 | `periodStart`/`periodEnd` | local-day bounds of the imported date |
 | `unit` | from `MeasurementType` |
 | `confidence` | `null` (vendor does not expose one) |
@@ -64,7 +64,7 @@ Every normalized metric is written through `MeasurementRecorder.recordGarminEsti
 
 Raw responses are stored verbatim in the **`raw_payload`** table (schema v2, migration `MIGRATION_1_2`), one row per `(source, endpoint, date)` with `fetchedAt`. Re-importing a date **replaces** that date's raw rows (upsert) and re-records the metrics — historical provenance of a *corrected mapping* will come from reprocessing later phases; for now, latest import wins per type per date.
 
-Parsing (`GarminJsonParsers`) is deliberately tolerant: bounded-depth key search, null on absence, empty result on malformed payloads — never a crash on shape drift.
+Parsing (`GarminJsonParsers`) is deliberately tolerant: bounded-depth key search, null on absence, empty result on malformed payloads — never a crash on shape drift. Stage timelines (`parseSleepLevels`) parse from the sleep-service detail endpoint (`/sleep-service/sleep/{date}`, whose DTO wraps `dailySleepDTO.sleepLevels`) and from the dailySleep payload's own `sleepLevels` — array shape (`{startGMT,endGMT,level}`, ISO strings without zone → UTC, or epoch-ms numbers, string or numeric 0–3 levels) and the object-of-arrays shape (`{"deep":[…], …}`); unknown stage labels are kept verbatim, degenerate spans dropped. The verified Personal-API surface (2026-11-05..07) does NOT expose sleepLevels on dailySleep — the detail endpoint is the only timeline source, and it may 404 on some keys: the import treats that as optional and keeps totals-only behavior.
 
 ## 6. Import flow and failure semantics
 
@@ -72,15 +72,19 @@ Parsing (`GarminJsonParsers`) is deliberately tolerant: bounded-depth key search
 User taps "Import from Garmin" (Report: this night's date · Settings: any date)
   → key present?  no → Error state (no network call)
   → token exchange → 5 GETs (each fails independently)
-  → HTTP 200 bodies stored in raw_payload
+  → HTTP 200 bodies stored in raw_payload (six endpoints, incl. the stage-timeline
+    GET /sleep-service/sleep/{date} — 404/empty tolerated, totals remain the fallback)
   → tolerant parse → dedupe by type (dedicated endpoint beats summary fallback)
-  → recordGarminEstimate per metric
-  → Success(metrics, endpoints) with per-endpoint HTTP statuses listed in Settings
+  → recordGarminEstimate per metric (sessionId = best time-overlapping session, else null)
+  → stage spans: sleep-service timeline first, else dailySleep's own sleepLevels
+    (when present) → sleep_stage rows for the linked session (atomic replace)
+  → Success(metrics, endpoints, linkedSessionId) with per-endpoint HTTP statuses
 ```
 
 - **Core flows never block or depend on Garmin.** Recording and the acoustic report run identically with no key, no network, or a failed import; failures surface only in the import state (Settings + report card).
 - Network: `HttpURLConnection` only, 10 s connect / 20 s read timeouts, per-endpoint `try/catch` so one dead endpoint doesn't abort the others.
 - The morning report shows the Garmin section only when metrics exist for the session's calendar day, and offers the one-tap import when they don't.
+- **Morning backfill (auto-retry):** opening a night's report with no/metrics-only Garmin data silently triggers one import for the wake date — rate-limited to one attempt per date plus one more after a 6 h cooldown (`UserPreferences.garminAutoRetryAllowed`) — because the first sync often runs before Garmin's payload is ready. Silent no-op without a key; the manual button always works.
 
 ## 7. UI labeling rules
 
