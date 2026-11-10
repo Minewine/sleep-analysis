@@ -27,6 +27,7 @@ enum class MeasurementUnit {
     DBFS,
     INDEX_0_100,
     INDEX_0_10,
+    GRADE,
     MS,
     BPM,
     BREATHS_PER_MINUTE,
@@ -45,6 +46,10 @@ enum class MeasurementType(val tier: MeasurementTier, val unit: MeasurementUnit)
     SNORE_INTENSITY_PEAK(MeasurementTier.ESTABLISHED, MeasurementUnit.DBFS),
     SNORE_INTENSITY_MEAN(MeasurementTier.ESTABLISHED, MeasurementUnit.DBFS),
     SNORE_SCORE(MeasurementTier.ESTABLISHED, MeasurementUnit.INDEX_0_100),
+    // Data-quality grade A–D (domain/validity.NightValidity): grades capture integrity and
+    // makes no physiological claim, so it sits with the derived indices — the value lives in
+    // valueText (the letter), the notes carry the machine-readable reasons JSON.
+    NIGHT_VALIDITY(MeasurementTier.ESTABLISHED, MeasurementUnit.GRADE),
     NOISE_MEDIAN(MeasurementTier.ESTABLISHED, MeasurementUnit.DBFS),
     NOISE_P95(MeasurementTier.ESTABLISHED, MeasurementUnit.DBFS),
     ACOUSTIC_EVENT_COUNT(MeasurementTier.ESTABLISHED, MeasurementUnit.COUNT),

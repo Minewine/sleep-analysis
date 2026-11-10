@@ -40,6 +40,11 @@
     <string name="home_status_recording">Recording… microphone active</string>
     <string name="home_status_starting">Starting…</string>
     <string name="home_status_delayed">Waiting — audio capture starts in %1$s</string>
+    <string name="home_start_capture_now">Start capture now</string>
+    <string name="home_stop_confirm_title">Still up?</string>
+    <string name="home_stop_confirm_text">Stopping ends tonight\'s capture. If you\'re going back to bed, keep recording — the scheduled end will stop it for you.</string>
+    <string name="home_stop_confirm_ok">Stop recording</string>
+    <string name="home_stop_confirm_cancel">Keep recording</string>
     <string name="home_mic_indicator">Microphone active</string>
     <string name="home_last_night">Last morning report</string>
     <string name="home_no_sessions">No recorded nights yet.</string>
@@ -101,6 +106,40 @@
     <string name="report_quality_garmin_metrics_only">Garmin metrics are shown, but the sleep-window payload is unavailable (aged out or older import).</string>
     <string name="report_quality_version_detector">Previous night is not comparable — detector version differs or is unknown.</string>
     <string name="report_quality_version_score">Previous night\'s score is not comparable — different or unknown score formula version.</string>
+
+    <!-- Night validity badge (grade A–D over capture integrity — docs/NIGHT_REPORT.md) -->
+    <string name="validity_title">Night data quality</string>
+    <string name="validity_summary_a">Good capture conditions</string>
+    <string name="validity_summary_b">Mostly solid data, a few caveats</string>
+    <string name="validity_summary_c">Several caveats — worth reading the notes</string>
+    <string name="validity_summary_d">This night\'s data is unreliable — treat numbers with care</string>
+    <string name="validity_expand_hint">Tap for the details</string>
+    <string name="validity_reason_capture_failed">No audio analysis happened — the capture likely failed.</string>
+    <string name="validity_reason_capture_gaps">Some of the night wasn\'t analyzed (small capture gaps).</string>
+    <string name="validity_reason_capture_gaps_severe">Large parts of the night weren\'t analyzed.</string>
+    <string name="validity_reason_thermal_throttle">The phone ran hot and slowed down analysis for a while.</string>
+    <string name="validity_reason_unexplained_gap">Part of the night has no recording evidence — the app may have been stopped overnight.</string>
+    <string name="validity_reason_clipped_clips">Some saved clips are distorted at the loudest moments.</string>
+    <string name="validity_reason_ambient_noise_high">The room was noticeably louder than in your recent nights.</string>
+    <string name="validity_reason_session_interrupted">Recording was interrupted or ended early.</string>
+    <string name="validity_reason_stats_missing">No capture statistics were stored for this night.</string>
+    <string name="validity_reason_low_snore_signal">Very little snoring was detected — a quiet night for the microphone.</string>
+    <string name="validity_reason_garmin_stale">Garmin data for this night arrived more than a day late.</string>
+    <string name="validity_reason_garmin_stage_mismatch">Garmin\'s stage minutes don\'t add up to its own reported sleep time.</string>
+    <string name="validity_reason_garmin_tst_mismatch">Garmin\'s reported sleep time differs from its sleep window by more than 45 minutes.</string>
+    <string name="validity_reason_garmin_span_overlap">Some of Garmin\'s stage timeline looked corrupted and was left out.</string>
+    <string name="validity_reason_garmin_implausible">Some Garmin values looked implausible and were not imported.</string>
+    <string name="validity_reason_garmin_spo2_distrust">Garmin showed SpO₂ below 90% — wrist readings that low are rough estimates.</string>
+
+    <!-- Report: Garmin validator warnings + stage estimate footnote -->
+    <string name="report_garmin_warning_stale">Imported more than a day after the night ended — the data may be incomplete.</string>
+    <string name="report_garmin_warning_implausible">Some values looked implausible for a wrist device and were not imported.</string>
+    <string name="report_garmin_warning_spo2_distrust">SpO₂ below 90% — wrist accuracy is limited (±2–3 points); treat as approximate.</string>
+    <string name="report_garmin_warning_stage_mismatch">Stage minutes don\'t add up to the reported sleep time.</string>
+    <string name="report_garmin_warning_tst_mismatch">Reported sleep time differs from Garmin\'s own sleep window by more than 45 minutes.</string>
+    <string name="report_garmin_warning_span_overlap">Part of the stage timeline looked corrupted and was left out.</string>
+    <string name="report_garmin_warning_no_overlap">No overlap between Garmin\'s window and this night.</string>
+    <string name="report_garmin_stages_estimate">Stage times are the watch\'s own estimates — research puts their agreement with sleep-lab stages in the fair-to-moderate range.</string>
 
     <!-- Report: top clips -->
     <string name="report_top_clips_title">Top clips</string>
@@ -215,6 +254,11 @@
     <string name="settings_import_action">Import from Garmin</string>
     <string name="settings_import_running">Importing %1$s…</string>
     <string name="settings_import_done">Imported %1$d metrics from %2$d endpoints. Raw responses stored.</string>
+    <string name="settings_import_not_ready">Garmin hasn\'t processed this night yet — retry later.</string>
+    <string name="settings_endpoint_status_ok">%1$s → ok (HTTP %2$d)</string>
+    <string name="settings_endpoint_status_not_ready">%1$s → not ready yet (HTTP %2$d)</string>
+    <string name="settings_endpoint_status_no_http">%1$s → no response (network)</string>
+    <string name="settings_endpoint_status_failed">%1$s → failed (HTTP %2$d)</string>
 
     <!-- Report: Garmin section -->
     <string name="report_garmin_section">Garmin (device-reported estimates)</string>
@@ -229,6 +273,11 @@
     <string name="report_garmin_linked">Linked to this night ✓</string>
     <string name="report_garmin_snore_vs_stages">Snoring %1$s this night · stage timeline unavailable (totals only)</string>
     <string name="report_garmin_bout_stage">Longest snore bout fell in %1$s (%2$s%% of it)</string>
+    <string name="report_garmin_refresh">Refresh with Garmin</string>
+    <string name="report_garmin_refresh_syncing">Syncing Garmin…</string>
+    <string name="report_garmin_refresh_updating">Updating report…</string>
+    <string name="report_garmin_refresh_not_available">Garmin data not available yet — showing the acoustic report only.</string>
+    <string name="report_garmin_refresh_included">Garmin included · %1$s</string>
 
     <!-- 7-day trend -->
     <string name="trend_title">7-day trend</string>

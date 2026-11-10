@@ -8,6 +8,7 @@ import java.io.File
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -156,6 +157,39 @@ class ClaimPolicyTest {
     }
 
     @Test
+    fun `night validity grade is an established data-quality index with no physiological claim`() {
+        // It grades capture integrity (windows, gaps, clips, linkage) — never physiology, so
+        // it sits with the derived indices (ESTABLISHED), not with the out-of-scope set.
+        assertEquals(MeasurementTier.ESTABLISHED, MeasurementType.NIGHT_VALIDITY.tier)
+        assertEquals(MeasurementUnit.GRADE, MeasurementType.NIGHT_VALIDITY.unit)
+        assertTrue(ClaimPolicy.displayAllowed(MeasurementType.NIGHT_VALIDITY))
+    }
+
+    @Test
+    fun `recorder replaces the night validity row instead of duplicating`() = runTest {
+        val dao = FakeDao()
+        val recorder = MeasurementRecorder(dao)
+        val estimate = MeasurementRecorder.ValidityEstimate(
+            grade = "B",
+            notes = """{"version":"night-validity-v1","grade":"B","reasons":[]}""",
+        )
+        recorder.replaceNightValidity(sessionId = 11, estimate = estimate)
+        recorder.replaceNightValidity(sessionId = 11, estimate = estimate)
+        val rows = dao.rows.filter { it.measurementType == "NIGHT_VALIDITY" }
+        assertEquals(1, rows.size)
+        val row = rows.single()
+        assertEquals("PHONE", row.sourceType)
+        assertEquals("ALGORITHM_ESTIMATED", row.method)
+        assertFalse(row.isClinical)
+        assertEquals("ESTABLISHED", row.tier)
+        assertEquals("GRADE", row.unit)
+        assertEquals("B", row.valueText)
+        assertNull(row.valueNum)
+        assertEquals("night-validity-v1", row.modelVersion)
+        assertEquals(11L, row.sessionId)
+    }
+
+    @Test
     fun `tier table in MEASUREMENT_RELIABILITY matches the code enum`() {
         val docTiers = tierTableFromDoc()
         val codeTiers = MeasurementType.entries.associate { it.name to it.tier.name }
@@ -217,6 +251,12 @@ class ClaimPolicyTest {
         override suspend fun deleteGarminForTypes(periodStart: Long, types: List<String>) {
             rows.removeAll {
                 it.sourceType == "GARMIN" && it.periodStart == periodStart && it.measurementType in types
+            }
+        }
+
+        override suspend fun deletePhoneForSession(sessionId: Long, types: List<String>) {
+            rows.removeAll {
+                it.sourceType == "PHONE" && it.sessionId == sessionId && it.measurementType in types
             }
         }
 

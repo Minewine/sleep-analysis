@@ -23,6 +23,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -72,6 +73,7 @@ fun HomeScreen(
 ) {
     val state by viewModel.monitorState.collectAsStateWithLifecycle()
     val latest by viewModel.latestSession.collectAsStateWithLifecycle()
+    val validityGrade by viewModel.latestValidityGrade.collectAsStateWithLifecycle()
     val preFlight by viewModel.preFlight.collectAsStateWithLifecycle()
     val interrupted by viewModel.interrupted.collectAsStateWithLifecycle()
     val recordingEnabled by viewModel.recordingEnabled.collectAsStateWithLifecycle()
@@ -163,7 +165,9 @@ fun HomeScreen(
             StatusCard(
                 state = state,
                 onStart = ::onStartClick,
+                onStartNow = viewModel::startCaptureNow,
                 onStop = viewModel::stopRecording,
+                shouldConfirmStop = viewModel::shouldConfirmStopNow,
                 // Start also gates on the storage pre-flight: below ~500 MB MonitorService bails
                 // out before capture. Stop stays enabled for an active session (StatusCard).
                 startEnabled = recordingEnabled && (preFlight?.storageOk ?: true),
@@ -192,6 +196,7 @@ fun HomeScreen(
 
             LastNightCard(
                 session = latest,
+                validityGrade = validityGrade,
                 statusLabel = viewModel::statusLabel,
                 onOpen = onOpenReport,
             )
@@ -223,12 +228,17 @@ fun HomeScreen(
 private fun StatusCard(
     state: MonitorState,
     onStart: () -> Unit,
+    onStartNow: () -> Unit,
     onStop: () -> Unit,
+    shouldConfirmStop: () -> Boolean,
     startEnabled: Boolean,
 ) {
     val recording = state is MonitorState.Recording
     val delayed = state is MonitorState.Delayed
     val active = recording || delayed
+    // Evaluated at TAP time (a 23:00 tap confirms, a 07:00 tap doesn't) — never at composition.
+    // Saveable: the dialog must survive rotation mid-decision.
+    var confirmStop by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(false) }
     // Ticks once per second so the elapsed readout is live while recording (and the countdown
     // live during the start delay).
     var nowTick by remember { mutableStateOf(System.currentTimeMillis()) }
@@ -267,7 +277,11 @@ private fun StatusCard(
                 )
             }
             Button(
-                onClick = if (active) onStop else onStart,
+                onClick = {
+                    if (!active) onStart()
+                    else if (recording && shouldConfirmStop()) confirmStop = true
+                    else onStop()
+                },
                 modifier = Modifier.fillMaxWidth(),
                 enabled = active || startEnabled,
             ) {
@@ -275,6 +289,14 @@ private fun StatusCard(
                     if (active) stringResource(R.string.home_stop_recording)
                     else stringResource(R.string.home_start_recording)
                 )
+            }
+            if (delayed) {
+                // Start-delay skip: capture begins at the tap (the wait was armed on purpose —
+                // this only ends it early). Not gated on the master switch, same as the
+                // natural delay expiry it replaces mid-flight: the mic session is already open.
+                OutlinedButton(onClick = onStartNow, modifier = Modifier.fillMaxWidth()) {
+                    Text(stringResource(R.string.home_start_capture_now))
+                }
             }
             if (!active && !startEnabled) {
                 Text(
@@ -284,6 +306,24 @@ private fun StatusCard(
                 )
             }
         }
+    }
+    if (confirmStop) {
+        AlertDialog(
+            onDismissRequest = { confirmStop = false },
+            title = { Text(stringResource(R.string.home_stop_confirm_title)) },
+            text = { Text(stringResource(R.string.home_stop_confirm_text)) },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmStop = false
+                    onStop()
+                }) { Text(stringResource(R.string.home_stop_confirm_ok)) }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmStop = false }) {
+                    Text(stringResource(R.string.home_stop_confirm_cancel))
+                }
+            },
+        )
     }
 }
 
@@ -415,6 +455,7 @@ private fun InterruptedCard(
 @Composable
 private fun LastNightCard(
     session: SleepSessionEntity?,
+    validityGrade: String?,
     statusLabel: (String) -> String,
     onOpen: (Long) -> Unit,
 ) {
@@ -437,6 +478,21 @@ private fun LastNightCard(
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                    // The night's stored validity grade (A–D) — the "was this night solid?"
+                    // glance, same source as the report's badge (docs/NIGHT_REPORT.md).
+                    validityGrade?.let { grade ->
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            grade,
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = if (grade == "D") {
+                                MaterialTheme.colorScheme.error
+                            } else {
+                                MaterialTheme.colorScheme.primary
+                            },
+                        )
+                    }
                 }
             }
         }

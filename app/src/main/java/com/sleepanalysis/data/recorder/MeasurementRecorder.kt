@@ -28,10 +28,7 @@ class MeasurementRecorder @Inject constructor(
         notes: String? = null,
         timestamp: Long = System.currentTimeMillis(),
     ) {
-        check(type.tier != MeasurementTier.OUT_OF_SCOPE_FOR_CLAIMS) {
-            "Refusing to write OUT_OF_SCOPE_FOR_CLAIMS measurement type ${type.name} " +
-                "(docs/MEASUREMENT_RELIABILITY.md §2)"
-        }
+        requireWritable(type)
         dao.insert(
             MeasurementEntity(
                 sessionId = sessionId,
@@ -61,7 +58,7 @@ class MeasurementRecorder @Inject constructor(
         notes: String? = null,
         timestamp: Long = System.currentTimeMillis(),
     ) {
-        checkGarminType(type)
+        requireWritable(type)
         dao.insert(garminRow(type, value, periodStart, periodEnd, notes, timestamp, sessionId = null))
     }
 
@@ -82,7 +79,7 @@ class MeasurementRecorder @Inject constructor(
         sessionId: Long? = null,
     ) {
         if (metrics.isEmpty()) return
-        metrics.forEach { (type, _) -> checkGarminType(type) }
+        metrics.forEach { (type, _) -> requireWritable(type) }
         dao.replaceGarminForDay(
             periodStart,
             metrics.map { (type, value) ->
@@ -91,12 +88,104 @@ class MeasurementRecorder @Inject constructor(
         )
     }
 
-    private fun checkGarminType(type: MeasurementType) {
+    /**
+     * One phone-derived estimate destined for the label-recompute replace path — provenance is
+     * stamped in [replacePhoneEstimates], not by callers.
+     */
+    data class PhoneEstimate(
+        val type: MeasurementType,
+        val value: Double,
+        val modelVersion: String? = null,
+        val notes: String? = null,
+    )
+
+    /**
+     * Rewrites a session's snore-aggregate PHONE rows after a user label changed the night's
+     * snore event set (SessionRepository.labelEvent): delete-then-insert scoped to
+     * [SNORE_AGGREGATE_TYPES] — INCLUDING types with no incoming row, so a recompute that
+     * stops producing a row (intensity rows when no snoring remains) deletes it instead of
+     * leaving a stale value: finalize would not have written it either. Rows outside the set
+     * (TIME_IN_BED, NOISE_*, ACOUSTIC_EVENT_COUNT — session bounds, ambient stats, all-event
+     * counts) are never touched. Every rewritten row is flagged `label_corrected=true` in its
+     * notes (docs/DATA_MODEL.md §3.2) and carries the caller's model version per
+     * docs/MEASUREMENT_RELIABILITY.md §7.1. Must run inside the caller's session transaction.
+     */
+    suspend fun replacePhoneEstimates(sessionId: Long, estimates: List<PhoneEstimate>) {
+        estimates.forEach { requireWritable(it.type) }
+        dao.replacePhoneForSession(
+            sessionId,
+            SNORE_AGGREGATE_TYPES.map { it.name },
+            estimates.map { it.phoneRow(sessionId) },
+        )
+    }
+
+    private fun PhoneEstimate.phoneRow(sessionId: Long) = MeasurementEntity(
+        sessionId = sessionId,
+        timestamp = System.currentTimeMillis(),
+        sourceType = SourceTypes.PHONE,
+        method = Methods.ALGORITHM_ESTIMATED,
+        isClinical = false,
+        measurementType = type.name,
+        tier = type.tier.name,
+        valueNum = value,
+        unit = type.unit.name,
+        confidence = null,
+        modelVersion = modelVersion,
+        periodStart = null,
+        periodEnd = null,
+        notes = notes?.let { "$it; $LABEL_CORRECTED_NOTES" } ?: LABEL_CORRECTED_NOTES,
+    )
+
+    private fun requireWritable(type: MeasurementType) {
         check(type.tier != MeasurementTier.OUT_OF_SCOPE_FOR_CLAIMS) {
             "Refusing to write OUT_OF_SCOPE_FOR_CLAIMS measurement type ${type.name} " +
                 "(docs/MEASUREMENT_RELIABILITY.md §2)"
         }
     }
+
+    /**
+     * One NIGHT_VALIDITY row destined for [replaceNightValidity] — provenance is stamped there,
+     * not by callers. The grade letter is the value; the notes carry NightValidity's JSON.
+     */
+    data class ValidityEstimate(
+        val grade: String,
+        val notes: String,
+        val modelVersion: String = com.sleepanalysis.domain.validity.NightValidity.VERSION,
+    )
+
+    /**
+     * Rewrites a session's NIGHT_VALIDITY PHONE row (delete-then-insert scoped to the type,
+     * the [replacePhoneEstimates] pattern): finalize writes it first; a label recompute or a
+     * Garmin re-import of a linked session recomputes and REPLACES instead of duplicating.
+     * The grade letter lives in valueText ([MeasurementUnit.GRADE] has no numeric value —
+     * valueNum stays null). Must run inside the caller's session transaction.
+     */
+    suspend fun replaceNightValidity(sessionId: Long, estimate: ValidityEstimate) {
+        requireWritable(MeasurementType.NIGHT_VALIDITY)
+        dao.replacePhoneForSession(
+            sessionId,
+            listOf(MeasurementType.NIGHT_VALIDITY.name),
+            listOf(estimate.row(sessionId)),
+        )
+    }
+
+    private fun ValidityEstimate.row(sessionId: Long) = MeasurementEntity(
+        sessionId = sessionId,
+        timestamp = System.currentTimeMillis(),
+        sourceType = SourceTypes.PHONE,
+        method = Methods.ALGORITHM_ESTIMATED,
+        isClinical = false,
+        measurementType = MeasurementType.NIGHT_VALIDITY.name,
+        tier = MeasurementType.NIGHT_VALIDITY.tier.name,
+        valueNum = null,
+        valueText = grade,
+        unit = MeasurementType.NIGHT_VALIDITY.unit.name,
+        confidence = null,
+        modelVersion = modelVersion,
+        periodStart = null,
+        periodEnd = null,
+        notes = notes,
+    )
 
     private fun garminRow(
         type: MeasurementType,
@@ -141,5 +230,23 @@ class MeasurementRecorder @Inject constructor(
             const val DEVICE_REPORTED = "DEVICE_REPORTED"
             const val USER_REPORTED = "USER_REPORTED"
         }
+
+        /** Notes flag marking a measurement rewritten by a user-label recompute (§7.1). */
+        const val LABEL_CORRECTED_NOTES = "label_corrected=true"
+
+        /**
+         * The snore aggregates a label recompute rewrites (SessionRepository.labelEvent) —
+         * everything else a PHONE write carries derives from session bounds (TIME_IN_BED),
+         * ambient stats (NOISE_*) or all-event counts (ACOUSTIC_EVENT_COUNT), none changed by
+         * a user label.
+         */
+        val SNORE_AGGREGATE_TYPES = listOf(
+            MeasurementType.SNORE_EVENT_COUNT,
+            MeasurementType.SNORE_TIME,
+            MeasurementType.SNORE_SHARE_OF_NIGHT,
+            MeasurementType.SNORE_SCORE,
+            MeasurementType.SNORE_INTENSITY_PEAK,
+            MeasurementType.SNORE_INTENSITY_MEAN,
+        )
     }
 }

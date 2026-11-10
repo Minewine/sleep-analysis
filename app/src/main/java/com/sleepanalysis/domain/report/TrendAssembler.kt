@@ -54,6 +54,8 @@ data class NightTrend(
     val quietMinutes: Long?,
     /** Total minutes of UNCAPTURED-classified gaps (process death) — kept apart from quiet. */
     val uncapturedMinutes: Long?,
+    /** The night's stored NIGHT_VALIDITY grade letter (valueText); null = no row yet. */
+    val validityGrade: String? = null,
 )
 
 object TrendAssembler {
@@ -156,6 +158,8 @@ object TrendAssembler {
                     ?.takeIf { it.isNotEmpty() }
                     ?.filter { it.kind == QuietGapKind.UNCAPTURED }
                     ?.sumOf { it.durationMs }?.div(60_000),
+                validityGrade = measurements
+                    .firstOrNull { it.measurementType == MeasurementType.NIGHT_VALIDITY.name }?.valueText,
             )
         }
     }

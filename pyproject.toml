@@ -13,7 +13,8 @@ dev = ["pytest>=9", "ruff>=0.8"]
 [tool.pytest.ini_options]
 # tools/ has no __init__.py and tests `import export_fixtures` — pytest's default
 # "prepend" import mode inserts tools/ on sys.path, which that relies on.
-testpaths = ["tools"]
+# analysis/ carries its own tests too (night_validity mirror; same sys.path pattern).
+testpaths = ["tools", "analysis"]
 addopts = "-q"
 
 [tool.ruff]

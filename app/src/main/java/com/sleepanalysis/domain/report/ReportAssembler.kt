@@ -68,20 +68,34 @@ enum class GarminLinkStatus {
 
 /** Pure pick of the previous comparable night (COMPLETED/RECOVERED, strictly earlier). */
 object PreviousNight {
+    /**
+     * What makes a session a full night for comparison purposes: a stray short evening test
+     * session (e.g. a 1 h recording stopped at bedtime) must not become the anchor of the
+     * TL;DR "vs previous night" line when a real 7 h night exists just before it.
+     */
+    const val NIGHT_LIKE_MIN_IN_BED_MS: Long = 4 * 3_600_000L
+
     fun isEligible(session: SleepSessionEntity): Boolean =
         session.endedAt != null && (session.status == SessionStatus.COMPLETED ||
             session.status == SessionStatus.RECOVERED)
 
     /**
-     * The latest eligible session strictly before [current]'s start; id tie-break keeps the
-     * pick deterministic when two sessions share a start timestamp.
+     * The latest eligible session strictly before [current]'s start, preferring NIGHT-LIKE
+     * ones ([NIGHT_LIKE_MIN_IN_BED_MS] in bed) — the comparison anchors on a full night when
+     * one exists and falls back to the latest eligible session otherwise, so a history of
+     * only short sessions still gets a comparison. The id tie-break keeps the pick
+     * deterministic when two sessions share a start timestamp.
      */
-    fun pick(sessions: List<SleepSessionEntity>, current: SleepSessionEntity): SleepSessionEntity? =
-        sessions.asSequence()
+    fun pick(sessions: List<SleepSessionEntity>, current: SleepSessionEntity): SleepSessionEntity? {
+        val candidates = sessions.asSequence()
             .filter { it.id != current.id && it.startedAt < current.startedAt }
             .filter(::isEligible)
             .sortedWith(compareByDescending<SleepSessionEntity> { it.startedAt }.thenByDescending { it.id })
-            .firstOrNull()
+        val nightLike = candidates.firstOrNull {
+            it.endedAt!! - it.startedAt >= NIGHT_LIKE_MIN_IN_BED_MS
+        }
+        return nightLike ?: candidates.firstOrNull()
+    }
 }
 
 /** The previous completed night, as its stored measurements recorded it — comparison input. */
@@ -178,6 +192,13 @@ data class MorningReport(
     val capture: CaptureStats? = null,
     /** Derived from capture stats — why a night might look incomplete. */
     val healthWarnings: List<String> = emptyList(),
+    /**
+     * The night's validity grade as the finalize-time NIGHT_VALIDITY row recorded it
+     * (domain/validity.NightValidity) — read back from the row's notes, never re-graded at
+     * report time, so the badge and the trend show the same stored verdict. Null for nights
+     * recorded before the row existed.
+     */
+    val validity: com.sleepanalysis.domain.validity.NightValidity.Result? = null,
     /** Short user note added after the night (user context, never a measurement). */
     val morningNotes: String? = null,
     /**
@@ -267,6 +288,8 @@ object ReportAssembler {
         noiseMinConfidence: Double = DEFAULT_MIN_DISPLAYED_NOISE_CONFIDENCE,
         /** Stored quiet gaps (schema v10) — replaces the report-time computation when present. */
         quietGapsOverride: List<QuietGap>? = null,
+        /** The stored NIGHT_VALIDITY grade (parsed notes) — passed through verbatim. */
+        validity: com.sleepanalysis.domain.validity.NightValidity.Result? = null,
     ): MorningReport? {
         val endedAt = session.endedAt ?: return null
         val timeInBedSeconds = ((endedAt - session.startedAt).coerceAtLeast(0)) / 1000
@@ -283,7 +306,14 @@ object ReportAssembler {
         }
         val excludedNoise = events.size - visibleEvents.size
 
-        val snoreEvents = visibleEvents.filter { it.type == EventType.SNORE }
+        // Label-aware snore set (SnoreMath) — computed from ALL events, exactly like the
+        // finalize writer and the label-corrected rewrite (the low-confidence display filter
+        // above is presentation-only: a SNORE-labeled event must count toward the aggregates
+        // whether or not the display filter would hide its row, or the live recompute would
+        // contradict the stored rows the trend reads — docs/NIGHT_REPORT.md §Score). A user
+        // label re-weighs aggregates only: display (timeline, episodes, counts) still shows
+        // every visible event with its detector type.
+        val snoreEvents = com.sleepanalysis.domain.scoring.SnoreMath.eventsCountingAsSnore(events)
         // Union, not sum — the same math as the stored measurements (SnoreMath): merged
         // overlapping event windows must count their audio once.
         val snoreSeconds = com.sleepanalysis.domain.scoring.SnoreMath
@@ -424,6 +454,7 @@ object ReportAssembler {
             dailyFactors = factors,
             capture = capture,
             healthWarnings = healthWarnings,
+            validity = validity,
             morningNotes = session.morningNotes,
             loudestEpisodes = episodes,
             lowConfidenceNoiseExcluded = excludedNoise,

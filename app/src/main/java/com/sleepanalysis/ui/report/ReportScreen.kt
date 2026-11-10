@@ -63,6 +63,7 @@ fun ReportScreen(
     val report by viewModel.report.collectAsStateWithLifecycle()
     val playingEventId by viewModel.playingEventId.collectAsStateWithLifecycle()
     val garminImportState by viewModel.garminImportState.collectAsStateWithLifecycle()
+    val refreshState by viewModel.refreshState.collectAsStateWithLifecycle()
     val clipQuality by viewModel.clipQuality.collectAsStateWithLifecycle()
     var selectedEventId by remember { mutableStateOf<Long?>(null) }
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -120,6 +121,15 @@ fun ReportScreen(
                 }
             }
             item { TldrCard(report = r) }
+            item {
+                RefreshReportCard(
+                    refresh = refreshState,
+                    garminStatus = r.garminStatus,
+                    importRunning = garminImportState
+                        is com.sleepanalysis.data.garmin.GarminImportManager.GarminImportState.Importing,
+                    onRefresh = viewModel::refreshWithGarmin,
+                )
+            }
             item { QualityBannersCard(report = r, clipQuality = clipQuality) }
             item { DisclaimerCard() }
             item {
@@ -323,6 +333,7 @@ private fun TldrCard(report: com.sleepanalysis.domain.report.MorningReport) {
                 style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.SemiBold,
             )
+            ValidityBadge(validity = report.validity)
             val captureStart = report.captureWindowStartMs ?: report.startedAt
             val captured = (report.endedAt - captureStart).coerceAtLeast(0)
             val shareText = String.format(java.util.Locale.US, "%.0f%%", report.snoreSharePercent)
@@ -387,6 +398,101 @@ private fun TldrCard(report: com.sleepanalysis.domain.report.MorningReport) {
             }
         }
     }
+}
+
+/**
+ * The night validity badge (docs/NIGHT_REPORT.md): the stored A–D grade over capture integrity
+ * with the reasons expandable below it — the primary "can I trust this night?" surface. It
+ * supersedes the capture-health warning role for the TL;DR; the quality banners below keep the
+ * live clip scan and linkage evidence the finalize-time row cannot see. Suggestive tone only —
+ * the grade says how well the night was captured, never anything clinical.
+ */
+@Composable
+private fun ValidityBadge(validity: com.sleepanalysis.domain.validity.NightValidity.Result?) {
+    if (validity == null) return
+    var expanded by remember { mutableStateOf(false) }
+    Column(
+        Modifier.fillMaxWidth().clickable { expanded = !expanded },
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                validity.grade,
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold,
+                color = if (validity.grade == "D") {
+                    MaterialTheme.colorScheme.error
+                } else {
+                    MaterialTheme.colorScheme.primary
+                },
+            )
+            Column {
+                Text(
+                    stringResource(validitySummary(validity.grade)),
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    stringResource(R.string.validity_expand_hint),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        if (expanded) {
+            validity.reasons.forEach { reason ->
+                Column {
+                    Text(
+                        validityReasonText(reason.id) ?: reason.id,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    Text(
+                        reason.detail,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            if (validity.reasons.isEmpty()) {
+                Text(
+                    stringResource(R.string.validity_summary_a),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+}
+
+/** Grade → one-line summary (suggestive, never clinical). */
+private fun validitySummary(grade: String): Int = when (grade) {
+    "A" -> R.string.validity_summary_a
+    "B" -> R.string.validity_summary_b
+    "C" -> R.string.validity_summary_c
+    else -> R.string.validity_summary_d
+}
+
+/** Reason id → localized text; null renders the raw id (future-proof against version drift). */
+@Composable
+private fun validityReasonText(id: String): String? = when (id) {
+    "stats_missing" -> stringResource(R.string.validity_reason_stats_missing)
+    "capture_failed" -> stringResource(R.string.validity_reason_capture_failed)
+    "capture_gaps" -> stringResource(R.string.validity_reason_capture_gaps)
+    "capture_gaps_severe" -> stringResource(R.string.validity_reason_capture_gaps_severe)
+    "thermal_throttle" -> stringResource(R.string.validity_reason_thermal_throttle)
+    "unexplained_gap" -> stringResource(R.string.validity_reason_unexplained_gap)
+    "clipped_clips" -> stringResource(R.string.validity_reason_clipped_clips)
+    "ambient_noise_high" -> stringResource(R.string.validity_reason_ambient_noise_high)
+    "session_interrupted" -> stringResource(R.string.validity_reason_session_interrupted)
+    "low_snore_signal" -> stringResource(R.string.validity_reason_low_snore_signal)
+    "garmin_stale" -> stringResource(R.string.validity_reason_garmin_stale)
+    "garmin_no_overlap" -> stringResource(R.string.report_garmin_no_overlap)
+    "garmin_stage_mismatch" -> stringResource(R.string.validity_reason_garmin_stage_mismatch)
+    "garmin_tst_mismatch" -> stringResource(R.string.validity_reason_garmin_tst_mismatch)
+    "garmin_span_overlap" -> stringResource(R.string.validity_reason_garmin_span_overlap)
+    "garmin_implausible" -> stringResource(R.string.validity_reason_garmin_implausible)
+    "garmin_spo2_distrust" -> stringResource(R.string.validity_reason_garmin_spo2_distrust)
+    else -> null
 }
 
 /**
@@ -1067,6 +1173,57 @@ private fun eventTypeLabel(type: String): String = when (type) {
     else -> "Sound"
 }
 
+/**
+ * "Refresh with Garmin" row at the top of the Morning Summary (docs/NIGHT_REPORT.md §2):
+ * one tap re-syncs this night's wake date (or, when already LINKED, just rebuilds) and
+ * updates the report in place. The status line comes from the VM's pure mapping — running
+ * phases while busy, otherwise the last attempt's outcome; no line before any attempt.
+ */
+@Composable
+private fun RefreshReportCard(
+    refresh: RefreshState,
+    garminStatus: com.sleepanalysis.domain.report.GarminLinkStatus,
+    importRunning: Boolean,
+    onRefresh: () -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        OutlinedButton(
+            onClick = onRefresh,
+            enabled = refresh.phase == RefreshPhase.IDLE && !importRunning,
+        ) {
+            Text(stringResource(R.string.report_garmin_refresh))
+        }
+        when (refreshStatusLine(refresh.phase, garminStatus, refresh.completedAtMs)) {
+            RefreshStatusLine.SYNCING -> Text(
+                stringResource(R.string.report_garmin_refresh_syncing),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            RefreshStatusLine.UPDATING -> Text(
+                stringResource(R.string.report_garmin_refresh_updating),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            RefreshStatusLine.NOT_AVAILABLE -> Text(
+                stringResource(R.string.report_garmin_refresh_not_available),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            RefreshStatusLine.INCLUDED -> {
+                val at = refresh.completedAtMs
+                if (at != null) {
+                    Text(
+                        stringResource(R.string.report_garmin_refresh_included, Formatting.time(at)),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                }
+            }
+            RefreshStatusLine.NONE -> {}
+        }
+    }
+}
+
 /** Garmin device-reported metrics — always labeled "Garmin estimate", never clinical (M10–M13, M18). */
 @Composable
 private fun GarminCard(
@@ -1134,6 +1291,22 @@ private fun GarminCard(
                         color = MaterialTheme.colorScheme.error,
                     )
                 }
+                // Validator warnings for THIS import (stale/implausible/mismatch —
+                // GarminValidators): live from the import state; the persistent ones ride on
+                // the night's validity grade above.
+                (importState as? com.sleepanalysis.data.garmin.GarminImportManager.GarminImportState.Success)
+                    ?.warnings?.takeIf { it.isNotEmpty() }
+                    ?.let { warnings ->
+                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            warnings.forEach { warning ->
+                                Text(
+                                    garminWarningText(warning.id),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                    }
                 // Headline vendor number + where the worst stretch fell (timeline when stored).
                 (sleep.sleepScore ?: garminSleepScore)?.let {
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
@@ -1200,6 +1373,16 @@ private fun GarminCard(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
+                if (garminStageMinutes.isNotEmpty() || snoreMinutesByStage.isNotEmpty()) {
+                    // The stage footnote: vendor stages are estimates — agreement with
+                    // sleep-lab stages is fair-to-moderate in the literature (κ 0.21–0.54,
+                    // cited in docs, not here).
+                    Text(
+                        stringResource(R.string.report_garmin_stages_estimate),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
             if (metrics.isEmpty()) {
                 Text(
@@ -1225,6 +1408,12 @@ private fun GarminCard(
             when (val s = importState) {
                 is com.sleepanalysis.data.garmin.GarminImportManager.GarminImportState.Importing ->
                     Text(stringResource(R.string.settings_import_running, s.date), style = MaterialTheme.typography.bodySmall)
+                is com.sleepanalysis.data.garmin.GarminImportManager.GarminImportState.NotReady ->
+                    Text(
+                        stringResource(R.string.settings_import_not_ready),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
                 is com.sleepanalysis.data.garmin.GarminImportManager.GarminImportState.Error ->
                     Text(s.message, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
                 is com.sleepanalysis.data.garmin.GarminImportManager.GarminImportState.Success ->
@@ -1240,6 +1429,19 @@ private fun GarminCard(
             }
         }
     }
+}
+
+/** Garmin validator warning id → localized text; unknown ids render raw (version drift safety). */
+@Composable
+private fun garminWarningText(id: String): String = when (id) {
+    "garmin_stale" -> stringResource(R.string.report_garmin_warning_stale)
+    "garmin_no_overlap" -> stringResource(R.string.report_garmin_warning_no_overlap)
+    "garmin_stage_mismatch" -> stringResource(R.string.report_garmin_warning_stage_mismatch)
+    "garmin_tst_mismatch" -> stringResource(R.string.report_garmin_warning_tst_mismatch)
+    "garmin_span_overlap" -> stringResource(R.string.report_garmin_warning_span_overlap)
+    "garmin_implausible" -> stringResource(R.string.report_garmin_warning_implausible)
+    "garmin_spo2_distrust" -> stringResource(R.string.report_garmin_warning_spo2_distrust)
+    else -> id
 }
 
 private fun garminMetricLabel(type: String): String = when (type) {
