@@ -177,8 +177,8 @@ class MigrationTest {
                 assertTrue(c.getString(2).contains("\"validity_grade\":\"B\""))
             }
             sql.execSQL(
-                "INSERT INTO model_registry (kind, version, validFromUtc) VALUES " +
-                    "('DETECTOR', 'energy-heuristic-v1-spectral', 1792000000000)"
+                "INSERT INTO model_registry (kind, version, validFromUtc, validToUtc) VALUES " +
+                    "('DETECTOR', 'energy-heuristic-v1-spectral', 1792000000000, 1793000000000)"
             )
             sql.execSQL(
                 "INSERT INTO model_registry (kind, version, validFromUtc, validToUtc) VALUES " +
@@ -211,10 +211,6 @@ class MigrationTest {
                 c.moveToFirst()
                 assertEquals(2, c.getInt(0)) // registry rows are version history — NOT session-bound
             }
-            sql.query("SELECT COUNT(*) FROM sleep_experiment").use { c ->
-                c.moveToFirst()
-                assertEquals(1, c.getInt(0)) // the v13 experiment is NOT session-bound (no FK) — it survives
-            }
             // v13 sleep_experiment round-trip: the N-of-1 row is writable and its columns
             // persist (baseline band JSON, verdict JSON). Not session-bound by design (no FK,
             // docs/DATA_MODEL.md §3.12) — verified below: the session delete must NOT remove it.
@@ -237,6 +233,10 @@ class MigrationTest {
                 assertEquals(7, c.getInt(3))
                 assertEquals("DONE", c.getString(4))
                 assertTrue(c.getString(5).contains("\"median\":0.1"))
+            }
+            sql.query("SELECT COUNT(*) FROM sleep_experiment").use { c ->
+                c.moveToFirst()
+                assertEquals(1, c.getInt(0)) // NOT session-bound (no FK) — survived the session delete above
             }
             sql.query("SELECT COUNT(*) FROM sleep_experiment WHERE status = 'DONE'").use { c ->
                 c.moveToFirst()
