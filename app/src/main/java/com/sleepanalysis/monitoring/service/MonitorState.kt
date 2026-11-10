@@ -47,6 +47,15 @@ fun canBeginCaptureAfterDelay(
         current.sessionId == sessionId &&
         current.captureStartsAtMs == expectedCaptureStartAtMs
 
+/**
+ * Pure guard for the "start capture now" tap during the start delay: there must be something
+ * to skip — a Delayed state. A stop/finalize during the delay (Finished/Idle) or a start error
+ * leaves nothing; the tap then promotes-to-foreground-and-stops (never starts capture). The
+ * tap is a user interaction (the mic-access path), and the session to capture into comes from
+ * the state itself.
+ */
+fun canSkipStartDelay(current: MonitorState): Boolean = current is MonitorState.Delayed
+
 @Singleton
 class MonitorStateHolder @Inject constructor() {
     private val _state = MutableStateFlow<MonitorState>(MonitorState.Idle)

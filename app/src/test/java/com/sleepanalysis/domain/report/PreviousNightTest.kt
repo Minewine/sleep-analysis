@@ -63,4 +63,33 @@ class PreviousNightTest {
         assertNull(PreviousNight.pick(emptyList(), current))
         assertNull(PreviousNight.pick(listOf(current), current))
     }
+
+    @Test
+    fun `prefers an older full night over a later short evening session`() {
+        // Session 8-then-9 (2026-11-08): the short 1 h evening recording sat between the
+        // current night and the last real night — the comparison must anchor on the night.
+        val fullNight = session(0) // fixture default: 8 h in bed
+        val shortEvening = session(10, endedAt = 10 + 3_600_000) // 1 h
+        val current = session(20)
+        assertEquals(
+            fullNight.id,
+            PreviousNight.pick(listOf(fullNight, shortEvening, current), current)!!.id,
+        )
+    }
+
+    @Test
+    fun `falls back to the latest short session when no full night exists`() {
+        val shortA = session(0, endedAt = 0 + 3_600_000)
+        val shortB = session(10, endedAt = 10 + 3_600_000)
+        val current = session(20)
+        assertEquals(shortB.id, PreviousNight.pick(listOf(shortA, shortB, current), current)!!.id)
+    }
+
+    @Test
+    fun `a full night just over the threshold is night-like`() {
+        val exact = session(0, endedAt = PreviousNight.NIGHT_LIKE_MIN_IN_BED_MS)
+        val short = session(10, endedAt = 10 + 3_600_000)
+        val current = session(20)
+        assertEquals(exact.id, PreviousNight.pick(listOf(exact, short, current), current)!!.id)
+    }
 }

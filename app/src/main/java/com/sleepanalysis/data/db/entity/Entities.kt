@@ -91,8 +91,10 @@ data class AcousticEventEntity(
     /**
      * User-corrected class from clip playback (docs/DATA_MODEL.md §3.5): what the user says the
      * event really was — SNORE / COUGH / SPEECH / MOVEMENT / OTHER_NOT_SNORE. This is the
-     * personal labeled dataset Phase 2 model improvement trains against; it never alters
-     * Phase 1 scores.
+     * personal labeled dataset Phase 2 model improvement trains against. Since snore-score-v3
+     * it also re-weighs the night's snore aggregates (docs/MEASUREMENT_RELIABILITY.md §7.1):
+     * non-SNORE excludes, SNORE includes, no label keeps the detector's class. The stored type
+     * is never changed.
      */
     val userLabel: String? = null,
     /** When the user applied the label — dataset curation needs to distinguish label age. */

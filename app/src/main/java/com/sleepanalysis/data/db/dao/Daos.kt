@@ -77,6 +77,10 @@ interface AcousticEventDao {
     @Query("SELECT * FROM acoustic_event WHERE sessionId = :sessionId ORDER BY startMs")
     suspend fun bySession(sessionId: Long): List<AcousticEventEntity>
 
+    /** The labeled event's session — the label recompute rewrites that session's measurements. */
+    @Query("SELECT * FROM acoustic_event WHERE id = :eventId")
+    suspend fun byId(eventId: Long): AcousticEventEntity?
+
     /** Detector version of the session's first snore event — cross-night comparison guard. */
     @Query(
         "SELECT modelVersion FROM acoustic_event WHERE sessionId = :sessionId " +
@@ -174,6 +178,30 @@ interface MeasurementDao {
     suspend fun replaceGarminForDay(periodStart: Long, rows: List<MeasurementEntity>) {
         if (rows.isEmpty()) return
         deleteGarminForTypes(periodStart, rows.map { it.measurementType }.distinct())
+        insertAll(rows)
+    }
+
+    /**
+     * Deletes the PHONE rows of one session for the given measurement types ONLY — the label
+     * recompute rewrites the snore aggregates (MeasurementRecorder.replacePhoneEstimates) and
+     * must never touch the session's other rows (docs/DATA_MODEL.md §3.2).
+     */
+    @Query(
+        "DELETE FROM measurement WHERE sourceType = 'PHONE' AND sessionId = :sessionId " +
+            "AND measurementType IN (:types)"
+    )
+    suspend fun deletePhoneForSession(sessionId: Long, types: List<String>)
+
+    /**
+     * Atomic delete-then-insert so a label recompute can never duplicate a session's PHONE
+     * rows (mirrors [replaceGarminForDay]). The delete is scoped to [types] — the FULL set of
+     * types being rewritten, not just the incoming rows': a recompute that stops producing a
+     * row (intensity rows when no snoring remains) must delete it, never leave a stale value.
+     * Unlike [replaceGarminForDay], empty [rows] with a non-empty [types] delete-only.
+     */
+    @Transaction
+    suspend fun replacePhoneForSession(sessionId: Long, types: List<String>, rows: List<MeasurementEntity>) {
+        deletePhoneForSession(sessionId, types)
         insertAll(rows)
     }
 }

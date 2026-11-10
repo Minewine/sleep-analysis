@@ -175,6 +175,10 @@ def remote_size(serial: str | None, rel_path: str) -> int:
     The `wc -c < file` redirect runs inside `run-as ... sh -c` so the file is
     opened as the app user — the on-device shell itself cannot read app-private
     paths, and without the redirect wc would print the name alongside the count.
+    adb re-joins the `shell` arguments into one command line, so the whole -c
+    script must carry its own quotes to arrive as a single sh -c argument;
+    unquoted, the redirect is parsed at the device-shell level (as the
+    unprivileged shell user) and fails with "can't open ...".
     """
     out = subprocess.run(
         [
@@ -184,7 +188,7 @@ def remote_size(serial: str | None, rel_path: str) -> int:
             APP_PACKAGE,
             "sh",
             "-c",
-            f"wc -c < '{CLIPS_DIR}/{rel_path}'",
+            f"'wc -c < {CLIPS_DIR}/{rel_path}'",
         ],
         check=True,
         capture_output=True,

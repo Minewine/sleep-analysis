@@ -208,6 +208,74 @@ class MeasurementRecorderTest {
         assertTrue(dao.rows.isEmpty())
     }
 
+    // --- label-recompute replace path (docs/MEASUREMENT_RELIABILITY.md §7.1, snore-score-v3) ---
+
+    @Test
+    fun `label recompute replaces prior snore rows instead of duplicating`() = runTest {
+        val dao = FakeMeasurementDao()
+        val recorder = MeasurementRecorder(dao)
+        val estimates = listOf(
+            MeasurementRecorder.PhoneEstimate(MeasurementType.SNORE_EVENT_COUNT, 2.0),
+            MeasurementRecorder.PhoneEstimate(MeasurementType.SNORE_TIME, 150.0),
+        )
+
+        recorder.replacePhoneEstimates(sessionId = 7, estimates = estimates)
+        recorder.replacePhoneEstimates(
+            sessionId = 7,
+            estimates = estimates.map { it.copy(value = it.value + 1) },
+        )
+
+        assertEquals(2, dao.rows.count { it.sessionId == 7L })
+        assertEquals(
+            3.0,
+            dao.rows.single { it.measurementType == "SNORE_EVENT_COUNT" }.valueNum!!,
+            0.0001,
+        )
+    }
+
+    @Test
+    fun `label recompute deletes a stale aggregate that stops being produced`() = runTest {
+        val dao = FakeMeasurementDao()
+        val recorder = MeasurementRecorder(dao)
+
+        recorder.replacePhoneEstimates(
+            sessionId = 7,
+            estimates = listOf(
+                MeasurementRecorder.PhoneEstimate(MeasurementType.SNORE_EVENT_COUNT, 2.0),
+                MeasurementRecorder.PhoneEstimate(MeasurementType.SNORE_INTENSITY_PEAK, -12.0),
+            ),
+        )
+        // Every snoring event ends up user-labeled as something else: the intensity rows must
+        // be deleted, never left stale at their old values.
+        recorder.replacePhoneEstimates(
+            sessionId = 7,
+            estimates = listOf(MeasurementRecorder.PhoneEstimate(MeasurementType.SNORE_EVENT_COUNT, 0.0)),
+        )
+
+        val types = dao.rows.map { it.measurementType }
+        assertTrue(types.contains("SNORE_EVENT_COUNT"))
+        assertFalse(types.contains("SNORE_INTENSITY_PEAK"))
+    }
+
+    @Test
+    fun `label recompute flags its rows and never touches non-aggregate rows`() = runTest {
+        val dao = FakeMeasurementDao()
+        val recorder = MeasurementRecorder(dao)
+        // TIME_IN_BED is written at finalize and derives from session bounds, not labels.
+        recorder.recordPhoneEstimate(7, MeasurementType.TIME_IN_BED, 26_923.0)
+
+        recorder.replacePhoneEstimates(
+            sessionId = 7,
+            estimates = listOf(MeasurementRecorder.PhoneEstimate(MeasurementType.SNORE_TIME, 120.0)),
+        )
+
+        val timeInBed = dao.rows.single { it.measurementType == "TIME_IN_BED" }
+        assertEquals(26_923.0, timeInBed.valueNum!!, 0.0001)
+        assertNull(timeInBed.notes)
+        val snoreTime = dao.rows.single { it.measurementType == "SNORE_TIME" }
+        assertTrue(snoreTime.notes!!.contains(MeasurementRecorder.LABEL_CORRECTED_NOTES))
+    }
+
     private class FakeMeasurementDao : MeasurementDao {
         val rows = mutableListOf<MeasurementEntity>()
         val ops = mutableListOf<String>()
@@ -241,7 +309,14 @@ class MeasurementRecorderTest {
             rows.clear()
         }
 
-        // replaceGarminForDay is deliberately NOT overridden: the DAO's default body runs,
-        // exercising the real delete-then-insert path through this fake.
+        override suspend fun deletePhoneForSession(sessionId: Long, types: List<String>) {
+            ops += "deletePhoneForSession"
+            rows.removeAll {
+                it.sourceType == "PHONE" && it.sessionId == sessionId && it.measurementType in types
+            }
+        }
+
+        // replaceGarminForDay and replacePhoneForSession are deliberately NOT overridden: the
+        // DAOs' default bodies run, exercising the real delete-then-insert path through this fake.
     }
 }

@@ -60,6 +60,28 @@ def test_clip_name_matches_on_device_scheme():
     assert ef.clip_name(3, 45_000) == "session_3/evt_45000.wav"
 
 
+def test_remote_size_quotes_the_sh_c_script(monkeypatch):
+    """Regression (Nov 9): adb re-joins `shell` argv into one device command line, so the
+    `sh -c` script must carry its own quotes — unquoted, the `wc -c < file` redirect was
+    parsed at the device-shell level (unprivileged user) and every clip export failed with
+    "can't open ...". The quotes must survive in the argv element past to the device."""
+    calls = []
+
+    def spy_run(cmd, check, stdout=None, capture_output=False, text=False):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, stdout="256044\n", stderr="")
+
+    monkeypatch.setattr(ef.subprocess, "run", spy_run)
+    assert ef.remote_size("serial-1", "session_3/evt_45000.wav") == 256044
+
+    size_call = calls[0]
+    script = size_call[size_call.index("-c") + 1]
+    assert script.startswith("'") and script.endswith("'"), (
+        "sh -c script must be quoted as ONE argv token for the device shell"
+    )
+    assert "wc -c < files/clips/session_3/evt_45000.wav" in script
+
+
 def test_is_riff_rejects_non_wav_bytes():
     assert ef.is_riff(b"RIFF....")
     assert not ef.is_riff(b"/sys/bin/sh: cat: session_3/evt_45000.wav: No such file")

@@ -521,7 +521,27 @@ fun SettingsScreen(
                                 style = MaterialTheme.typography.bodyMedium,
                             )
                             s.endpointStatuses.forEach { (endpoint, status) ->
-                                Text("$endpoint → HTTP $status", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text(
+                                    endpointStatusLabel(endpoint, status),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                        is GarminImportManager.GarminImportState.NotReady -> {
+                            Text(
+                                stringResource(R.string.settings_import_not_ready),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                            // The raw per-endpoint verdicts (what exactly 404'd) — same
+                            // diagnostics the Success branch shows.
+                            s.endpointStatuses.forEach { (endpoint, status) ->
+                                Text(
+                                    endpointStatusLabel(endpoint, status),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
                             }
                         }
                         is GarminImportManager.GarminImportState.Error ->
@@ -667,6 +687,19 @@ private fun StartDelayRow(selectedMinutes: Int, onSelect: (Int) -> Unit) {
             }
         }
     }
+}
+
+/**
+ * One endpoint status line of the import card: human meaning first, the raw HTTP code kept
+ * for diagnostics — 404 means Garmin hasn't processed that endpoint's night yet, a negative
+ * status means no HTTP verdict at all (network failure / failed token re-exchange).
+ */
+@Composable
+private fun endpointStatusLabel(endpoint: String, status: Int): String = when {
+    status in 200..299 -> stringResource(R.string.settings_endpoint_status_ok, endpoint, status)
+    status == 404 -> stringResource(R.string.settings_endpoint_status_not_ready, endpoint, status)
+    status < 0 -> stringResource(R.string.settings_endpoint_status_no_http, endpoint)
+    else -> stringResource(R.string.settings_endpoint_status_failed, endpoint, status)
 }
 
 /** Small dialog wrapping the Material3 TimePicker (24 h, matching the "22:30" display). */

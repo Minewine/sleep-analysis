@@ -100,6 +100,8 @@ class SnoreScoreTest {
         assertEquals(53, s3.score)
         assertEquals(53, s1.score)
         // The score formula identity is stored on new SNORE_SCORE rows.
-        assertEquals("snore-score-v2", SnoreScore.FORMULA_VERSION)
+        // v3 keeps v2's arithmetic exactly — only the input set changed (label-aware, §7.1),
+        // so the anchors above are unchanged.
+        assertEquals("snore-score-v3", SnoreScore.FORMULA_VERSION)
     }
 }

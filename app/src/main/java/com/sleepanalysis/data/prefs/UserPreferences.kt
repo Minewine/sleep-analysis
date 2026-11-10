@@ -51,9 +51,72 @@ class UserPreferences @Inject constructor(@ApplicationContext context: Context) 
             lastCount: Int,
             date: String,
             nowMs: Long,
+        ): Boolean = retryAllowed(lastDate, lastMs, lastCount, date, nowMs, MAX_ATTEMPTS_PER_DATE, AUTO_RETRY_COOLDOWN_MS)
+
+        /** [retryAllowed] under explicit bounds — the shared core of the general and not-ready budgets. */
+        fun retryAllowed(
+            lastDate: String?,
+            lastMs: Long,
+            lastCount: Int,
+            date: String,
+            nowMs: Long,
+            maxAttempts: Int,
+            cooldownMs: Long,
         ): Boolean =
             lastDate != date ||
-                (lastCount < MAX_ATTEMPTS_PER_DATE && nowMs - lastMs >= AUTO_RETRY_COOLDOWN_MS)
+                (lastCount < maxAttempts && nowMs - lastMs >= cooldownMs)
+    }
+
+    /**
+     * Separate, looser retry budget for not-ready outcomes (GarminImportState.NotReady —
+     * Garmin hasn't processed the night server-side yet): up to [MAX_ATTEMPTS_PER_DATE]
+     * attempts per wake date with a [NOT_READY_COOLDOWN_MS] cooldown, drawn ONLY by not-ready
+     * results. A real failure keeps the general [GarminRetryBounds] budget and vice versa, so
+     * a string of too-early morning imports never exhausts the general 2/day cap — the reason
+     * this budget exists.
+     */
+    object GarminNotReadyBounds {
+        /** Garmin usually processes a night within hours — retry a not-ready import hourly. */
+        const val NOT_READY_COOLDOWN_MS: Long = 1 * 60 * 60 * 1000L
+
+        /** Attempts allowed per wake date for not-ready outcomes only. */
+        const val MAX_ATTEMPTS_PER_DATE: Int = 4
+
+        /** [GarminRetryBounds.retryAllowed] under these bounds — the per-kind gate. */
+        fun retryAllowed(
+            lastDate: String?,
+            lastMs: Long,
+            lastCount: Int,
+            date: String,
+            nowMs: Long,
+        ): Boolean = GarminRetryBounds.retryAllowed(
+            lastDate, lastMs, lastCount, date, nowMs, MAX_ATTEMPTS_PER_DATE, NOT_READY_COOLDOWN_MS,
+        )
+
+        /**
+         * Pure gate over BOTH counters (the backfill's entry point): a date with no attempt of
+         * either kind always allows; otherwise the budget of whichever kind was attempted LAST
+         * on [date] decides. A not-ready attempt must not consume the general cap, and a real
+         * failure must not consume the not-ready budget.
+         */
+        fun backfillAllowed(
+            generalDate: String?,
+            generalMs: Long,
+            generalCount: Int,
+            notReadyDate: String?,
+            notReadyMs: Long,
+            notReadyCount: Int,
+            date: String,
+            nowMs: Long,
+        ): Boolean {
+            if (generalDate != date && notReadyDate != date) return true
+            val lastWasNotReady = notReadyDate == date && (generalDate != date || notReadyMs >= generalMs)
+            return if (lastWasNotReady) {
+                retryAllowed(notReadyDate, notReadyMs, notReadyCount, date, nowMs)
+            } else {
+                GarminRetryBounds.retryAllowed(generalDate, generalMs, generalCount, date, nowMs)
+            }
+        }
     }
 
     private val dataStore = context.dataStore
@@ -72,6 +135,12 @@ class UserPreferences @Inject constructor(@ApplicationContext context: Context) 
         val GARMIN_AUTO_RETRY_DATE = stringPreferencesKey("garmin_auto_retry_date")
         val GARMIN_AUTO_RETRY_MS = longPreferencesKey("garmin_auto_retry_ms")
         val GARMIN_AUTO_RETRY_COUNT = intPreferencesKey("garmin_auto_retry_count")
+        // Not-ready attempts (the GarminImportState.NotReady outcome) keep their OWN date/ms/count so they
+        // never consume the general budget above; GarminNotReadyBounds.backfillAllowed consults
+        // the counter of the date's last attempt kind.
+        val GARMIN_NOT_READY_RETRY_DATE = stringPreferencesKey("garmin_not_ready_retry_date")
+        val GARMIN_NOT_READY_RETRY_MS = longPreferencesKey("garmin_not_ready_retry_ms")
+        val GARMIN_NOT_READY_RETRY_COUNT = intPreferencesKey("garmin_not_ready_retry_count")
         val NOISE_DISPLAY_MIN_CONFIDENCE = doublePreferencesKey("noise_display_min_confidence")
     }
 
@@ -173,17 +242,25 @@ class UserPreferences @Inject constructor(@ApplicationContext context: Context) 
 
     /**
      * Auto-backfill gate for the report's silent Garmin retry (docs/NIGHT_REPORT.md §Garmin):
-     * one attempt per wake date, plus at most one more after the cooldown — a morning that
-     * synced too early (Garmin's payload not ready) gets exactly one later try, never an
-     * unbounded re-import series. Call [markGarminAutoRetry] after every attempt (auto OR
-     * manual — a manual import also consumes the date's auto attempt).
+     * the budget of whichever kind the wake date's LAST attempt drew from decides — a
+     * not-ready morning (Garmin's payload not ready yet) gets the looser
+     * [GarminNotReadyBounds] (4/day, 1 h cooldown), any other outcome the general
+     * [GarminRetryBounds] (2/day, 6 h cooldown) — never an unbounded re-import series, and
+     * the two kinds can never exhaust each other's CAP (the counters are independent). The
+     * KIND of the last attempt still gates the next try, so a general failure's 6 h cooldown
+     * also delays the following not-ready attempt on that date — bounded and accepted.
+     * Call the matching mark* after every AUTO attempt; manual imports (Settings) do not
+     * consume any budget.
      */
-    suspend fun garminAutoRetryAllowed(date: String, nowMs: Long): Boolean {
+    suspend fun garminBackfillAllowed(date: String, nowMs: Long): Boolean {
         val prefs = dataStore.data.first()
-        return GarminRetryBounds.retryAllowed(
-            lastDate = prefs[Keys.GARMIN_AUTO_RETRY_DATE],
-            lastMs = prefs[Keys.GARMIN_AUTO_RETRY_MS] ?: 0L,
-            lastCount = prefs[Keys.GARMIN_AUTO_RETRY_COUNT] ?: 0,
+        return GarminNotReadyBounds.backfillAllowed(
+            generalDate = prefs[Keys.GARMIN_AUTO_RETRY_DATE],
+            generalMs = prefs[Keys.GARMIN_AUTO_RETRY_MS] ?: 0L,
+            generalCount = prefs[Keys.GARMIN_AUTO_RETRY_COUNT] ?: 0,
+            notReadyDate = prefs[Keys.GARMIN_NOT_READY_RETRY_DATE],
+            notReadyMs = prefs[Keys.GARMIN_NOT_READY_RETRY_MS] ?: 0L,
+            notReadyCount = prefs[Keys.GARMIN_NOT_READY_RETRY_COUNT] ?: 0,
             date = date,
             nowMs = nowMs,
         )
@@ -208,6 +285,7 @@ class UserPreferences @Inject constructor(@ApplicationContext context: Context) 
         dataStore.edit { it[Keys.NOISE_DISPLAY_MIN_CONFIDENCE] = PreferenceBounds.sanitizeConfidence(value) }
     }
 
+    /** Marks a general attempt (any outcome except the not-ready one — see [markGarminNotReadyRetry]). */
     suspend fun markGarminAutoRetry(date: String, nowMs: Long = System.currentTimeMillis()) {
         dataStore.edit { prefs ->
             val sameDate = prefs[Keys.GARMIN_AUTO_RETRY_DATE] == date
@@ -215,6 +293,17 @@ class UserPreferences @Inject constructor(@ApplicationContext context: Context) 
             prefs[Keys.GARMIN_AUTO_RETRY_MS] = nowMs
             prefs[Keys.GARMIN_AUTO_RETRY_COUNT] =
                 if (sameDate) (prefs[Keys.GARMIN_AUTO_RETRY_COUNT] ?: 0) + 1 else 1
+        }
+    }
+
+    /** Marks a not-ready attempt on its own budget, independent of [markGarminAutoRetry]'s. */
+    suspend fun markGarminNotReadyRetry(date: String, nowMs: Long = System.currentTimeMillis()) {
+        dataStore.edit { prefs ->
+            val sameDate = prefs[Keys.GARMIN_NOT_READY_RETRY_DATE] == date
+            prefs[Keys.GARMIN_NOT_READY_RETRY_DATE] = date
+            prefs[Keys.GARMIN_NOT_READY_RETRY_MS] = nowMs
+            prefs[Keys.GARMIN_NOT_READY_RETRY_COUNT] =
+                if (sameDate) (prefs[Keys.GARMIN_NOT_READY_RETRY_COUNT] ?: 0) + 1 else 1
         }
     }
 
