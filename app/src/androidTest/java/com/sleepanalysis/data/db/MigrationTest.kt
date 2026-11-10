@@ -160,6 +160,36 @@ class MigrationTest {
                 assertEquals(2.5, c.getDouble(0), 0.0001) // v11 DEFAULT backfill
                 assertTrue(c.isNull(1))
             }
+            // v12 round-trip: the report snapshot and the temporal model registry are writable,
+            // the snapshot's unique per-session index enforces one row per session, and both
+            // follow the FK CASCADE (snapshot) / stay registry-side rows.
+            sql.execSQL(
+                "INSERT INTO report (sessionId, generatedAt, appVersion, detectorVersion, scoreVersion, payload) VALUES " +
+                    "(1, 1793681500000, '0.1.0-phase1', 'energy-heuristic-v2-burst', 'snore-score-v3', " +
+                    "'{\"schema_version\":1,\"validity_grade\":\"B\",\"snore_seconds\":812}')"
+            )
+            sql.query(
+                "SELECT detectorVersion, scoreVersion, payload FROM report WHERE sessionId = 1"
+            ).use { c ->
+                assertTrue(c.moveToFirst())
+                assertEquals("energy-heuristic-v2-burst", c.getString(0))
+                assertEquals("snore-score-v3", c.getString(1))
+                assertTrue(c.getString(2).contains("\"validity_grade\":\"B\""))
+            }
+            sql.execSQL(
+                "INSERT INTO model_registry (kind, version, validFromUtc) VALUES " +
+                    "('DETECTOR', 'energy-heuristic-v1-spectral', 1792000000000)"
+            )
+            sql.execSQL(
+                "INSERT INTO model_registry (kind, version, validFromUtc, validToUtc) VALUES " +
+                    "('DETECTOR', 'energy-heuristic-v2-burst', 1793000000000, NULL)"
+            )
+            sql.query(
+                "SELECT COUNT(*) FROM model_registry WHERE kind = 'DETECTOR' AND validToUtc IS NULL"
+            ).use { c ->
+                c.moveToFirst()
+                assertEquals(1, c.getInt(0)) // exactly one open row per kind
+            }
             sql.execSQL("DELETE FROM sleep_session WHERE id = 1")
             sql.query("SELECT COUNT(*) FROM sleep_stage").use { c ->
                 c.moveToFirst()
@@ -173,6 +203,14 @@ class MigrationTest {
                 c.moveToFirst()
                 assertEquals(0, c.getInt(0)) // …and the clips
             }
+            sql.query("SELECT COUNT(*) FROM report").use { c ->
+                c.moveToFirst()
+                assertEquals(0, c.getInt(0)) // …and the report snapshot (v12 CASCADE)
+            }
+            sql.query("SELECT COUNT(*) FROM model_registry").use { c ->
+                c.moveToFirst()
+                assertEquals(2, c.getInt(0)) // registry rows are version history — NOT session-bound
+            }
         } finally {
             db.close()
         }
@@ -180,6 +218,6 @@ class MigrationTest {
 
     private companion object {
         const val TEST_DB = "migration-test.db"
-        const val LATEST_VERSION = 11
+        const val LATEST_VERSION = 12
     }
 }

@@ -23,6 +23,13 @@ Finalized sessions only (COMPLETED or RECOVERED) **with actual capture** — a s
 capture stats show 0 processed windows is excluded (junk/failed starts); sessions predating
 capture stats count as real nights. Oldest first, last 7.
 
+From schema v12 the analysis surfaces apply a second, stricter gate for anything that
+compares nights: **validity grade ≥ B + same detector/score versions (registry-gated,
+`model_registry`)** — that is the eligibility of the personal baseline and insights
+([INSIGHTS.md](INSIGHTS.md)). Trend rows themselves still show every captured night (with the
+grade letter per row and the version-change markers below); only the insight/baseline
+analysis restricts itself to the registry-gated eligible set.
+
 ## Version-change markers
 
 Each night carries two independent provenances, because they change on different schedules:

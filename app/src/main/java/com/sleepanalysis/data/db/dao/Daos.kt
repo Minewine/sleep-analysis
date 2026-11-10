@@ -8,7 +8,9 @@ import com.sleepanalysis.data.db.entity.AcousticEventEntity
 import com.sleepanalysis.data.db.entity.AudioClipEntity
 import com.sleepanalysis.data.db.entity.ClinicalBaselineEntity
 import com.sleepanalysis.data.db.entity.MeasurementEntity
+import com.sleepanalysis.data.db.entity.ModelRegistryEntity
 import com.sleepanalysis.data.db.entity.RawPayloadEntity
+import com.sleepanalysis.data.db.entity.ReportSnapshotEntity
 import com.sleepanalysis.data.db.entity.SleepSessionEntity
 import com.sleepanalysis.data.db.entity.QuietGapEntity
 import com.sleepanalysis.data.db.entity.SleepStageEntity
@@ -305,4 +307,63 @@ interface UserFactorDao {
         deleteForDate(date)
         insertAll(factors)
     }
+}
+
+/**
+ * Finalize-time report snapshots (schema v12, docs/DATA_MODEL.md §3.7). Upsert per session
+ * (unique index) — a re-write replaces, never duplicates; rows follow session retention via
+ * the FK CASCADE and delete-all purges the rest.
+ */
+@Dao
+interface ReportDao {
+    @Insert(onConflict = androidx.room.OnConflictStrategy.REPLACE)
+    suspend fun upsert(report: ReportSnapshotEntity): Long
+
+    @Query("SELECT * FROM report WHERE sessionId = :sessionId")
+    suspend fun bySession(sessionId: Long): ReportSnapshotEntity?
+
+    @Query("SELECT * FROM report ORDER BY generatedAt DESC")
+    suspend fun all(): List<ReportSnapshotEntity>
+
+    @Query("DELETE FROM report")
+    suspend fun deleteAll()
+}
+
+/**
+ * Temporal model-version registry (schema v12, docs/DATA_MODEL.md §3.8): which DETECTOR /
+ * SCORE versions produced which nights. Reads for the eligibility gates: the current row
+ * per kind, the full history, and the version(s) valid at a given instant (range query).
+ */
+@Dao
+interface ModelRegistryDao {
+    @Insert
+    suspend fun insert(row: ModelRegistryEntity): Long
+
+    /** Closes every still-open row of [kind] except the just-inserted [exceptId] (validTo = now). */
+    @Query(
+        "UPDATE model_registry SET validToUtc = :validToUtc " +
+            "WHERE kind = :kind AND validToUtc IS NULL AND id != :exceptId"
+    )
+    suspend fun closeOpenRows(kind: String, validToUtc: Long, exceptId: Long)
+
+    /** The current version of [kind] — null when no finalize has registered one yet. */
+    @Query(
+        "SELECT * FROM model_registry WHERE kind = :kind AND validToUtc IS NULL " +
+            "ORDER BY validFromUtc DESC LIMIT 1"
+    )
+    suspend fun currentForKind(kind: String): ModelRegistryEntity?
+
+    /** Full validity history of [kind], oldest first. */
+    @Query("SELECT * FROM model_registry WHERE kind = :kind ORDER BY validFromUtc")
+    suspend fun historyForKind(kind: String): List<ModelRegistryEntity>
+
+    /** Versions valid at [atMs] — rows whose range covers the instant (null validTo = open end). */
+    @Query(
+        "SELECT * FROM model_registry WHERE kind = :kind AND validFromUtc <= :atMs " +
+            "AND (validToUtc IS NULL OR validToUtc > :atMs) ORDER BY validFromUtc"
+    )
+    suspend fun versionsAt(kind: String, atMs: Long): List<ModelRegistryEntity>
+
+    @Query("DELETE FROM model_registry")
+    suspend fun deleteAll()
 }

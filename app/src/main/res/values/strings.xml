@@ -361,4 +361,48 @@
     <string name="factor_alcohol_units">Units (optional)</string>
     <string name="factor_save">Save</string>
     <string name="factor_saved">Saved</string>
+
+    <!-- Insights (docs/INSIGHTS.md): tone is "your recordings suggest" — never clinical, never diagnosis. -->
+    <string name="insight_title">Insights</string>
+    <string name="insight_empty">No completed nights yet — insights appear once recordings are finalized.</string>
+    <string name="insight_no_eligible">Your recordings suggest nothing yet: no night passed the quality gate (validity grade A or B, same detector and score versions). Insights appear as eligible nights accumulate.</string>
+    <string name="insight_collecting">Collecting your baseline: %1$d eligible night(s) — 10 needed before patterns are worth showing.</string>
+    <string name="insight_baseline_title">Your baseline</string>
+    <string name="insight_baseline_ready">Median and usual range over your last %1$d eligible nights. Bands are personal, not clinical ranges.</string>
+    <string name="insight_baseline_metric">%1$s: median %2$s, usual range %3$s–%4$s</string>
+    <string name="insight_regularity_title">Sleep regularity (approximate)</string>
+    <string name="insight_regularity_sri">Regularity index %1$.0f — how steady your sleep timing is night to night (approximated from nightly Garmin windows; wrist-derived).</string>
+    <string name="insight_regularity_sjl">Social jetlag ≈ %1$.1f h between weekend and weekday midpoints (approximate — we don\'t know your work schedule).</string>
+    <string name="insight_regularity_collecting">Needs at least 5 nights with Garmin windows to estimate regularity.</string>
+    <string name="insight_confidence_low">low confidence</string>
+    <string name="insight_confidence_moderate">moderate confidence</string>
+    <string name="insight_evidence_link">Show the nights behind this</string>
+    <string name="insight_dismiss">Not useful</string>
+    <string name="insight_show_hidden">Show hidden (%1$d)</string>
+    <string name="insight_hide_hidden">Hide hidden (%1$d)</string>
+    <string name="insight_restore">Show again</string>
+    <string name="history_insights">Insights</string>
+
+    <!-- Insight metric display names -->
+    <string name="insight_metric_snore_share">Snoring share of night</string>
+    <string name="insight_metric_longest_bout_ms">Longest snore bout</string>
+    <string name="insight_metric_score">Snore score</string>
+    <string name="insight_metric_garmin_awake_min">Awake minutes (Garmin)</string>
+    <string name="insight_metric_rmssd_ms">rMSSD (Garmin)</string>
+    <string name="insight_metric_bedtime_std_min">Bedtime variability</string>
+    <string name="insight_metric_sri">Sleep regularity index</string>
+    <string name="insight_metric_social_jetlag_h">Social jetlag</string>
+    <string name="insight_metric_snore_share_second_half">Late-night snoring</string>
+
+    <!-- Insight rule copy (names drift-tested against docs/INSIGHTS.md) -->
+    <string name="insight_rule_bedtime_variability">Your recordings suggest your bedtime timing has been more scattered than usual lately. For context from large studies: ~1 h night-to-night variation looks stable, ~3 h looks erratic — this is a description, not a threshold and not advice.</string>
+    <string name="insight_rule_sri_dip">Your recordings suggest your sleep regularity has been lower than your recent norm. Research links steadier timing with feeling more rested; whether making it steadier improves anything for you is not established.</string>
+    <string name="insight_rule_social_jetlag">Your weekend nights are ending more than an hour later than your weekday nights — a \"social jetlag\" flag from observational research. Approximate by convention: the app doesn\'t know your work schedule.</string>
+    <string name="insight_rule_second_half_alcohol">On this alcohol-logged night, snoring concentrated in the second half. Alcohol research describes this pattern — deeper sleep early, more disturbed sleep later. Your recordings suggest; they don\'t diagnose.</string>
+    <string name="insight_rule_second_half_untagged">Snoring concentrated in the second half of this night. This can be entirely normal: late-night REM sleep brings irregular breathing and awakenings, and an untagged late-night wake does not mean something is wrong.</string>
+    <string name="insight_rule_baseline_excursion">%1$s was outside your usual range tonight. Your recordings suggest — a single night can always be chance, and the band is personal, not clinical.</string>
+    <string name="insight_rule_alcohol_nights">On nights you logged alcohol, your recordings suggest more awake time than on nights without. No amount or cutoff makes this safe or unsafe — the comparison is descriptive.</string>
+    <string name="insight_rule_caffeine_nights">On nights you logged caffeine after 14:00, your recordings suggest somewhat more awake time or shorter sleep than on other nights. Research reports small average effects; these numbers are yours.</string>
+    <string name="insight_rule_exercise_evening">On this exercise-logged night, awake time ran above your usual range. We can\'t tell when or how hard you exercised — the app records only the fact — so this is association, not a mechanism.</string>
+    <string name="insight_rule_stress_high">On nights you logged high stress, your wrist rMSSD ran lower and awake time higher than your usual range. Stress physiology and wrist sensors are both imperfect — your recordings suggest; they don\'t diagnose.</string>
 </resources>

@@ -78,6 +78,7 @@ fun HistoryScreen(
     onBack: () -> Unit,
     onOpenReport: (Long) -> Unit,
     onOpenTrends: () -> Unit = {},
+    onOpenInsights: () -> Unit = {},
     viewModel: HistoryViewModel = hiltViewModel(),
 ) {
     val sessions by viewModel.sessions.collectAsStateWithLifecycle()
@@ -100,6 +101,9 @@ fun HistoryScreen(
                 actions = {
                     TextButton(onClick = onOpenTrends) {
                         Text(stringResource(R.string.history_trends))
+                    }
+                    TextButton(onClick = onOpenInsights) {
+                        Text(stringResource(R.string.history_insights))
                     }
                     TextButton(onClick = { confirmDeleteAll = true }) {
                         Text(stringResource(R.string.history_delete_all))

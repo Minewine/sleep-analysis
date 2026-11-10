@@ -20,7 +20,7 @@ erDiagram
     USER_FACTOR }o--|| MEASUREMENT : "mirrored into (user rows)"
 ```
 
-`REPORT` (§3.7) and `MODEL_REGISTRY` (§3.8) are **planned tables**, not yet in the schema (reports are computed live; the active model is a version constant). Everything else is implemented.
+`REPORT` (§3.7, schema v12) and `MODEL_REGISTRY` (§3.8, schema v12) are implemented: finalize writes each night's headline snapshot and registers the detector/score versions that produced it. Everything else is implemented.
 
 Two write paths exist, both through `MeasurementRecorder` ([ARCHITECTURE.md](ARCHITECTURE.md) §6):
 
@@ -167,35 +167,35 @@ Clinical baseline values (e.g., AHI 17.6) currently live in `clinical_baseline` 
 
 Only set/affirmative factors are stored — absence means "not logged that day". Saving a date replaces that date's rows. These are **user-entered context, not measurements**: no tier, no confidence, no Measurement rows; the report renders them under "Daily factors (self-logged)". Mirroring into `measurement` (`source_type = USER`, `method = USER_REPORTED`) is deferred to Phase 4's analysis engine, which will read them with explicit user-reported framing. Wiped by delete-all.
 
-### 3.7 `report` — morning report snapshot — **documented, not yet implemented**
+### 3.7 `report` — morning report snapshot (schema v12, implemented)
 
-Reports are currently **computed live in memory** (`ReportAssembler` → `MorningReport`) from events, measurements, and session context; they exist for the 90-day session retention window. This table is deferred to Phase 4 (reprocessing/trends) — the payload shape below (§5.2) is its target design.
+The full report stays a **live in-memory computation** (`ReportAssembler` → `MorningReport`); this table stores one compact HEADLINE snapshot per session at finalize — the numbers the night's own measurements carry, plus the model provenance later analysis needs to gate comparisons (schema v12, docs/INSIGHTS.md). One row per session (unique index, regeneration upserts); the session's deletion removes it (FK CASCADE) — reports remain regenerable while source data exists, never a second source of truth (§6). Delete-all purges the table.
 
 | Column | Type | Notes |
 |---|---|---|
 | `id` | Long PK | |
 | `session_id` | Long FK, CASCADE | |
-| `schema_version` | Int | Payload version |
-| `payload` | TEXT (JSON) | Assembled under `ClaimPolicy` — see §5.2 |
 | `generated_at` | Long | |
+| `app_version` | TEXT | App version at finalize |
+| `detector_version` | TEXT? | First snore event's model version (null: no snoring that night) |
+| `score_version` | TEXT? | SNORE_SCORE formula version ([SnoreScore.FORMULA_VERSION]) |
+| `payload` | TEXT (JSON) | Compact headline JSON (`schema_version` INSIDE the JSON — `domain/report/ReportSnapshot.kt`), shape per §5.2 |
 
-Unique index `(session_id, schema_version)`; regeneration upserts. Reports never contain values ClaimPolicy would refuse to render.
+Written only at finalize, inside the same transaction as the measurements and the NIGHT_VALIDITY row; a user-label recompute (`labelEvent`) refreshes the snapshot in ITS transaction so the payload keeps mirroring the rewritten aggregates — one pure builder (`reportSnapshotHeadline`) serves both paths, so neither can drift from the stored rows. Never contains values ClaimPolicy would refuse to render.
 
-### 3.8 `model_registry` — **documented, not yet implemented**
+### 3.8 `model_registry` — temporal model-version registry (schema v12, implemented)
 
-Planned per the table below, to land when a second model exists (Phase 2 model v1). Until then the active model identity is the constant `MODEL_VERSION = "energy-heuristic-v1-spectral"` in `SessionRepository`, stamped onto events and measurements.
+One row per (kind, version) validity range: which DETECTOR and SCORE versions produced which nights — the comparability record the personal-baseline eligibility gates read (docs/INSIGHTS.md §Eligibility). Written at finalize: when the current detector/score version differs from the latest registry row of its kind, a new row opens (`validFromUtc` = now) and the previous open row closes (`validToUtc` = now); `validToUtc` null = still current, exactly one open row per kind.
 
 | Column | Type | Notes |
 |---|---|---|
-| `id` | TEXT PK | e.g. `yamnet-mapped-v0`, `snorecnn-v1` |
-| `asset_path`, `sha256` | TEXT | Bundled TFLite/ONNX file identity |
-| `runtime` | TEXT enum | `TFLITE` / `ONNX` |
-| `input_spec` | TEXT (JSON) | `{sample_rate: 16000, window_ms: 1000, hop_ms: 500, mel_bins: 64, frames: 96}` |
-| `classes` | TEXT (JSON) | Ordered class list + label mapping |
-| `thresholds` | TEXT (JSON) | Enter/exit/min-duration/merge defaults |
-| `tier_map` | TEXT (JSON) | Which emitted event types are Tier 1 vs Tier 2 |
-| `active` | INTEGER | Exactly one active |
-| `created_at` | Long | |
+| `id` | Long PK | |
+| `kind` | TEXT | `DETECTOR` or `SCORE` |
+| `version` | TEXT | e.g. `energy-heuristic-v2-burst`, `snore-score-v3` |
+| `valid_from_utc` | Long | |
+| `valid_to_utc` | Long? | Null = current |
+
+Read paths: current version per kind, full history, and range queries (versions valid at a given instant). A night's detector version is resolved once — the label-aware first snore event's version, else (zero-snore night) the detector current at finalize — and that single resolved value lands on the snapshot (§3.7), the registry row and the insight eligibility gate (docs/INSIGHTS.md §Eligibility). The Phase-2 asset-level registry (bundled TFLite/ONNX file identity, runtime, input spec, thresholds) remains deferred until a second binary model exists — the version-provenance need it serves is covered by this table today.
 
 ### 3.9 `raw_payload` — vendor JSON storage (schema v2)
 
@@ -306,5 +306,5 @@ Deletion paths:
 - JSON payloads (`capture_stats`, report payload) carry `schema_version`; readers handle older versions defensively.
 - `measurement_type`/enum growth is additive; `ClaimPolicy` is the gate, so unknown types in the DB can never render in the UI.
 - GARMIN measurement rows carry `sessionId` when the import identified a time-overlapping session (schema v9); rows written before then have `NULL` and join by day window only.
-- Schema history: 1→11 via ten real migrations (v9 `sleep_stage` §3.10; v10 `quiet_gap` §3.11; v11 `audio_clip.appliedGain`/`filePeakDbfs` §3.5); v8 is declaration-only (`@ColumnInfo(defaultValue = "0")` on `sleep_session.resumedAfterInterruption`, matching the `DEFAULT 0` the column has carried since v7). **v9** adds `sleep_stage` (§3.10): the vendor sleep-stage timeline of a linked session, FK CASCADE on session delete.
+- Schema history: 1→12 via eleven real migrations (v9 `sleep_stage` §3.10; v10 `quiet_gap` §3.11; v11 `audio_clip.appliedGain`/`filePeakDbfs` §3.5; v12 `report` §3.7 + `model_registry` §3.8); v8 is declaration-only (`@ColumnInfo(defaultValue = "0")` on `sleep_session.resumedAfterInterruption`, matching the `DEFAULT 0` the column has carried since v7). **v9** adds `sleep_stage` (§3.10): the vendor sleep-stage timeline of a linked session, FK CASCADE on session delete. **v12** adds the per-session report snapshot (§3.7) and the temporal model-version registry (§3.8); both start empty — snapshots and registry rows are written at each new finalize, never back-filled.
 - Reprocessing (Phase 4+): re-running a newer model over stored clips writes **new** Measurement rows with the new `model_id`; old rows remain — provenance history is append-only.

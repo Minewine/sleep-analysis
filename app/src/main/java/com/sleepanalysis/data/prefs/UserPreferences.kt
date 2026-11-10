@@ -9,6 +9,7 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
+import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.sleepanalysis.domain.policy.StartDelayPolicy
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -142,6 +143,9 @@ class UserPreferences @Inject constructor(@ApplicationContext context: Context) 
         val GARMIN_NOT_READY_RETRY_MS = longPreferencesKey("garmin_not_ready_retry_ms")
         val GARMIN_NOT_READY_RETRY_COUNT = intPreferencesKey("garmin_not_ready_retry_count")
         val NOISE_DISPLAY_MIN_CONFIDENCE = doublePreferencesKey("noise_display_min_confidence")
+        // Dismissed insight rule ids (docs/INSIGHTS.md): a dismissed rule stops rendering in the
+        // Insights screen; un-dismissing re-shows it. Rule ids are the stable InsightRules ids.
+        val INSIGHTS_DISMISSED_RULES = stringSetPreferencesKey("insights_dismissed_rules")
     }
 
     val disclaimerAcceptedAt: Flow<Long?> = dataStore.data.map { it[Keys.DISCLAIMER_ACCEPTED_AT] }
@@ -283,6 +287,21 @@ class UserPreferences @Inject constructor(@ApplicationContext context: Context) 
 
     suspend fun setNoiseDisplayMinConfidence(value: Double) {
         dataStore.edit { it[Keys.NOISE_DISPLAY_MIN_CONFIDENCE] = PreferenceBounds.sanitizeConfidence(value) }
+    }
+
+    /** Insight rules the user dismissed (docs/INSIGHTS.md) — hidden from the Insights screen. */
+    val dismissedInsightRules: Flow<Set<String>> = dataStore.data.map {
+        it[Keys.INSIGHTS_DISMISSED_RULES] ?: emptySet()
+    }
+
+    suspend fun dismissedInsightRulesNow(): Set<String> = dismissedInsightRules.first()
+
+    /** Dismisses (or re-shows) one rule id; unknown ids persist harmlessly until they exist. */
+    suspend fun setInsightRuleDismissed(ruleId: String, dismissed: Boolean) {
+        dataStore.edit { prefs ->
+            val current = prefs[Keys.INSIGHTS_DISMISSED_RULES] ?: emptySet()
+            prefs[Keys.INSIGHTS_DISMISSED_RULES] = if (dismissed) current + ruleId else current - ruleId
+        }
     }
 
     /** Marks a general attempt (any outcome except the not-ready one — see [markGarminNotReadyRetry]). */

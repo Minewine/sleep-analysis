@@ -300,3 +300,60 @@ data class UserFactorEntity(
     val valueText: String? = null,
     val recordedAt: Long = System.currentTimeMillis(),
 )
+
+/**
+ * One finalize-time snapshot of the night's headline metrics (schema v12,
+ * docs/DATA_MODEL.md §3.7): a compact, ClaimPolicy-safe JSON payload plus the model
+ * provenance (detector + score versions) so later analysis can gate comparisons on what
+ * produced the numbers. One row per session (unique index, regeneration upserts); the
+ * session's deletion removes it (FK CASCADE) — reports are regenerable while source data
+ * exists, never a second source of truth (docs/DATA_MODEL.md §6).
+ */
+@Entity(
+    tableName = "report",
+    foreignKeys = [
+        ForeignKey(
+            entity = SleepSessionEntity::class,
+            parentColumns = ["id"],
+            childColumns = ["sessionId"],
+            onDelete = ForeignKey.CASCADE,
+        ),
+    ],
+    indices = [Index(value = ["sessionId"], unique = true)],
+)
+data class ReportSnapshotEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val sessionId: Long,
+    val generatedAt: Long,
+    val appVersion: String,
+    /** First snore event's model version (null: a night with no snoring cannot name one). */
+    val detectorVersion: String? = null,
+    /** SNORE_SCORE formula version that produced the snapshot's score ([SnoreScore.FORMULA_VERSION]). */
+    val scoreVersion: String? = null,
+    /** Compact headline JSON (docs/DATA_MODEL.md §5.2, domain/report.ReportSnapshot). */
+    val payload: String,
+)
+
+/** Registry kinds stored in [ModelRegistryEntity.kind] (docs/DATA_MODEL.md §3.8). */
+object ModelRegistryKind {
+    const val DETECTOR = "DETECTOR"
+    const val SCORE = "SCORE"
+}
+
+/**
+ * One model/formula version's validity range (schema v12, docs/DATA_MODEL.md §3.8): the
+ * temporal record of which DETECTOR and SCORE versions produced which nights — the gate
+ * personal baselines and trends need to avoid comparing across a version change.
+ * [validToUtc] null = still current. Exactly one open row per kind is kept (the writer
+ * closes the previous open row when a new version appears).
+ */
+@Entity(tableName = "model_registry", indices = [Index("kind", "validFromUtc")])
+data class ModelRegistryEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    /** [ModelRegistryKind.DETECTOR] or [ModelRegistryKind.SCORE]. */
+    val kind: String,
+    val version: String,
+    val validFromUtc: Long,
+    /** Null = the version is still current (no later row of the same kind was registered). */
+    val validToUtc: Long? = null,
+)
