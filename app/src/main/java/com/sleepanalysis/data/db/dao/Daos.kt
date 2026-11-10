@@ -11,6 +11,7 @@ import com.sleepanalysis.data.db.entity.MeasurementEntity
 import com.sleepanalysis.data.db.entity.ModelRegistryEntity
 import com.sleepanalysis.data.db.entity.RawPayloadEntity
 import com.sleepanalysis.data.db.entity.ReportSnapshotEntity
+import com.sleepanalysis.data.db.entity.SleepExperimentEntity
 import com.sleepanalysis.data.db.entity.SleepSessionEntity
 import com.sleepanalysis.data.db.entity.QuietGapEntity
 import com.sleepanalysis.data.db.entity.SleepStageEntity
@@ -326,6 +327,61 @@ interface ReportDao {
     suspend fun all(): List<ReportSnapshotEntity>
 
     @Query("DELETE FROM report")
+    suspend fun deleteAll()
+}
+
+/**
+ * N-of-1 experiment rows (schema v13, docs/DATA_MODEL.md §3.12). Exactly ONE ACTIVE row is a
+ * tracker-logic invariant (not SQL); the A-B-A confirm phase re-activates the DONE row itself.
+ */
+@Dao
+interface SleepExperimentDao {
+    @Insert
+    suspend fun insert(experiment: SleepExperimentEntity): Long
+
+    /** The single ACTIVE row, if any (exactly one is enforced before insert — ExperimentTracker). */
+    @Query("SELECT * FROM sleep_experiment WHERE status = 'ACTIVE' ORDER BY startedAt DESC LIMIT 1")
+    suspend fun active(): SleepExperimentEntity?
+
+    @Query("SELECT * FROM sleep_experiment ORDER BY startedAt DESC")
+    suspend fun history(): List<SleepExperimentEntity>
+
+    @Query("SELECT * FROM sleep_experiment WHERE id = :id")
+    suspend fun byId(id: Long): SleepExperimentEntity?
+
+    /** Phase verdict lands at the night threshold: ACTIVE → DONE with the verdict JSON. */
+    @Query("UPDATE sleep_experiment SET status = 'DONE', resultJson = :resultJson WHERE id = :id AND status = 'ACTIVE'")
+    suspend fun finish(id: Long, resultJson: String)
+
+    /** A-B-A confirm phase re-activates the DONE row (reuse — the single-ACTIVE invariant holds). */
+    @Query("UPDATE sleep_experiment SET status = 'ACTIVE', confirmPhaseJson = :confirmPhaseJson WHERE id = :id AND status = 'DONE'")
+    suspend fun beginConfirmPhase(id: Long, confirmPhaseJson: String)
+
+    /**
+     * Confirm completed: back to DONE with the (possibly upgraded) verdict + the final confirm
+     * JSON. Guarded to ACTIVE — an ABANDONED (or already-DONE) row can never be resurrected
+     * by an in-flight finalize.
+     */
+    @Query(
+        "UPDATE sleep_experiment SET status = 'DONE', resultJson = :resultJson, " +
+            "confirmPhaseJson = :confirmPhaseJson WHERE id = :id AND status = 'ACTIVE'"
+    )
+    suspend fun finishConfirm(id: Long, resultJson: String, confirmPhaseJson: String)
+
+    /**
+     * User keeps the verdict (verdict card stops rendering; result otherwise untouched).
+     * Allowed on DONE and — for a Keep that races the confirm finalize's recomposition window
+     * — on an ACTIVE confirm row too (the finalize rebuild preserves the kept flag); never on
+     * an ABANDONED row.
+     */
+    @Query("UPDATE sleep_experiment SET resultJson = :resultJson WHERE id = :id AND status != 'ABANDONED'")
+    suspend fun updateResult(id: Long, resultJson: String)
+
+    /** User abandons the experiment (ACTIVE or DONE — the row keeps any verdict it earned). */
+    @Query("UPDATE sleep_experiment SET status = 'ABANDONED' WHERE id = :id AND status != 'ABANDONED'")
+    suspend fun abandon(id: Long)
+
+    @Query("DELETE FROM sleep_experiment")
     suspend fun deleteAll()
 }
 

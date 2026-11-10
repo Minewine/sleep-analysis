@@ -143,6 +143,12 @@ object InsightRules {
         val exerciseLogged: Boolean,
         /** Self-logged stress 1–5; null when not logged. */
         val stressLevel: Int?,
+        /**
+         * ALL factor keys logged for the night's day (docs/DATA_MODEL.md §3.6, incl. the
+         * four flags above): the N-of-1 confound exclusion reads the full set
+         * (ExperimentMath — other logged factors than the experiment's own exclude the night).
+         */
+        val factorKeys: Set<String> = emptySet(),
     )
 
     data class EvalContext(
@@ -562,4 +568,10 @@ data class InsightsReport(
     val eligibleCount: Int,
     /** Finalized nights examined before the eligibility gate (the collecting copy's denominator). */
     val nightCount: Int,
+    /**
+     * The eligible night records themselves (same set the rules ran on) — the escalation card
+     * and experiment phases read them so every card shares ONE eligibility decision
+     * (docs/INSIGHTS.md §Eligibility). Defaulted: older constructors keep compiling.
+     */
+    val eligibleRecords: List<InsightRules.NightRecord> = emptyList(),
 )

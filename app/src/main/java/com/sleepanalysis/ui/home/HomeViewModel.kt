@@ -63,6 +63,7 @@ class HomeViewModel @Inject constructor(
     private val stateHolder: MonitorStateHolder,
     private val prefs: UserPreferences,
     private val scheduler: RecordingScheduler,
+    private val experimentTracker: com.sleepanalysis.domain.experiments.ExperimentTracker,
 ) : ViewModel() {
 
     val monitorState: StateFlow<MonitorState> = stateHolder.state
@@ -105,6 +106,22 @@ class HomeViewModel @Inject constructor(
     private val _interrupted = MutableStateFlow<InterruptedSummary?>(null)
     val interrupted: StateFlow<InterruptedSummary?> = _interrupted.asStateFlow()
 
+    /**
+     * The active N-of-1 experiment's chip state (docs/INSIGHTS.md §Playbook): shown on the
+     * Home last-night card — "Experiment day n/7: <instruction>" (n = usable nights, honest
+     * even when it lags; capped at the planned count — past the threshold the verdict is due).
+     * Read-only here; the Insights screen owns start/abandon/verdicts.
+     */
+    data class ExperimentChip(
+        val usableNights: Int,
+        val plannedNights: Int,
+        val actionId: String?,
+        val confirming: Boolean,
+    )
+
+    private val _experimentChip = MutableStateFlow<ExperimentChip?>(null)
+    val experimentChip: StateFlow<ExperimentChip?> = _experimentChip.asStateFlow()
+
     init {
         // Safety net for process recreation: the open session row is ground truth. If the live
         // service is already Recording (same process, or sticky restart got here first), keep
@@ -130,6 +147,30 @@ class HomeViewModel @Inject constructor(
         // Self-heal the nightly alarms on app open: force-stop and package updates cancel
         // them, and nothing else re-arms until the next settings change or boot.
         viewModelScope.launch { scheduler.arm() }
+        refreshExperimentChip()
+    }
+
+    /**
+     * Read-only chip refresh — called on init AND every Home ON_RESUME: a night that landed,
+     * or an experiment started/finished on the Insights screen, must not leave a stale chip.
+     * (Non-suspend wrapper, same pattern as [refreshPreFlight]/[refreshSchedule].)
+     */
+    fun refreshExperimentChip() {
+        viewModelScope.launch { loadExperimentChip() }
+    }
+
+    /** The chip load itself: the ACTIVE experiment's honest usable-night count (if any). */
+    private suspend fun loadExperimentChip() {
+        val active = experimentTracker.activeExperiment()
+        val progress = active?.let { experimentTracker.progress(it) }
+        _experimentChip.value = progress?.let {
+            ExperimentChip(
+                usableNights = it.usableNights.coerceAtMost(it.plannedNights),
+                plannedNights = it.plannedNights,
+                actionId = active?.playbookActionId,
+                confirming = it.phase == com.sleepanalysis.domain.experiments.ExperimentTracker.Phase.CONFIRM,
+            )
+        }
     }
 
     /** Recomputed on every Home resume so permission/whitelist changes are reflected. */

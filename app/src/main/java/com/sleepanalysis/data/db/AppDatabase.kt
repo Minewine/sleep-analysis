@@ -15,6 +15,7 @@ import com.sleepanalysis.data.db.dao.ModelRegistryDao
 import com.sleepanalysis.data.db.dao.QuietGapDao
 import com.sleepanalysis.data.db.dao.RawPayloadDao
 import com.sleepanalysis.data.db.dao.ReportDao
+import com.sleepanalysis.data.db.dao.SleepExperimentDao
 import com.sleepanalysis.data.db.dao.SleepSessionDao
 import com.sleepanalysis.data.db.dao.SleepStageDao
 import com.sleepanalysis.data.db.dao.UserFactorDao
@@ -26,6 +27,7 @@ import com.sleepanalysis.data.db.entity.ModelRegistryEntity
 import com.sleepanalysis.data.db.entity.QuietGapEntity
 import com.sleepanalysis.data.db.entity.RawPayloadEntity
 import com.sleepanalysis.data.db.entity.ReportSnapshotEntity
+import com.sleepanalysis.data.db.entity.SleepExperimentEntity
 import com.sleepanalysis.data.db.entity.SleepSessionEntity
 import com.sleepanalysis.data.db.entity.SleepStageEntity
 import com.sleepanalysis.data.db.entity.UserFactorEntity
@@ -45,8 +47,9 @@ import kotlinx.coroutines.withContext
         QuietGapEntity::class,
         ReportSnapshotEntity::class,
         ModelRegistryEntity::class,
+        SleepExperimentEntity::class,
     ],
-    version = 12,
+    version = 13,
     exportSchema = true,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -61,6 +64,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun quietGapDao(): QuietGapDao
     abstract fun reportDao(): ReportDao
     abstract fun modelRegistryDao(): ModelRegistryDao
+    abstract fun sleepExperimentDao(): SleepExperimentDao
 
     /**
      * Removes every row including the clinical baseline. The immutability triggers must be
@@ -84,6 +88,7 @@ abstract class AppDatabase : RoomDatabase() {
                 quietGapDao().deleteAll()
                 reportDao().deleteAll()
                 modelRegistryDao().deleteAll()
+                sleepExperimentDao().deleteAll()
             } finally {
                 createImmutabilityTriggers(raw)
             }
@@ -276,11 +281,35 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v13 adds the N-of-1 experiment table (docs/DATA_MODEL.md §3.12): one playbook action
+         * tried for a planned number of nights against the baseline band captured at start.
+         * Starts empty — rows are written when the user starts an experiment, never back-filled.
+         * Not session-bound (experiments span nights and outlive them): no FK, no CASCADE.
+         */
+        private val MIGRATION_12_13 = object : Migration(12, 13) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `sleep_experiment` (" +
+                        "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                        "`hypothesisRuleId` TEXT, `playbookActionId` TEXT, " +
+                        "`metric` TEXT NOT NULL, `startedAt` INTEGER NOT NULL, " +
+                        "`plannedNights` INTEGER NOT NULL, `status` TEXT NOT NULL, " +
+                        "`baselineStatsJson` TEXT NOT NULL, `resultJson` TEXT, " +
+                        "`confirmPhaseJson` TEXT, `createdAt` INTEGER NOT NULL)"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_sleep_experiment_status` " +
+                        "ON `sleep_experiment` (`status`)"
+                )
+            }
+        }
+
         /** All schema migrations in order — shared with the instrumented migration test. */
         val MIGRATIONS: Array<Migration> = arrayOf(
             MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5,
             MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10,
-            MIGRATION_10_11, MIGRATION_11_12,
+            MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13,
         )
     }
 }

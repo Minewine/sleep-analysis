@@ -334,6 +334,41 @@ data class ReportSnapshotEntity(
     val payload: String,
 )
 
+/** N-of-1 experiment lifecycle values stored in [SleepExperimentEntity.status] (docs/DATA_MODEL.md §3.12). */
+object ExperimentStatus {
+    const val ACTIVE = "ACTIVE"
+    const val DONE = "DONE"
+    const val ABANDONED = "ABANDONED"
+}
+
+/**
+ * One N-of-1 experiment (schema v13, docs/DATA_MODEL.md §3.12): a playbook action tried for a
+ * planned number of nights against the personal baseline captured at start. Exactly ONE row
+ * may be ACTIVE — enforced in tracker logic, not SQL (the A-B-A confirm phase re-activates the
+ * same row, so the single-ACTIVE invariant survives). Not session-bound: an experiment spans
+ * many nights and outlives any of them (no FK, never CASCADE-deleted); delete-all purges it.
+ */
+@Entity(tableName = "sleep_experiment", indices = [Index("status")])
+data class SleepExperimentEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    /** Insight rule that suggested the experiment ([InsightRules.RuleIds] id); null: user-started. */
+    val hypothesisRuleId: String? = null,
+    /** Playbook action tried (docs/INSIGHTS.md §Playbook); null: a free-form hypothesis. */
+    val playbookActionId: String? = null,
+    /** [PersonalBaseline.Metrics]-style verification metric the verdict tests. */
+    val metric: String,
+    val startedAt: Long,
+    val plannedNights: Int,
+    val status: String,
+    /** Baseline band captured at start ([ExperimentTracker.baselineJson]): {metric, median, mad, low, high}. */
+    val baselineStatsJson: String,
+    /** Phase verdict ([ExperimentTracker.verdictJson]); null until the phase reached its threshold. */
+    val resultJson: String? = null,
+    /** Optional A-B-A return-to-baseline phase ([ExperimentTracker.confirmPhaseJson]); null = none run. */
+    val confirmPhaseJson: String? = null,
+    val createdAt: Long = System.currentTimeMillis(),
+)
+
 /** Registry kinds stored in [ModelRegistryEntity.kind] (docs/DATA_MODEL.md §3.8). */
 object ModelRegistryKind {
     const val DETECTOR = "DETECTOR"

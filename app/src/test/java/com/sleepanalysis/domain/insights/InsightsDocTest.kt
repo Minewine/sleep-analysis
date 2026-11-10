@@ -7,8 +7,9 @@ import org.junit.Test
 
 /**
  * Documentation drift guard for docs/INSIGHTS.md (the [ClaimPolicyTest] mechanism): the rule
- * ids in code must equal the doc's rule-catalog ids, and every doc copy key must exist as a
- * string resource — documentation drift is a build failure, not a review comment.
+ * ids in code must equal the doc's rule-catalog ids, every doc copy key must exist as a string
+ * resource — and (Slice 3) the playbook catalog must stay in sync too. Documentation drift is a
+ * build failure, not a review comment.
  */
 class InsightsDocTest {
 
@@ -68,20 +69,89 @@ class InsightsDocTest {
         assertEquals(emptySet<String>(), codeCopyKeys - docCopyKeys)
     }
 
+    // ---- Playbook catalog (Slice 3, docs/INSIGHTS.md §Playbook) -------------------------------
+
+    @Test
+    fun `playbook action ids in Playbook match the docs playbook catalog`() {
+        val docIds = playbookIds()
+        val codeIds = Playbook.ACTIONS.map { it.id }.toSet()
+        assertEquals(
+            "playbook action ids in code but missing from docs/INSIGHTS.md §Playbook",
+            emptySet<String>(),
+            codeIds - docIds,
+        )
+        assertEquals(
+            "playbook action ids in docs/INSIGHTS.md §Playbook but not in code",
+            emptySet<String>(),
+            docIds - codeIds,
+        )
+    }
+
+    @Test
+    fun `every playbook title and instruction key exists as a string resource`() {
+        val stringsXml = stringsXmlText()
+        val missing = Playbook.ACTIONS.flatMap { action -> listOf(action.titleKey, action.instructionKey) }
+            .filterNot { key -> Regex("name=\"$key\"").containsMatchIn(stringsXml) }
+        assertEquals(
+            "playbook copy keys missing from app/src/main/res/values/strings.xml",
+            emptyList<String>(),
+            missing,
+        )
+    }
+
+    @Test
+    fun `the playbook never-list is pinned in the doc`() {
+        val playbookSection = playbookSection()
+        listOf(
+            "no sleep restriction",
+            "no AHI",
+            "no apnea detection",
+            "no desaturation counting",
+            "no cure language",
+        ).forEach { phrase ->
+            assertTrue(
+                "docs/INSIGHTS.md §Playbook must pin \"$phrase\"",
+                playbookSection.contains(phrase, ignoreCase = true),
+            )
+        }
+    }
+
+    @Test
+    fun `the doc names the ranking rule and the starter fallback`() {
+        val playbookSection = playbookSection()
+        assertTrue(playbookSection.contains("fixed_wake"))
+        assertTrue(playbookSection.contains("stimulus_control"))
+    }
+
+    // ---- Parsers --------------------------------------------------------------------------------
+
     /**
      * The doc's rule-catalog rows: lines like `` | `bedtime_variability` |
      * `insight_rule_bedtime_variability` | ... `` — first column the rule id, second the copy
-     * key. Only the rule-catalog table uses this backticked-pair shape.
+     * key. Scoped to the "## Rule catalog" section only: the playbook catalog (§Playbook) uses
+     * its own table shape and is checked by the playbook tests above.
      */
     private fun ruleCatalogRows(): List<List<String>> {
         val row = Regex(
             "^\\|\\s*`([a-z_]+)`\\s*\\|\\s*`([a-z0-9_]+)`\\s*\\|",
             RegexOption.MULTILINE,
         )
-        return row.findAll(docText()).map { listOf(it.groupValues[1], it.groupValues[2]) }.toList()
+        val section = docText()
+            .substringAfter("## Rule catalog")
+            .substringBefore("## Guardrails")
+        return row.findAll(section).map { listOf(it.groupValues[1], it.groupValues[2]) }.toList()
     }
 
     private fun ruleCatalogIds(): Set<String> = ruleCatalogRows().map { it[0] }.toSet()
+
+    /** The doc's §Playbook section — playbook table rows: `` | `action_id` | ... `` (first cell backticked). */
+    private fun playbookIds(): Set<String> {
+        val row = Regex("^\\|\\s*`([a-z_]+)`\\s*\\|", RegexOption.MULTILINE)
+        return row.findAll(playbookSection()).map { it.groupValues[1] }.toSet()
+    }
+
+    private fun playbookSection(): String =
+        docText().substringAfter("## Playbook").substringBefore("## Guardrails")
 
     /** Same repo-root walk as ClaimPolicyTest — the doc lives in the repo on purpose. */
     private fun docText(): String {

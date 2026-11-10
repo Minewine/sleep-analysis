@@ -76,6 +76,7 @@ fun HomeScreen(
     val validityGrade by viewModel.latestValidityGrade.collectAsStateWithLifecycle()
     val preFlight by viewModel.preFlight.collectAsStateWithLifecycle()
     val interrupted by viewModel.interrupted.collectAsStateWithLifecycle()
+    val experimentChip by viewModel.experimentChip.collectAsStateWithLifecycle()
     val recordingEnabled by viewModel.recordingEnabled.collectAsStateWithLifecycle()
     val scheduleEnabled by viewModel.scheduleEnabled.collectAsStateWithLifecycle()
     val nextScheduledStart by viewModel.nextScheduledStart.collectAsStateWithLifecycle()
@@ -88,6 +89,7 @@ fun HomeScreen(
             if (event == Lifecycle.Event.ON_RESUME) {
                 viewModel.refreshPreFlight()
                 viewModel.refreshSchedule()
+                viewModel.refreshExperimentChip()
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -198,6 +200,7 @@ fun HomeScreen(
                 session = latest,
                 validityGrade = validityGrade,
                 statusLabel = viewModel::statusLabel,
+                experimentChip = experimentChip,
                 onOpen = onOpenReport,
             )
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -457,6 +460,7 @@ private fun LastNightCard(
     session: SleepSessionEntity?,
     validityGrade: String?,
     statusLabel: (String) -> String,
+    experimentChip: HomeViewModel.ExperimentChip?,
     onOpen: (Long) -> Unit,
 ) {
     Card(onClick = { session?.let { onOpen(it.id) } }, enabled = session != null) {
@@ -494,6 +498,25 @@ private fun LastNightCard(
                         )
                     }
                 }
+            }
+            // Active N-of-1 experiment chip (docs/INSIGHTS.md §Playbook): honest day count,
+            // same instruction copy the Insights screen shows.
+            experimentChip?.let { chip ->
+                val instruction = com.sleepanalysis.ui.insights.playbookInstruction(chip.actionId) // cross-screen shared copy
+                Text(
+                    if (chip.confirming) {
+                        stringResource(
+                            R.string.experiment_confirm_chip,
+                            chip.usableNights,
+                            chip.plannedNights,
+                            instruction,
+                        )
+                    } else {
+                        stringResource(R.string.experiment_chip, chip.usableNights, chip.plannedNights, instruction)
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.primary,
+                )
             }
         }
     }

@@ -146,6 +146,13 @@ class UserPreferences @Inject constructor(@ApplicationContext context: Context) 
         // Dismissed insight rule ids (docs/INSIGHTS.md): a dismissed rule stops rendering in the
         // Insights screen; un-dismissing re-shows it. Rule ids are the stable InsightRules ids.
         val INSIGHTS_DISMISSED_RULES = stringSetPreferencesKey("insights_dismissed_rules")
+        // Escalation self-report (docs/INSIGHTS.md §Escalation): three STOP-BANG-derived
+        // screening questions (S/O/T), collected once and editable. A separate "answered" flag
+        // distinguishes "never asked" from "answered all NO".
+        val ESCALATION_SELF_REPORT_ANSWERED = booleanPreferencesKey("escalation_self_report_answered")
+        val ESCALATION_SNORING_LOUD = booleanPreferencesKey("escalation_snoring_loud")
+        val ESCALATION_WITNESSED_PAUSES = booleanPreferencesKey("escalation_witnessed_pauses")
+        val ESCALATION_DAYTIME_SLEEPINESS = booleanPreferencesKey("escalation_daytime_sleepiness")
     }
 
     val disclaimerAcceptedAt: Flow<Long?> = dataStore.data.map { it[Keys.DISCLAIMER_ACCEPTED_AT] }
@@ -301,6 +308,50 @@ class UserPreferences @Inject constructor(@ApplicationContext context: Context) 
         dataStore.edit { prefs ->
             val current = prefs[Keys.INSIGHTS_DISMISSED_RULES] ?: emptySet()
             prefs[Keys.INSIGHTS_DISMISSED_RULES] = if (dismissed) current + ruleId else current - ruleId
+        }
+    }
+
+    /**
+     * The escalation self-report (docs/INSIGHTS.md §Escalation): collected once under the
+     * escalation card, editable afterwards. [answered] is stored separately so "never asked"
+     * and "answered all NO" can never be confused (booleans default to false when absent).
+     */
+    data class EscalationSelfReport(
+        val answered: Boolean,
+        val snoringLoud: Boolean,
+        val witnessedPauses: Boolean,
+        val daytimeSleepiness: Boolean,
+    ) {
+        /** The rule's input; null while never answered (the card then collects first). */
+        fun toRuleReport(): com.sleepanalysis.domain.insights.EscalationRule.SelfReport? =
+            if (!answered) {
+                null
+            } else {
+                com.sleepanalysis.domain.insights.EscalationRule.SelfReport(
+                    snoringLoud = snoringLoud,
+                    witnessedPauses = witnessedPauses,
+                    daytimeSleepiness = daytimeSleepiness,
+                )
+            }
+    }
+
+    val escalationSelfReport: Flow<EscalationSelfReport> = dataStore.data.map { prefs ->
+        EscalationSelfReport(
+            answered = prefs[Keys.ESCALATION_SELF_REPORT_ANSWERED] ?: false,
+            snoringLoud = prefs[Keys.ESCALATION_SNORING_LOUD] ?: false,
+            witnessedPauses = prefs[Keys.ESCALATION_WITNESSED_PAUSES] ?: false,
+            daytimeSleepiness = prefs[Keys.ESCALATION_DAYTIME_SLEEPINESS] ?: false,
+        )
+    }
+
+    suspend fun escalationSelfReportNow(): EscalationSelfReport = escalationSelfReport.first()
+
+    suspend fun setEscalationSelfReport(report: com.sleepanalysis.domain.insights.EscalationRule.SelfReport) {
+        dataStore.edit { prefs ->
+            prefs[Keys.ESCALATION_SNORING_LOUD] = report.snoringLoud
+            prefs[Keys.ESCALATION_WITNESSED_PAUSES] = report.witnessedPauses
+            prefs[Keys.ESCALATION_DAYTIME_SLEEPINESS] = report.daytimeSleepiness
+            prefs[Keys.ESCALATION_SELF_REPORT_ANSWERED] = true
         }
     }
 

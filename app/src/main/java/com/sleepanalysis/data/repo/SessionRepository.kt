@@ -821,8 +821,57 @@ class SessionRepository @Inject constructor(
                 insights = insights,
                 eligibleCount = eligibleRecords.size,
                 nightCount = candidates.size,
+                eligibleRecords = eligibleRecords,
             )
         }
+
+    /**
+     * One experiment phase's input (docs/INSIGHTS.md §Playbook): eligible nights (grade ≥ B,
+     * registry-matched detector/score versions — the SAME gates as [buildInsights]) whose
+     * session started at/after [sinceMs], each with the verification metric's value (null =
+     * missing) and the day's full factor-key set (the confound-exclusion input). Oldest first.
+     * Eligibility filters BEFORE [maxNights] caps: the cap is a safety net for pathologically
+     * long phases and can never drop an eligible night in favor of an ineligible one; the
+     * phase-window filter bounds the per-night reads.
+     */
+    suspend fun experimentPhaseNights(
+        metric: String,
+        sinceMs: Long,
+        maxNights: Int = 60,
+    ): List<com.sleepanalysis.domain.experiments.ExperimentMath.PhaseNight> = withContext(Dispatchers.IO) {
+        val (currentDetector, currentScore) = currentModelVersions()
+        sessionDao.observeAll().first()
+            .filter(com.sleepanalysis.domain.report.TrendAssembler::isTrendNight)
+            .sortedBy { it.startedAt }
+            .filter { it.startedAt >= sinceMs }
+            .map { nightRecordFor(it) }
+            .filter {
+                (it.grade == "A" || it.grade == "B") &&
+                    it.detectorVersion == currentDetector && it.scoreVersion == currentScore
+            }
+            .takeLast(maxNights)
+            .map { record ->
+                com.sleepanalysis.domain.experiments.ExperimentMath.PhaseNight(
+                    sessionId = record.sessionId,
+                    startedAtMs = record.startedAtMs,
+                    value = experimentMetricValue(record, metric),
+                    factorKeys = record.factorKeys,
+                )
+            }
+    }
+
+    /** The verification metric's value for one eligible night; null = metric missing that night. */
+    private fun experimentMetricValue(
+        record: com.sleepanalysis.domain.insights.InsightRules.NightRecord,
+        metric: String,
+    ): Double? = when (metric) {
+        com.sleepanalysis.domain.insights.PersonalBaseline.Metrics.SNORE_SHARE -> record.snoreShare
+        com.sleepanalysis.domain.insights.PersonalBaseline.Metrics.LONGEST_BOUT_MS -> record.longestBoutMs?.toDouble()
+        com.sleepanalysis.domain.insights.PersonalBaseline.Metrics.SCORE -> record.score?.toDouble()
+        com.sleepanalysis.domain.insights.PersonalBaseline.Metrics.GARMIN_AWAKE_MIN -> record.garminAwakeMinutes
+        com.sleepanalysis.domain.insights.PersonalBaseline.Metrics.RMSSD_MS -> record.rMssdMs
+        else -> null
+    }
 
     /**
      * Gathers one finalized night's stored evidence into the rules' record (docs/INSIGHTS.md).
@@ -905,6 +954,7 @@ class SessionRepository @Inject constructor(
             caffeineAfter14Logged = factor(com.sleepanalysis.domain.factors.DailyFactor.CAFFEINE_AFTER_14.key) != null,
             exerciseLogged = factor(com.sleepanalysis.domain.factors.DailyFactor.EXERCISE.key) != null,
             stressLevel = factor(com.sleepanalysis.domain.factors.DailyFactor.STRESS.key)?.valueNum?.toInt(),
+            factorKeys = factors.map { it.factorKey }.toSet(),
         )
     }
 

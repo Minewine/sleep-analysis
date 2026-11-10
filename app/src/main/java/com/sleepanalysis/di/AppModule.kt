@@ -45,6 +45,8 @@ object AppModule {
 
     @Provides fun provideModelRegistryDao(db: AppDatabase): com.sleepanalysis.data.db.dao.ModelRegistryDao = db.modelRegistryDao()
 
+    @Provides fun provideSleepExperimentDao(db: AppDatabase): com.sleepanalysis.data.db.dao.SleepExperimentDao = db.sleepExperimentDao()
+
     @Provides
     @Singleton
     fun provideClipStore(@ApplicationContext context: Context): ClipStore =

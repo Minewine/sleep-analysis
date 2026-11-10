@@ -211,6 +211,37 @@ class MigrationTest {
                 c.moveToFirst()
                 assertEquals(2, c.getInt(0)) // registry rows are version history — NOT session-bound
             }
+            sql.query("SELECT COUNT(*) FROM sleep_experiment").use { c ->
+                c.moveToFirst()
+                assertEquals(1, c.getInt(0)) // the v13 experiment is NOT session-bound (no FK) — it survives
+            }
+            // v13 sleep_experiment round-trip: the N-of-1 row is writable and its columns
+            // persist (baseline band JSON, verdict JSON). Not session-bound by design (no FK,
+            // docs/DATA_MODEL.md §3.12) — verified below: the session delete must NOT remove it.
+            sql.execSQL(
+                "INSERT INTO sleep_experiment (hypothesisRuleId, playbookActionId, metric, startedAt, " +
+                    "plannedNights, status, baselineStatsJson, resultJson, confirmPhaseJson, createdAt) VALUES " +
+                    "('alcohol_nights', 'no_evening_alcohol', 'snore_share', 1793000000000, 7, 'DONE', " +
+                    "'{\"metric\":\"snore_share\",\"median\":0.1,\"mad\":0.02,\"low\":0.04,\"high\":0.16}', " +
+                    "'{\"schema_version\":1,\"change_detected\":true,\"direction\":\"DOWN\",\"confidence\":\"LOW\"}', " +
+                    "NULL, 1793000000000)"
+            )
+            sql.query(
+                "SELECT hypothesisRuleId, playbookActionId, metric, plannedNights, status, baselineStatsJson " +
+                    "FROM sleep_experiment WHERE playbookActionId = 'no_evening_alcohol'"
+            ).use { c ->
+                assertTrue(c.moveToFirst())
+                assertEquals("alcohol_nights", c.getString(0))
+                assertEquals("no_evening_alcohol", c.getString(1))
+                assertEquals("snore_share", c.getString(2))
+                assertEquals(7, c.getInt(3))
+                assertEquals("DONE", c.getString(4))
+                assertTrue(c.getString(5).contains("\"median\":0.1"))
+            }
+            sql.query("SELECT COUNT(*) FROM sleep_experiment WHERE status = 'DONE'").use { c ->
+                c.moveToFirst()
+                assertEquals(1, c.getInt(0))
+            }
         } finally {
             db.close()
         }
@@ -218,6 +249,6 @@ class MigrationTest {
 
     private companion object {
         const val TEST_DB = "migration-test.db"
-        const val LATEST_VERSION = 12
+        const val LATEST_VERSION = 13
     }
 }

@@ -216,6 +216,36 @@ nights ([NIGHT_REPORT.md](NIGHT_REPORT.md) §1).
 
 One row per contiguous stage span of a **linked** session: `(sessionId FK CASCADE, startMs, endMs, stage)` with a `(sessionId, startMs)` index. Populated by the Garmin import only when the dailySleep payload carries a `sleepLevels` timeline AND a time-overlapping session was identified (§5, §6); a re-import replaces the session's timeline atomically. Device-reported context only (M13) — never compared to PSG stages; the night report uses it to say which stage the longest snore bout fell in. Stage labels are the vendor's own, canonicalized to DEEP/LIGHT/REM/AWAKE where known, unknown labels kept verbatim. Session deletion removes the timeline (FK CASCADE); delete-all purges the table.
 
+### 3.12 `sleep_experiment` — N-of-1 experiment rows (schema v13, implemented)
+
+One row per N-of-1 experiment (docs/INSIGHTS.md §Playbook): a playbook action tried for a
+planned number of nights against the personal baseline band captured at start. Exactly ONE row
+may be ACTIVE — enforced in tracker logic (`ExperimentTracker`), not SQL, because the optional
+A-B-A confirm phase re-activates the same DONE row (status machine: ACTIVE → DONE with the
+phase verdict → ACTIVE (confirm) → DONE/final; ABANDONED at any user step). NOT session-bound
+(an experiment spans nights and outlives them): no FK, never CASCADE-deleted; delete-all
+purges it. Starts empty — rows are written when the user starts an experiment, never
+back-filled.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | Long PK | |
+| `hypothesis_rule_id` | TEXT? | Suggesting insight-rule id (docs/INSIGHTS.md §Rule catalog); null = user-started |
+| `playbook_action_id` | TEXT? | Playbook action (docs/INSIGHTS.md §Playbook); null = free-form hypothesis |
+| `metric` | TEXT | Verification metric id ([PersonalBaseline.Metrics]) |
+| `started_at` | Long | Phase-1 start (epoch ms) |
+| `planned_nights` | Int | ≥ 5 (WWC 2010 floor), default 7 — clamped in the tracker |
+| `status` | TEXT | `ACTIVE` / `DONE` / `ABANDONED` ([ExperimentStatus]) |
+| `baseline_stats_json` | TEXT | Band captured at start: `{"metric":…,"median":…,"mad":…,"low":…,"high":…}` |
+| `result_json` | TEXT? | Verdict JSON (`schema_version`, change_detected, direction, confidence, phase_median, robust_z, used/excluded night ids, kept; after A-B-A: confirmed, confirm_median, confirm_returned_to_band) |
+| `confirm_phase_json` | TEXT? | Optional A-B-A confirm phase: `{"phase":"CONFIRM","started_at":…}` while collecting, plus the outcome when final |
+| `created_at` | Long | |
+
+The verdict math is pure (`domain/experiments/ExperimentMath`): usable nights = eligible nights
+since the phase start minus confound exclusions (any logged factor outside the experiment's
+own — [Playbook.ownFactorKeys]) minus missing metric values; a verdict renders at ≥
+planned_nights usable nights.
+
 ## 4. Clinical immutability
 
 1. **Insert-only API.** `BaselineRepository` exposes insert + read only; no update/delete methods exist for clinical rows (delete-all purge is the sole exception, via a dedicated maintenance path).
@@ -306,5 +336,5 @@ Deletion paths:
 - JSON payloads (`capture_stats`, report payload) carry `schema_version`; readers handle older versions defensively.
 - `measurement_type`/enum growth is additive; `ClaimPolicy` is the gate, so unknown types in the DB can never render in the UI.
 - GARMIN measurement rows carry `sessionId` when the import identified a time-overlapping session (schema v9); rows written before then have `NULL` and join by day window only.
-- Schema history: 1→12 via eleven real migrations (v9 `sleep_stage` §3.10; v10 `quiet_gap` §3.11; v11 `audio_clip.appliedGain`/`filePeakDbfs` §3.5; v12 `report` §3.7 + `model_registry` §3.8); v8 is declaration-only (`@ColumnInfo(defaultValue = "0")` on `sleep_session.resumedAfterInterruption`, matching the `DEFAULT 0` the column has carried since v7). **v9** adds `sleep_stage` (§3.10): the vendor sleep-stage timeline of a linked session, FK CASCADE on session delete. **v12** adds the per-session report snapshot (§3.7) and the temporal model-version registry (§3.8); both start empty — snapshots and registry rows are written at each new finalize, never back-filled.
+- Schema history: 1→13 via twelve real migrations (v9 `sleep_stage` §3.10; v10 `quiet_gap` §3.11; v11 `audio_clip.appliedGain`/`filePeakDbfs` §3.5; v12 `report` §3.7 + `model_registry` §3.8; v13 `sleep_experiment` §3.12); v8 is declaration-only (`@ColumnInfo(defaultValue = "0")` on `sleep_session.resumedAfterInterruption`, matching the `DEFAULT 0` the column has carried since v7). **v9** adds `sleep_stage` (§3.10): the vendor sleep-stage timeline of a linked session, FK CASCADE on session delete. **v12** adds the per-session report snapshot (§3.7) and the temporal model-version registry (§3.8); both start empty — snapshots and registry rows are written at each new finalize, never back-filled. **v13** adds `sleep_experiment` (§3.12): N-of-1 experiment rows, not session-bound (no FK), starting empty — written only when the user starts an experiment.
 - Reprocessing (Phase 4+): re-running a newer model over stored clips writes **new** Measurement rows with the new `model_id`; old rows remain — provenance history is append-only.
