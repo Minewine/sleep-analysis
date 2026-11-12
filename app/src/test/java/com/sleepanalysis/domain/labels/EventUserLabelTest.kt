@@ -7,10 +7,10 @@ import org.junit.Test
 class EventUserLabelTest {
 
     @Test
-    fun `exactly the five documented labels exist`() {
-        assertEquals(5, EventUserLabel.entries.size)
+    fun `exactly the six documented labels exist`() {
+        assertEquals(6, EventUserLabel.entries.size)
         assertEquals(
-            listOf("SNORE", "COUGH", "SPEECH", "MOVEMENT", "OTHER_NOT_SNORE"),
+            listOf("SNORE", "COUGH", "SPEECH", "MOVEMENT", "OTHER_NOT_SNORE", "SILENCE"),
             EventUserLabel.entries.map { it.name },
         )
     }

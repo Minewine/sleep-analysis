@@ -57,14 +57,14 @@ WAV_BYTES = b"RIFF" + b"x" * 124  # 128 bytes total
 def fake_adb(device_size: int = len(WAV_BYTES), payload: bytes = WAV_BYTES):
     """Stand-in for the adb calls pull_clip makes (same shape as test_export_fixtures).
 
-    The on-device `wc -c` size probe returns a printed count; the transfer must
-    be `exec-out` and writes the payload to the stdout file object.
+    The direct `run-as ... wc -c <path>` size probe returns a printed count; the
+    transfer must be `exec-out` and writes the payload to the stdout file object.
     """
 
     def fake_run(cmd, check, stdout=None, capture_output=False, text=False):
         joined = " ".join(cmd)
         if "wc -c" in joined:
-            assert "sh" in cmd and "-c" in cmd, (
+            assert "run-as" in cmd and "com.sleepanalysis" in cmd, (
                 "size must be read inside the app sandbox"
             )
             return subprocess.CompletedProcess(

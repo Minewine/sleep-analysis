@@ -13,15 +13,15 @@ WAV_BYTES = b"RIFF" + b"x" * 124  # 128 bytes total
 def fake_adb(device_size: int = len(WAV_BYTES), payload: bytes = WAV_BYTES):
     """Stand-in for subprocess.run covering the two adb calls pull_clip makes.
 
-    Dispatches on the command shape: the `run-as ... sh -c 'wc -c < ...'`
-    on-device size probe returns a printed count, the `exec-out run-as ... cat`
-    transfer writes the payload to the stdout file object.
+    Dispatches on the command shape: the `run-as ... wc -c <path>` on-device
+    size probe returns a printed count, the `exec-out run-as ... cat` transfer
+    writes the payload to the stdout file object.
     """
 
     def fake_run(cmd, check, stdout=None, capture_output=False, text=False):
         joined = " ".join(cmd)
         if "wc -c" in joined:
-            assert "sh" in cmd and "-c" in cmd, (
+            assert "run-as" in cmd and ef.APP_PACKAGE in cmd, (
                 "size must be read inside the app sandbox"
             )
             return subprocess.CompletedProcess(
@@ -60,26 +60,30 @@ def test_clip_name_matches_on_device_scheme():
     assert ef.clip_name(3, 45_000) == "session_3/evt_45000.wav"
 
 
-def test_remote_size_quotes_the_sh_c_script(monkeypatch):
-    """Regression (Nov 9): adb re-joins `shell` argv into one device command line, so the
-    `sh -c` script must carry its own quotes — unquoted, the `wc -c < file` redirect was
-    parsed at the device-shell level (unprivileged user) and every clip export failed with
-    "can't open ...". The quotes must survive in the argv element past to the device."""
+def test_remote_size_reads_the_count_in_the_app_sandbox(monkeypatch):
+    """Regression: adb joins `shell` argv into one device command line that the ON-DEVICE
+    shell re-parses, so a quoted `sh -c "wc -c < 'file'"` loses its quoting — the redirect
+    was applied by the outer shell with the wrong cwd and every clip export failed with
+    "can't open ...". The probe must be a direct `run-as <pkg> wc -c <path>`: run-as opens
+    the file as the app user, and wc prints "count path" whose first token is the count."""
     calls = []
 
     def spy_run(cmd, check, stdout=None, capture_output=False, text=False):
         calls.append(cmd)
-        return subprocess.CompletedProcess(cmd, 0, stdout="256044\n", stderr="")
+        return subprocess.CompletedProcess(
+            cmd, 0, stdout="256044 files/clips/x.wav\n", stderr=""
+        )
 
     monkeypatch.setattr(ef.subprocess, "run", spy_run)
     assert ef.remote_size("serial-1", "session_3/evt_45000.wav") == 256044
 
     size_call = calls[0]
-    script = size_call[size_call.index("-c") + 1]
-    assert script.startswith("'") and script.endswith("'"), (
-        "sh -c script must be quoted as ONE argv token for the device shell"
+    assert "sh" not in size_call, (
+        "no sh -c wrapper — the redirect form is what broke on the device"
     )
-    assert "wc -c < files/clips/session_3/evt_45000.wav" in script
+    assert "run-as" in size_call and ef.APP_PACKAGE in size_call
+    assert size_call[size_call.index("wc") : size_call.index("wc") + 2] == ["wc", "-c"]
+    assert size_call[-1] == f"{ef.CLIPS_DIR}/session_3/evt_45000.wav"
 
 
 def test_is_riff_rejects_non_wav_bytes():
@@ -114,6 +118,20 @@ def test_write_manifest_shape(tmp_path):
     assert manifest["source_session"] == 3
     assert manifest["exported_at"] == "2026-11-03T12:00:00+00:00"
     assert manifest["entries"] == entries
+    # No event carried a noise floor in its features — the replay pre-roll is null, not 0.
+    assert manifest["floor_dbfs"] is None
+
+
+def test_write_manifest_floors_median(tmp_path):
+    """floor_dbfs is the median event noise floor — ReplayEngine's pre-roll value."""
+    entries = [
+        ef.build_entry(row(features_json=json.dumps({"noise_floor_dbfs": f})), "c.wav")
+        for f in (-84.0, -82.0, -80.0, -78.0, -76.0)
+    ]
+    manifest = json.loads(
+        ef.write_manifest(tmp_path, 3, entries).read_text(encoding="utf-8")
+    )
+    assert manifest["floor_dbfs"] == -80.0
 
 
 def test_write_manifest_entries_without_features(tmp_path):

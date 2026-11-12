@@ -449,6 +449,7 @@ class AudioEngine(
                         // endMs + 5 s + one hop when a machine is busy), so the 8 s snapshot
                         // covers ≥ 2.5 s of the event head plus its full tail — comfortably
                         // inside the ring (the v1 2 s gap capped at 7.5 s, 0.5 s inside).
+
                         // Horizon guard (defense in depth): if the event's tail has slid past
                         // the ring horizon anyway (thermally-delayed emission, or a config
                         // whose hold bounds exceed clipMs), the snapshot would hold zero

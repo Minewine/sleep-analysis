@@ -492,4 +492,13 @@
     <string name="experiment_direction_down">lower</string>
     <string name="experiment_confirmed">Your return-to-baseline phase is consistent with the change (moderate confidence).</string>
     <string name="experiment_not_confirmed">The return-to-baseline phase did not confirm the effect (low confidence).</string>
+
+    <!-- Bulk clip labeling (LabelingScreen) -->
+    <string name="labeling_title">Label clips</string>
+    <string name="labeling_open">Label clips</string>
+    <string name="labeling_progress">%1$d / %2$d labeled</string>
+    <string name="labeling_hide_labeled">Hide labeled</string>
+    <string name="labeling_empty">No clips to label for this session.</string>
+    <string name="labeling_all_done">Every clip is labeled — thank you. Toggle "Hide labeled" off to review or change labels.</string>
+    <string name="labeling_labeled_as">Labeled: %1$s</string>
 </resources>
