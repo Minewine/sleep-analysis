@@ -74,7 +74,7 @@ One row per metric value. This is the table all longitudinal analysis (Phase 4+)
 | `unit` | TEXT enum | `SECONDS` / `MINUTES` / `PERCENT` / `COUNT` / `PER_HOUR` / `DBFS` / `INDEX_0_100` / `INDEX_0_10` / `MS` / `BPM` / `BREATHS_PER_MINUTE` |
 | `is_clinical` | Bool | True only for clinical-source rows — SQL triggers + recorder logic key on it |
 | `confidence` | REAL? | 0–1, nullable (user/clinical rows typically null) |
-| `model_version` | TEXT? | Model identity stamped at write time — currently the `energy-heuristic-v2-burst` constant (v1-spectral on pre-v2 rows; `+dbg1` suffix when the debug enter-windows toggle was active). The FK to `model_registry` applies once the registry exists (§3.8, Phase 2) |
+| `model_version` | TEXT? | Model identity stamped at write time — currently the `energy-heuristic-v3-peakgate` constant (v1-spectral on pre-v2 rows; `+dbg1` suffix when the debug enter-windows toggle was active). The FK to `model_registry` applies once the registry exists (§3.8, Phase 2) |
 | `period_start` / `period_end` | Long? | For period-scoped rows (e.g., per-hour, weekly) |
 | `notes` | TEXT? | |
 | `timestamp` | Long | When the value occurred (event/measurement time — not row-write time) |

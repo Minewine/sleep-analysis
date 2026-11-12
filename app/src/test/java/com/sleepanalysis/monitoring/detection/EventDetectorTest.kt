@@ -289,6 +289,60 @@ class EventDetectorTest {
         assertEquals("OTHER_NOISE", events.single().type)
     }
 
+    // --- Ultra-quiet-room peak tier (DetectorConfig.QUIET_ROOM_*, v3) ------------------
+    // Dogfood night 2026-11-11 (session 13): ambient median −83 dBFS. Steady breathing trains
+    // (peaks −39.6…−54.3, means −46…−54) cleared the −60 mean gate and shipped as SNORE — 47%
+    // of the night's snore minutes from 2.6% of events. Real snores that night peaked
+    // −16.3…−34.9 dBFS.
+
+    @Test
+    fun `dead-quiet room - breathing train under the absolute peak gate is downgraded`() {
+        // 100 s of breathing-level windows over a −83 floor: the MEAN (−47.5) clears the mean
+        // gate (threshold −60), so the downgrade comes from the peak tier alone — the event's
+        // peak (−40.0) sits at or below the −38 absolute line.
+        val levels = List(200) { listOf(-40.0, -54.0, -46.0, -50.0)[it % 4] }
+        val events = feedLevels(detector, levels = levels, floor = -83.0)
+        assertEquals(1, events.size)
+        assertEquals("OTHER_NOISE", events.single().type)
+        assertEquals(-40.0, events.single().peakDbfs, 0.0001)
+        // Mean over the 199 accumulated windows (window 0 only primes the enter hysteresis):
+        // full 200-window sum −9500, minus the priming −40.
+        assertEquals(-9460.0 / 199, events.single().meanDbfs, 0.0001)
+        // The mean gate really did pass: the event clears max(floor + 10, −60) with 12.5 dB.
+        assertTrue(events.single().meanDbfs >= DetectorConfig.gateThresholdDbfs(-83.0))
+    }
+
+    @Test
+    fun `dead-quiet room - real snore train above the absolute peak gate stays SNORE`() {
+        // Same room, same length: peaks −33…−16 burst above the −38 line — snoring, not rumble.
+        val levels = List(100) { if (it % 2 == 0) -33.0 else -16.0 }
+        val events = feedLevels(detector, levels = levels, floor = -83.0)
+        assertEquals(1, events.size)
+        assertEquals("SNORE", events.single().type)
+        assertEquals(-16.0, events.single().peakDbfs, 0.0001)
+    }
+
+    @Test
+    fun `quiet-room peak gate boundary - at or below −38 downgrades, −33 stays`() {
+        // Calibration points: the false side peaks −39.6…−54.3, the real side −16.3…−34.9;
+        // −38.0 is drawn inside the gray zone with at-or-below downgrading.
+        val atGate = feedLevels(detector, levels = List(4) { -38.0 }, floor = -83.0)
+        assertEquals("OTHER_NOISE", atGate.single().type)
+        val stays = feedLevels(detector, levels = List(4) { -33.0 }, floor = -83.0)
+        assertEquals("SNORE", stays.single().type)
+    }
+
+    @Test
+    fun `normal rooms keep the mean-only gate - the peak tier never arms`() {
+        // A −45 dBFS peak in a −70 dBFS room is 25 dB over the floor — possibly a distant real
+        // snore (night 1: −58 dBFS peaks). The peak gate is OFF above −80 floor, so the event
+        // is judged by the mean gate alone and stays SNORE: no absolute cutoff eats it.
+        val events = feedLevels(detector, levels = List(4) { -45.0 }, floor = -70.0)
+        assertEquals(1, events.size)
+        assertEquals("SNORE", events.single().type)
+        assertEquals(-45.0, events.single().peakDbfs, 0.0001)
+    }
+
     // --- Burst-level events (shipped default: MERGE_GAP_MS = 0) ------------------------
 
     @Test

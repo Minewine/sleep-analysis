@@ -966,7 +966,7 @@ class SessionRepository @Inject constructor(
 
     companion object {
         /** Detector identity — stored on every event/estimate for traceability. */
-        const val MODEL_VERSION = "energy-heuristic-v2-burst"
+        const val MODEL_VERSION = "energy-heuristic-v3-peakgate"
 
         /** Grace added after the last verifiably-alive moment when bounding a recovered night. */
         const val RECOVERY_END_GRACE_MS = 60_000L

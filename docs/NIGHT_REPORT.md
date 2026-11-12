@@ -2,7 +2,7 @@
 
 This document defines what the morning summary (report screen), the Garmin section and the
 7-day trend show, where every number comes from, and which constants govern them. Written
-against schema v9 and detector `energy-heuristic-v2-burst` (v1-spectral nights are historical and flagged by the trend's version markers).
+against schema v9 and detector `energy-heuristic-v3-peakgate` (pre-v3 nights are historical and flagged by the trend's version markers).
 
 ## 1. Morning summary (report screen)
 
@@ -45,6 +45,17 @@ stats are the headline "worst stretch", the ≤5 s view splits short-recovery ch
 train-level number never depends on the detector's merge bound. The structure card shows burst
 count, median/longest burst, both bout views, and the longest bout's span/times; the pre-v2
 merged-chains view remains recoverable as bouts with a 2 s gap.
+
+**Event gate (v3).** A finalized SNORE event stays SNORE only if it clears the level gate: its
+mean must beat its own mean noise floor + 10 dB, never under a −60 dBFS hard floor — and, only
+when that mean floor sits at or below −80 dBFS (mic-self-noise rooms, where every relative
+threshold loses meaning), its peak must stay above −38 dBFS. Failing events are relabeled
+OTHER_NOISE and (via `ClipPolicy`) never persist a clip; they stay in the database for
+labeling. Driver: dogfood night 2026-11-11 (session 13, ambient median −83 dBFS) — 21
+breathing trains peaking −39.6…−54.3 dBFS cleared the mean gate and shipped as 47% of the
+night's snore minutes; real snores that night peaked −16.3…−34.9 dBFS and are untouched, and
+in normal rooms (floor above −80 dBFS) the tier is off, so no absolute cutoff eats audible
+snoring there.
 
 **Quiet stretches.** Event-free spans ≥ `QUIET_GAP_MIN_MS` (10 min) inside the **capture
 window** (`capture_started_at` when present, session start otherwise — never tap-to-stop, or a

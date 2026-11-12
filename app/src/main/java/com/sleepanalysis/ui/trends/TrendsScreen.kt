@@ -230,7 +230,7 @@ private fun TrendRow(night: NightTrend, maxMinutes: Long, onClick: () -> Unit) {
     }
 }
 
-/** "energy-heuristic-v2-burst" → "v2-burst"; unknown shapes render verbatim. */
+/** "energy-heuristic-v3-peakgate" → "v3-peakgate"; unknown shapes render verbatim. */
 private fun shortVersion(version: String): String =
     version.removePrefix("energy-heuristic-").ifEmpty { version }
 

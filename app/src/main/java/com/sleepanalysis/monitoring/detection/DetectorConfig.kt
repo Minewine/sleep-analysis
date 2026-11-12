@@ -4,9 +4,9 @@ import com.sleepanalysis.domain.scoring.SnoreScore
 
 /**
  * Tuning constants for the Phase 1 acoustic pipeline. The shipped detector is the
- * shipped energy-heuristic-v2-burst (v1-spectral classification + burst-level event shaping); a
- * learned model remains a Phase 2 concern — the interface (SnoreDetector) is the swap point
- * (docs/MVP_SCOPE.md F4, docs/ARCHITECTURE.md §8).
+ * energy-heuristic-v3-peakgate (v1-spectral classification + burst-level event shaping + the
+ * ultra-quiet-room peak gate); a learned model remains a Phase 2 concern — the interface
+ * (SnoreDetector) is the swap point (docs/MVP_SCOPE.md F4, docs/ARCHITECTURE.md §8).
  */
 object DetectorConfig {
     const val SAMPLE_RATE = 16_000
@@ -25,9 +25,30 @@ object DetectorConfig {
      * noise floor by [GATE_MARGIN_DB]; [MIN_GATE_DBFS] caps how low that threshold may fall so
      * a dead-quiet room (floor ≈ mic self-noise, −92 dBFS) still never gates open — and never
      * persists a clip for — near-silent junk (see EventDetector/ClipPolicy).
+     *
+     * Ultra-quiet-room peak tier (v3, session-13 dogfood 2026-11-11): the mean gate above is
+     * still MEAN-based, and in a room whose floor sits at mic self-noise (floor ≤
+     * [QUIET_ROOM_FLOOR_DBFS]) steady breathing clears it easily — the night's ambient median
+     * was −83 dBFS and 21 breathing trains (peaks −39.6…−54.3 dBFS) passed the −60 mean gate
+     * and shipped as SNORE (47% of the night's snore minutes from 2.6% of events). When the
+     * event's mean floor is that low, [quietRoomPeakGateDbfs] additionally requires the event's
+     * PEAK to clear an absolute audibility line, [QUIET_ROOM_PEAK_DBFS]: real snores burst above
+     * their floor (−16.3…−34.9 dBFS that night), steady breathing never does. The tier only
+     * arms in ultra-quiet rooms — in a −70 dBFS room real snoring can peak −58 dBFS (night 1)
+     * and an absolute cutoff there would eat it, exactly the −55 lesson above.
      */
     const val GATE_MARGIN_DB = 10.0
     const val MIN_GATE_DBFS = -60.0
+
+    /** Mean floor at or below which a room is "mic self-noise" quiet and the peak tier arms. */
+    const val QUIET_ROOM_FLOOR_DBFS = -80.0
+
+    /**
+     * Absolute peak a SNORE event must stay above in an ultra-quiet room (peak AT OR BELOW
+     * this downgrades — the calibration's false side peaks −39.6…−54.3, the real side
+     * −16.3…−34.9, so −38.0 sits inside the 5.3 dB gray zone, nearest the false side).
+     */
+    const val QUIET_ROOM_PEAK_DBFS = -38.0
 
     /**
      * Gate threshold for an event over [noiseFloorDbfs]: floor + margin, never below
@@ -38,6 +59,16 @@ object DetectorConfig {
         marginDb: Double = GATE_MARGIN_DB,
         hardFloorDbfs: Double = MIN_GATE_DBFS,
     ): Double = maxOf(noiseFloorDbfs + marginDb, hardFloorDbfs)
+
+    /**
+     * Absolute peak gate for ultra-quiet rooms (see [QUIET_ROOM_PEAK_DBFS]): the peak floor an
+     * event must stay above when its mean noise floor is at or below [QUIET_ROOM_FLOOR_DBFS],
+     * or null when the room is loud enough that the relative mean gate alone is trusted — an
+     * absolute peak cutoff in a normal room would eat real, clearly-audible snoring. Pure —
+     * shared by the event label downgrade and the clip policy.
+     */
+    fun quietRoomPeakGateDbfs(noiseFloorDbfs: Double): Double? =
+        if (noiseFloorDbfs <= QUIET_ROOM_FLOOR_DBFS) QUIET_ROOM_PEAK_DBFS else null
 
     /**
      * Bedtime/settling protection: for the first [SETTLING_MINUTES] after capture begins, the

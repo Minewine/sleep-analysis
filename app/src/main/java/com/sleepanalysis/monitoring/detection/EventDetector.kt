@@ -19,6 +19,13 @@ import com.sleepanalysis.data.db.entity.EventType
  * [gateHardFloorDbfs] (DetectorConfig.gateThresholdDbfs) — is downgraded to OTHER_NOISE: it
  * stays in the database as an event but is never labeled snore and (via ClipPolicy) never
  * persists a clip. Relative to the floor, the gate self-calibrates across rooms/mic placements.
+ * In ultra-quiet rooms the mean gate alone still under-gates (breathing means clear the −60
+ * hard floor), so when the event's mean noise floor is at or below
+ * [DetectorConfig.QUIET_ROOM_FLOOR_DBFS] the event's PEAK must additionally stay above
+ * [DetectorConfig.QUIET_ROOM_PEAK_DBFS] (DetectorConfig.quietRoomPeakGateDbfs) — real snores
+ * burst above an absolute audibility line, steady breathing trains never do (session 13:
+ * −39.6…−54.3 dBFS trains vs −16.3…−34.9 real snores). The tier never arms in normal rooms,
+ * where an absolute cutoff would eat clearly-audible snoring (DetectorConfig.GATE_MARGIN_DB).
  *
  * ## Deferred emission (docs/ARCHITECTURE.md §4; merging parameterized, shipped at 0)
  *
@@ -422,8 +429,17 @@ class EventDetector(
             val floorMean = if (windows > 0) floorSum / windows else 0.0
             val gateThreshold =
                 DetectorConfig.gateThresholdDbfs(floorMean, gateMarginDb, gateHardFloorDbfs)
+            // Ultra-quiet rooms (floor at mic self-noise) additionally require the PEAK to clear
+            // an absolute audibility gate: steady breathing clears the mean gate there because
+            // every relative threshold has lost meaning (see DetectorConfig QUIET_ROOM_*).
+            val quietRoomPeakGate = DetectorConfig.quietRoomPeakGateDbfs(floorMean)
+            val belowQuietRoomPeakGate = quietRoomPeakGate != null && peak <= quietRoomPeakGate
             val effectiveType =
-                if (type == EventType.SNORE && meanDbfs < gateThreshold) EventType.OTHER_NOISE else type
+                if (type == EventType.SNORE && (meanDbfs < gateThreshold || belowQuietRoomPeakGate)) {
+                    EventType.OTHER_NOISE
+                } else {
+                    type
+                }
             closedSums = WindowSums(
                 windows = windows,
                 peakDbfs = peak,
