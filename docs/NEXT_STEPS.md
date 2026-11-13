@@ -39,6 +39,8 @@ Everything else is blocked on evidence only real nights can provide: battery, 8 
 
 **Exit criteria for P0:** 3 consecutive nights with COMPLETED (or drilled-RECOVERED) sessions, battery ≤ 10 %/night on at least one, ≥ 10 labeled events, zero data loss.
 
+**Status 2026-11-13 (11 sessions in):** 3-consecutive-COMPLETED gate met (nights 12–14); 159 labeled events; zero data loss on night 14 (43,786 windows, 0 skipped); morning-report validity grading fixed — every night had been grading D `stats_missing` due to the script never feeding the NIGHT_VALIDITY env vars (commit 363693b); night 14 now grades A. Two P0 items outstanding: **(1) battery gate unmeasurable** — every logged night (11–14) reads `batt=100% charging=true` on every heartbeat; needs one night off the charger. Drain lives in per-session logs (`files/logs/session_<id>.log`, `batt=NN% charging=…` on heartbeat + stop lines) and nothing consumes it yet — candidate small tool: a drain parser that only trusts `charging=false` stretches. **(2) interrupted-night drill never run** — no RECOVERED/INTERRUPTED session exists. Also noted: Garmin vendor metrics (13/session) have landed on 7 consecutive sessions, so the P1 live-import item looks satisfied in practice — worth confirming the 404/auto-retry drill and investigating the 25 vendor rows with NULL sessionId.
+
 ## P1 — Dogfood + hardening (1–2 weeks alongside nightly use)
 
 1. **30-night dogfood** with a tiny nightly log (battery %, anomalies) — Phase 1's definition-of-done gate ([MVP_SCOPE](MVP_SCOPE.md) §7).
