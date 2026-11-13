@@ -8,8 +8,6 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
-import android.content.IntentFilter
-import android.os.BatteryManager
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
@@ -785,21 +783,6 @@ class MonitorService : Service() {
     private fun freeStorageMb(): Long = runCatching {
         StatFs(filesDir.absolutePath).availableBytes / (1024 * 1024)
     }.getOrDefault(-1L)
-
-    /**
-     * Battery percentage and charging state for the session log. The ≤ 10 %/8 h quality gate
-     * (MVP_SCOPE A3) was never measurable because nothing recorded the level — every
-     * heartbeat and the stop line now carry it, so a night's drain is one grep away.
-     */
-    private fun batteryTelemetry(): String = runCatching {
-        val bm = getSystemService(Context.BATTERY_SERVICE) as BatteryManager
-        val level = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
-        val status = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
-            ?.getIntExtra(BatteryManager.EXTRA_STATUS, -1) ?: -1
-        val charging = status == BatteryManager.BATTERY_STATUS_CHARGING ||
-            status == BatteryManager.BATTERY_STATUS_FULL
-        "batt=${level}% charging=$charging"
-    }.getOrDefault("batt=?%")
 
     private fun thermalName(status: Int = (getSystemService(Context.POWER_SERVICE) as PowerManager).currentThermalStatus): String =
         when (status) {

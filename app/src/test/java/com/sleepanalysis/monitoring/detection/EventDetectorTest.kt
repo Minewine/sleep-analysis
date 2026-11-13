@@ -21,8 +21,21 @@ class EventDetectorTest {
     private val merging = EventDetector(mergeGapMs = 2_000L)
 
     // Fixed synthetic window values: dbfs -15 over floor -40 => SNR 25 dB.
-    private fun features(ts: Long, dbfs: Double = -15.0, ratio: Double = 0.8, floor: Double = -40.0) =
-        AudioFeatures(windowDbfs = dbfs, noiseFloorDbfs = floor, lowBandRatio = ratio, timestampMs = ts)
+    private fun features(
+        ts: Long,
+        dbfs: Double = -15.0,
+        ratio: Double = 0.8,
+        floor: Double = -40.0,
+        flatness: Double? = null,
+        harmonic: Double? = null,
+    ) = AudioFeatures(
+        windowDbfs = dbfs,
+        noiseFloorDbfs = floor,
+        lowBandRatio = ratio,
+        timestampMs = ts,
+        spectralFlatness = flatness,
+        harmonicRatio = harmonic,
+    )
 
     private fun result(snore: Boolean, loud: Boolean = true, confidence: Double = if (snore) 0.8 else 0.0) =
         DetectionResult(snore = snore, loudAcousticEvent = loud, confidence = confidence)
@@ -620,6 +633,35 @@ class EventDetectorTest {
         assertEquals(6500L, merged.endMs)
         assertEquals(4, merged.features.openWindows)
         assertEquals(0.8, merged.confidence, 0.0001)
+    }
+
+    @Test
+    fun `merged draft folds spectral means window-count-weighted across fragments`() {
+        // Same geometry as the test above; spectral values ride on the active windows so the
+        // fold's flatSum/flatCount/harmSum path is exercised: 3 active windows per fragment,
+        // flatness 0.5 then 0.7 → mean 0.6; harmonic 0.6 then 0.8 → mean 0.7.
+        var ts = 1000L
+        repeat(4) {
+            merging.update(ts, features(ts, dbfs = -30.0, flatness = 0.5, harmonic = 0.6), result(snore = true))
+            ts += 500
+        }
+        repeat(4) {
+            merging.update(ts, features(ts, dbfs = -90.0), result(snore = false))
+            ts += 500
+        }
+        repeat(4) {
+            merging.update(ts, features(ts, dbfs = -10.0, flatness = 0.7, harmonic = 0.8), result(snore = true))
+            ts += 500
+        }
+        repeat(4) {
+            merging.update(ts, features(ts, dbfs = -90.0), result(snore = false))
+            ts += 500
+        }
+        val events = merging.flush()
+        assertEquals(1, events.size)
+        val merged = events.single()
+        assertEquals(0.6, merged.features.spectralFlatnessMean!!, 0.0001)
+        assertEquals(0.7, merged.features.harmonicRatioMean!!, 0.0001)
     }
 
     // --- Non-mergeable successor while a final is still held (deferOrFold) -------------

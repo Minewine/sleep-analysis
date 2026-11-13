@@ -417,6 +417,9 @@ class EventDetector(
                     ratioSum += features.lowBandRatio
                     floorSum += features.noiseFloorDbfs
                     features.spectralFlatness?.let { flatSum += it; flatCount++ }
+                    // harmonicRatioMean divides harmSum by flatCount: both spectral fields
+                    // derive from the same per-window SpectralFeatures object (SnoreDetector
+                    // fills both or neither), so the two counts are identical by construction.
                     features.harmonicRatio?.let { harmSum += it }
                 }
                 return null
