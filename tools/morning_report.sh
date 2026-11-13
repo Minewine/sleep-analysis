@@ -114,4 +114,18 @@ NIGHT_PREV_START_MS="$(sqlite3 "$DB" "SELECT startedAt FROM sleep_session WHERE 
     uv run --directory "$REPO_ROOT" --with matplotlib --with numpy \
     -- python -I "$REPO_ROOT/analysis/night_report.py"
 
+# 6. Battery drain from the session log (heartbeat + stop lines carry
+#    batt=/charging=). Drain is only meaningful over charging=false stretches —
+#    the tool says "plugged in all night" rather than inventing a 0% rate.
+session_log="$OUT/session_${sid}.log"
+if adb "${SERIAL_ARGS[@]}" exec-out run-as com.sleepanalysis \
+        cat "files/logs/session_${sid}.log" > "$session_log" &&
+   [ -s "$session_log" ]; then
+    echo "== BATTERY (session $sid, from its session log) =="
+    uv run --directory "$REPO_ROOT" tools/night_battery.py "$session_log"
+else
+    rm -f "$session_log"
+    echo "== BATTERY: skipped — log pull failed (absent, device offline, or run-as denied) =="
+fi
+
 echo "== done: $OUT (charts: $OUT/chart_*.png) =="
