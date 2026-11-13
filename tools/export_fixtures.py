@@ -138,13 +138,35 @@ def pull_db(serial: str | None, work_dir: Path) -> Path:
     raise RuntimeError(f"db pull failed after 3 attempts: {last_error}")
 
 
+# SQLite >= 3.44 integrity_check false-positives "NULL value in <table>.<column>"
+# on records written before an ALTER TABLE ADD COLUMN ... NOT NULL DEFAULT: the
+# old records are short, readers substitute the default (MIGRATION_10_11 added
+# appliedGain DEFAULT 2.5), yet the checker compares the raw record against the
+# NOT NULL constraint. quick_check alone would reject every pull of a DB with
+# pre-v11 clip rows; a direct scan sees the truth (real NULLs would show here).
+BENIGN_QUICK_CHECK = "NULL value in audio_clip.appliedGain"
+
+
 def _validate_db(db_path: Path) -> None:
     """Rejects truncated/garbage pulls: quick_check must pass and the schema must be ours."""
     conn = sqlite3.connect(db_path)
     try:
-        check = conn.execute("PRAGMA quick_check").fetchone()[0]
-        if check != "ok":
-            raise sqlite3.DatabaseError(f"quick_check: {check}")
+        problems = [r[0] for r in conn.execute("PRAGMA quick_check").fetchall()]
+        benign = [p for p in problems if p == BENIGN_QUICK_CHECK]
+        if benign and len(benign) < len(problems):
+            raise sqlite3.DatabaseError(f"quick_check: {'; '.join(problems)}")
+        if benign:
+            # typeof() because the planner folds `appliedGain IS NULL` to false
+            # under a NOT NULL constraint (schema says impossible, data says
+            # otherwise in the corruption case this guards against).
+            real_nulls = conn.execute(
+                "SELECT COUNT(*) FROM audio_clip WHERE typeof(appliedGain) = 'null'"
+            ).fetchone()[0]
+            if real_nulls:
+                raise sqlite3.DatabaseError(
+                    f"quick_check: appliedGain false positive + {real_nulls} "
+                    "real NULL row(s) — treating as corruption"
+                )
         sessions = conn.execute("SELECT COUNT(*) FROM sleep_session").fetchone()[0]
         if sessions < 1:
             raise sqlite3.DatabaseError("no sleep_session rows — truncated pull?")

@@ -1,6 +1,7 @@
 """Tests for the pure manifest/clip parts of export_fixtures."""
 
 import json
+import sqlite3
 import subprocess
 from datetime import UTC, datetime
 
@@ -191,3 +192,83 @@ def test_pull_clip_validates_riff_and_cleans_up(tmp_path, monkeypatch):
     monkeypatch.setattr(ef.subprocess, "run", fake_adb())
     ef.pull_clip("serial-1", "session_3/evt_45000.wav", dest)
     assert dest.read_bytes()[:4] == b"RIFF"
+
+
+def _pre_v11_style_db(tmp_path, applied_gain_not_null: bool):
+    """A DB shaped like the on-device one: pre-v11 rows written without
+    appliedGain, then MIGRATION_10_11's ALTER that appends the column
+    (NOT NULL DEFAULT 2.5) — producing the short-record false positive. With
+    applied_gain_not_null=False a row really carries NULL — genuine corruption.
+    """
+    path = tmp_path / "db.sqlite"
+    conn = sqlite3.connect(path)
+    try:
+        conn.execute(
+            "CREATE TABLE sleep_session (id INTEGER PRIMARY KEY, startedAt INTEGER)"
+        )
+        conn.execute("INSERT INTO sleep_session VALUES (1, 1700000000000)")
+        conn.execute(
+            "CREATE TABLE audio_clip (id INTEGER PRIMARY KEY, createdAt INTEGER)"
+        )
+        conn.execute("INSERT INTO audio_clip VALUES (1, 100)")
+        gain = "REAL NOT NULL DEFAULT 2.5" if applied_gain_not_null else "REAL"
+        conn.execute(f"ALTER TABLE audio_clip ADD COLUMN appliedGain {gain}")
+        conn.execute("ALTER TABLE audio_clip ADD COLUMN filePeakDbfs REAL")
+        if not applied_gain_not_null:
+            conn.execute(
+                "INSERT INTO audio_clip (id, createdAt, appliedGain) VALUES (2, 200, NULL)"
+            )
+        conn.commit()
+    finally:
+        conn.close()
+    return path
+
+
+def test_validate_db_accepts_alter_added_column_false_positive(tmp_path):
+    # SQLite >= 3.44 quick_check flags the pre-ALTER short record ("NULL value in
+    # audio_clip.appliedGain") even though readers substitute the DEFAULT 2.5.
+    # The pull must be accepted when no row actually holds NULL.
+    path = _pre_v11_style_db(tmp_path, applied_gain_not_null=True)
+    conn = sqlite3.connect(path)
+    first = conn.execute("PRAGMA quick_check").fetchone()[0]
+    conn.close()
+    assert first == ef.BENIGN_QUICK_CHECK, "fixture must reproduce the false positive"
+    ef._validate_db(path)  # must not raise
+
+
+def test_validate_db_rejects_genuine_applied_gain_nulls(tmp_path):
+    # Same quick_check message, but this time a row really is NULL. A normal
+    # INSERT cannot violate NOT NULL, so simulate the constraint-bypassing
+    # write the guard defends against: build the DB with a nullable column +
+    # a NULL row, then flip the stored schema to NOT NULL (writable_schema).
+    path = _pre_v11_style_db(tmp_path, applied_gain_not_null=False)
+    conn = sqlite3.connect(path)
+    try:
+        conn.execute("PRAGMA writable_schema = ON")
+        conn.execute(
+            "UPDATE sqlite_master SET sql = replace(sql, 'appliedGain REAL',"
+            " 'appliedGain REAL NOT NULL')"
+        )
+        conn.commit()
+    finally:
+        conn.execute("PRAGMA writable_schema = OFF")
+        conn.close()
+    conn = sqlite3.connect(path)
+    first = conn.execute("PRAGMA quick_check").fetchone()[0]
+    conn.close()
+    assert first == ef.BENIGN_QUICK_CHECK, "fixture must produce the complaint"
+    with pytest.raises(sqlite3.DatabaseError, match="real NULL row"):
+        ef._validate_db(path)
+
+
+def test_validate_db_still_requires_session_rows(tmp_path):
+    # The benign carve-out must not skip the sanity row count.
+    path = _pre_v11_style_db(tmp_path, applied_gain_not_null=True)
+    conn = sqlite3.connect(path)
+    try:
+        conn.execute("DELETE FROM sleep_session")
+        conn.commit()
+    finally:
+        conn.close()
+    with pytest.raises(sqlite3.DatabaseError, match="no sleep_session rows"):
+        ef._validate_db(path)
