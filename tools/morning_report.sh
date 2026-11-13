@@ -74,6 +74,33 @@ if [ -z "$start" ] || [ -z "$end" ]; then
     exit 1
 fi
 
+# 4b. Capture stats for night validity (NightValidity.captureSummary semantics, consumed
+#     by night_report.py via the NIGHT_VALIDITY_* env): capture_started_at-aware window
+#     seconds (used only when < endedAt, else session start — the app's window rule,
+#     NightValidity.kt/ValidityCalculator.kt), thermal events, and the thermal-span hop
+#     sum ('$[2]' of each span, like the Kotlin skippedHopSpans.sumOf — never
+#     level_gate_skipped). windows_processed gates the export: NULL captureStats (or
+#     missing keys) leaves every NIGHT_VALIDITY_* var unset so genuine stats_missing
+#     still fires — deliberately stricter than the app, which builds a non-null summary
+#     for the same row (null windowsProcessed invents no failure, possibly grade A);
+#     do not 'fix' this back. The gate column is read LAST because `read` collapses runs
+#     of the ' ' separator, so the row's only nullable column must not sit mid-row.
+read -r nv_secs nv_thermal nv_hops nv_windows < <(sqlite3 -separator ' ' "$DB" "
+    SELECT (s.endedAt - CASE WHEN json_extract(s.captureStats, '\$.capture_started_at') < s.endedAt THEN json_extract(s.captureStats, '\$.capture_started_at') ELSE s.startedAt END) / 1000,
+           COALESCE(json_extract(s.captureStats, '\$.thermal_throttle_events'), 0),
+           COALESCE((SELECT SUM(json_extract(v.value, '\$[2]')) FROM json_each(s.captureStats, '\$.thermal_skipped_hops') v), 0),
+           json_extract(s.captureStats, '\$.windows_processed')
+    FROM sleep_session s WHERE s.id = $sid;")
+if [ -n "$nv_windows" ]; then
+    export NIGHT_VALIDITY_WINDOWS_PROCESSED="$nv_windows" \
+        NIGHT_VALIDITY_WINDOW_SECONDS="$nv_secs" \
+        NIGHT_VALIDITY_THERMAL_EVENTS="$nv_thermal" \
+        NIGHT_VALIDITY_SKIPPED_HOPS="$nv_hops"
+else
+    unset NIGHT_VALIDITY_WINDOWS_PROCESSED NIGHT_VALIDITY_WINDOW_SECONDS \
+        NIGHT_VALIDITY_THERMAL_EVENTS NIGHT_VALIDITY_SKIPPED_HOPS
+fi
+
 # 5. Report + charts.
 NIGHT_DATA="$OUT" \
 NIGHT_REPORT_OUT="$OUT" \
