@@ -60,7 +60,10 @@ def test_twenty_percent_shortfall():
     # single warning at A); any second warning (here: an interrupted session) → B.
     result = clean(capture=healthy_capture(windows_processed=46_080))
     assert ids(result) == ["capture_gaps"]
-    assert result["reasons"][0]["detail"] == "processed 46080 of ~57600 expected windows (20% short)"
+    assert (
+        result["reasons"][0]["detail"]
+        == "processed 46080 of ~57600 expected windows (20% short)"
+    )
     assert result["grade"] == "A"
     two = clean(
         capture=healthy_capture(windows_processed=46_080),
@@ -121,12 +124,16 @@ def test_unexplained_gap_escalation():
 
 
 def test_clipped_rate_boundaries():
-    assert "clipped_clips" not in ids(clean(clips={"clip_count": 10, "clipped_count": 1}))
+    assert "clipped_clips" not in ids(
+        clean(clips={"clip_count": 10, "clipped_count": 1})
+    )
     assert "clipped_clips" in ids(clean(clips={"clip_count": 10, "clipped_count": 2}))
     critical = clean(clips={"clip_count": 10, "clipped_count": 4})
     assert critical["grade"] == "D"
     # No clips → never a rate.
-    assert "clipped_clips" not in ids(clean(clips={"clip_count": 0, "clipped_count": 0}))
+    assert "clipped_clips" not in ids(
+        clean(clips={"clip_count": 0, "clipped_count": 0})
+    )
 
 
 def test_ambient_is_relative_and_optional():
@@ -145,7 +152,12 @@ def test_low_snore_signal_is_info_only():
 
 def test_stale_garmin_warning():
     result = clean(
-        garmin_warnings=[{"id": "garmin_stale", "detail": "imported 30.0 h after the night ended (limit 24 h)"}],
+        garmin_warnings=[
+            {
+                "id": "garmin_stale",
+                "detail": "imported 30.0 h after the night ended (limit 24 h)",
+            }
+        ],
     )
     assert ids(result) == ["garmin_stale"]
     assert result["reasons"][0]["severity"] == "WARNING"
@@ -155,7 +167,10 @@ def test_stale_garmin_warning():
 def test_implausible_hr_dropped_passes_through_as_warning():
     result = clean(
         garmin_warnings=[
-            {"id": "garmin_implausible", "detail": "values dropped: VENDOR_AVG_HEART_RATE_SLEEP 260.0 outside 30.0–220.0 bpm"},
+            {
+                "id": "garmin_implausible",
+                "detail": "values dropped: VENDOR_AVG_HEART_RATE_SLEEP 260.0 outside 30.0–220.0 bpm",
+            },
         ],
     )
     assert "garmin_implausible" in ids(result)

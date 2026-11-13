@@ -40,7 +40,10 @@ def capture_from_env(prefix: str = "NIGHT_VALIDITY") -> dict | None:
     Keys: <prefix>_WINDOWS_PROCESSED, <prefix>_WINDOW_SECONDS, <prefix>_THERMAL_EVENTS,
     <prefix>_SKIPPED_HOPS. Partial input is honored — missing numbers become None.
     """
-    if os.environ.get(f"{prefix}_WINDOWS_PROCESSED") is None and os.environ.get(f"{prefix}_WINDOW_SECONDS") is None:
+    if (
+        os.environ.get(f"{prefix}_WINDOWS_PROCESSED") is None
+        and os.environ.get(f"{prefix}_WINDOW_SECONDS") is None
+    ):
         return None
 
     def _int(name: str) -> int | None:
@@ -90,7 +93,11 @@ def assess(
         if processed is None:
             pass  # stats unknown — never invent a capture failure
         elif processed == 0 and window_s > CAPTURE_FAILED_MIN_WINDOW_S:
-            add("capture_failed", "CRITICAL", f"no analysis windows processed in a {window_s}s capture window")
+            add(
+                "capture_failed",
+                "CRITICAL",
+                f"no analysis windows processed in a {window_s}s capture window",
+            )
         else:
             expected = window_s * 2  # 0.5 s hop
             if expected > 0 and processed is not None and processed < expected:
@@ -100,7 +107,9 @@ def assess(
                     add("capture_gaps_severe", "CRITICAL", detail)
                 elif shortfall > SHORTFALL_WARN:
                     add("capture_gaps", "WARNING", detail)
-        if (capture.get("thermal_throttle_events") or 0) > 0 and (capture.get("skipped_hops") or 0) > 0:
+        if (capture.get("thermal_throttle_events") or 0) > 0 and (
+            capture.get("skipped_hops") or 0
+        ) > 0:
             add(
                 "thermal_throttle",
                 "WARNING",
@@ -109,12 +118,22 @@ def assess(
             )
     if uncaptured_gap_minutes is not None:
         if uncaptured_gap_minutes > UNEXPLAINED_GAP_CRITICAL_MIN:
-            add("unexplained_gap", "CRITICAL", f"{uncaptured_gap_minutes:.0f} min of the night have no capture evidence")
+            add(
+                "unexplained_gap",
+                "CRITICAL",
+                f"{uncaptured_gap_minutes:.0f} min of the night have no capture evidence",
+            )
         elif uncaptured_gap_minutes > UNEXPLAINED_GAP_WARN_MIN:
-            add("unexplained_gap", "WARNING", f"{uncaptured_gap_minutes:.0f} min of the night have no capture evidence")
+            add(
+                "unexplained_gap",
+                "WARNING",
+                f"{uncaptured_gap_minutes:.0f} min of the night have no capture evidence",
+            )
     if clips is not None and clips.get("clip_count", 0) > 0:
         rate = clips["clipped_count"] / clips["clip_count"]
-        detail = f"{clips['clipped_count']} of {clips['clip_count']} clips digitally clipped"
+        detail = (
+            f"{clips['clipped_count']} of {clips['clip_count']} clips digitally clipped"
+        )
         if rate > CLIPPED_CRITICAL:
             add("clipped_clips", "CRITICAL", detail)
         elif rate > CLIPPED_WARN:
@@ -126,7 +145,11 @@ def assess(
             f"ambient P95 z={ambient_z:+.1f} vs prior nights (relative only, uncalibrated dBFS)",
         )
     if session_status is not None and (session_status != "COMPLETED" or resumed):
-        detail = "resumed after an interruption" if resumed else f"status {session_status.lower()}"
+        detail = (
+            "resumed after an interruption"
+            if resumed
+            else f"status {session_status.lower()}"
+        )
         add("session_interrupted", "WARNING", f"session {detail}")
     for warning in garmin_warnings or []:
         add(warning["id"], "WARNING", warning.get("detail", ""))
@@ -150,7 +173,9 @@ def assess(
     return {"version": VERSION, "grade": grade, "reasons": reasons}
 
 
-def garmin_warnings_from_env(name: str = "NIGHT_VALIDITY_GARMIN_WARNINGS") -> list[dict]:
+def garmin_warnings_from_env(
+    name: str = "NIGHT_VALIDITY_GARMIN_WARNINGS",
+) -> list[dict]:
     """Optional Garmin validator warnings as a JSON array of {id, detail} (bad JSON → none)."""
     raw = os.environ.get(name)
     if not raw:
