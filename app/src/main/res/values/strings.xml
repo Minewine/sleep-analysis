@@ -335,6 +335,8 @@
     <string name="settings_noise_filter_off">Off</string>
     <string name="settings_debug_title">Debug: relax event opening</string>
     <string name="settings_debug_body">Open an event after a single loud window instead of two consecutive ones. Debug aid for quiet testing only — takes effect on the next recording, which is marked \"dbg1\" in its data.</string>
+    <string name="settings_debug_wakelock_title">Debug: drop capture wake lock</string>
+    <string name="settings_debug_wakelock_body">Battery A/B experiment: drop the capture wake lock for the recording itself so the SoC can suspend between hops. A configured start delay keeps its lock — it is a plain timer with no alarm backup — and the lock is dropped when capture begins. Audio may drop out; the next recording is marked \"wl=off\" (or \"wl=off-delay-covered\" when a start delay held the lock) in its session log so the arm is identifiable.</string>
 
     <!-- Report: event features (debug visibility) -->
     <string name="report_features_title">Detector inputs</string>

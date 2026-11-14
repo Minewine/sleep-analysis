@@ -127,6 +127,7 @@ class UserPreferences @Inject constructor(@ApplicationContext context: Context) 
         val CLIPS_RETENTION_DAYS = intPreferencesKey("clips_retention_days")
         val SESSION_RETENTION_DAYS = intPreferencesKey("session_retention_days")
         val DEBUG_ENTER_WINDOWS_1 = booleanPreferencesKey("debug_enter_windows_1")
+        val DEBUG_SKIP_CAPTURE_WAKELOCK = booleanPreferencesKey("debug_skip_capture_wakelock")
         val RECORDING_ENABLED = booleanPreferencesKey("recording_enabled")
         val SCHEDULE_ENABLED = booleanPreferencesKey("schedule_enabled")
         val SCHEDULE_START_MINUTES = intPreferencesKey("schedule_start_minutes")
@@ -194,6 +195,27 @@ class UserPreferences @Inject constructor(@ApplicationContext context: Context) 
 
     suspend fun setDebugEnterWindows1(enabled: Boolean) {
         dataStore.edit { it[Keys.DEBUG_ENTER_WINDOWS_1] = enabled }
+    }
+
+    /**
+     * Debug-only battery A/B experiment (the documented planned experiment of the capture
+     * wakelock, MonitorService class KDoc): when on, the next recording runs WITHOUT the
+     * session-long PARTIAL_WAKE_LOCK so the SoC can suspend between hops — expect possible
+     * missed audio. A configured start delay keeps its lock (the delay wait is a plain
+     * coroutine with no alarm backup): the lock is dropped when audio capture begins, so only
+     * a zero-delay recording is unlocked end to end. The arm is marked in the session log
+     * (recording_start gains "wl=off", or "wl=off-delay-covered" when a delay held the lock
+     * until capture). Takes effect on the NEXT recording; default off, i.e. the wakelock is
+     * held exactly as always.
+     */
+    val debugSkipCaptureWakelock: Flow<Boolean> = dataStore.data.map {
+        debugSkipCaptureWakelockOrDefault(it[Keys.DEBUG_SKIP_CAPTURE_WAKELOCK])
+    }
+
+    suspend fun debugSkipCaptureWakelockNow(): Boolean = debugSkipCaptureWakelock.first()
+
+    suspend fun setDebugSkipCaptureWakelock(enabled: Boolean) {
+        dataStore.edit { it[Keys.DEBUG_SKIP_CAPTURE_WAKELOCK] = enabled }
     }
 
     /**
@@ -395,6 +417,13 @@ class UserPreferences @Inject constructor(@ApplicationContext context: Context) 
     companion object {
         const val DEFAULT_SCHEDULE_START_MINUTES = 22 * 60 + 30 // 22:30
         const val DEFAULT_SCHEDULE_END_MINUTES = 6 * 60 + 30 // 06:30
+
+        /** Default = wakelock HELD (today's behavior); the flag only opts out for the A/B night. */
+        const val DEFAULT_DEBUG_SKIP_CAPTURE_WAKELOCK = false
+
+        /** Read-time mapping: an absent (never-stored) flag falls back to the held-wakelock default. */
+        fun debugSkipCaptureWakelockOrDefault(raw: Boolean?): Boolean =
+            raw ?: DEFAULT_DEBUG_SKIP_CAPTURE_WAKELOCK
     }
 }
 

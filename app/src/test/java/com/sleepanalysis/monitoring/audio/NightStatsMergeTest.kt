@@ -17,6 +17,7 @@ class NightStatsMergeTest {
         bytes: Long = 512,
         thermal: Int = 1,
         levelGateSkipped: Int = 0,
+        spectralSkipped: Long = 0,
         spans: List<SkippedHopSpan> = emptyList(),
     ) = AudioEngine.NightStats(
         windowsProcessed = windows,
@@ -27,6 +28,7 @@ class NightStatsMergeTest {
         clipBytesTotal = bytes,
         thermalThrottleEvents = thermal,
         levelGateSkipped = levelGateSkipped,
+        spectralSkipped = spectralSkipped,
         skippedHopSpans = spans,
     )
 
@@ -135,6 +137,26 @@ class NightStatsMergeTest {
         assertNull(parsed.windowsProcessed)
     }
     @Test
+    fun `capture stats writes schema v4 and round-trips spectral_skipped`() {
+        val json = captureStatsJson(stats(spectralSkipped = 12_345), clipCountOverride = 3)
+        assertTrue(json.contains("\"schema_version\":4"))
+        assertTrue(json.contains("\"spectral_skipped\":12345"))
+        assertEquals(12_345L, CaptureStats.parse(json)!!.spectralSkipped)
+        // v3-era JSON (no spectral_skipped) parses with a null — readers tolerate its absence.
+        val legacy = CaptureStats.parse(
+            """{"schema_version":3,"windows_processed":10,"level_gate_skipped":2}""",
+        )!!
+        assertNull(legacy.spectralSkipped)
+    }
+
+    @Test
+    fun `StatsCarry carries spectral_skipped across restarts`() {
+        val json = """{"schema_version":4,"windows_processed":54000,"spectral_skipped":30000}"""
+        val merged = stats(spectralSkipped = 7).withCarry(StatsCarry.from(CaptureStats.parse(json)))
+        assertEquals(30_007L, merged.spectralSkipped)
+    }
+
+    @Test
     fun `capture stats v3 round-trips ambient level buckets`() {
         val stats = AudioEngine.NightStats(
             windowsProcessed = 100, windowsSkipped = 2,
@@ -148,7 +170,7 @@ class NightStatsMergeTest {
             ),
         )
         val json = captureStatsJson(stats, clipCountOverride = 3)
-        assertTrue(json.contains("\"schema_version\":3"))
+        assertTrue(json.contains("\"schema_version\":4"))
         assertTrue(json.contains("ambient_level_buckets"))
         val parsed = com.sleepanalysis.domain.report.CaptureStats.parse(json)!!
         assertEquals(2, parsed.ambientBuckets.size)

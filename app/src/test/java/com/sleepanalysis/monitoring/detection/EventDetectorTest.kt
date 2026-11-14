@@ -1,6 +1,7 @@
 package com.sleepanalysis.monitoring.detection
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -756,6 +757,43 @@ class EventDetectorTest {
         assertEquals("OTHER_NOISE", held.type)
         assertEquals(0L, held.startMs)
         assertEquals(2500L, held.endMs)
+    }
+
+    // isIdle(): the pre-spectral level gate (AudioEngine/SpectralGatePolicy) consults it so a
+    // machine in progress always receives computed spectral features.
+
+    @Test
+    fun `isIdle true before any window and after reset`() {
+        assertTrue(detector.isIdle())
+        feed(detector, pattern = snore(2) + quiet(1)) // machine pending/active
+        assertFalse(detector.isIdle())
+        detector.reset()
+        assertTrue(detector.isIdle())
+    }
+
+    @Test
+    fun `isIdle false while pending and while active and while hysteresis closes`() {
+        feed(detector, pattern = snore(1)) // pending: an event is being entered
+        assertFalse(detector.isIdle())
+        feed(detector, pattern = snore(1), startTsMs = 1500) // active
+        assertFalse(detector.isIdle())
+        feed(detector, pattern = quiet(3), startTsMs = 2000) // hysteresis: 3 of 4 quiet windows
+        assertFalse(detector.isIdle())
+    }
+
+    @Test
+    fun `isIdle stays false while a deferred final is held and clears on expiry and flush`() {
+        feed(detector, pattern = snore(4) + quiet(4)) // closes at ts 4500; draft held
+        assertFalse(detector.isIdle())
+        // Expiry: the merge window (mergeGap + windowMs = 1 s) closes past endMs 2500 with both
+        // machines idle — the first stamp past 3500 emits the held final.
+        feed(detector, pattern = quiet(1), startTsMs = 5000)
+        assertTrue(detector.isIdle())
+        // Held again, then cleared by flush (session end).
+        feed(detector, pattern = snore(4) + quiet(4), startTsMs = 6000)
+        assertFalse(detector.isIdle())
+        detector.flush()
+        assertTrue(detector.isIdle())
     }
 
     private fun snore(n: Int, loud: Boolean = true) = List(n) { true to loud }

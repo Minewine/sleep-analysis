@@ -86,6 +86,9 @@ class SettingsViewModel @Inject constructor(
     private val _debugEnter1 = MutableStateFlow(false)
     val debugEnter1: StateFlow<Boolean> = _debugEnter1.asStateFlow()
 
+    private val _debugSkipWakelock = MutableStateFlow(false)
+    val debugSkipWakelock: StateFlow<Boolean> = _debugSkipWakelock.asStateFlow()
+
     // Recording controls (design: recording controls) — optimistic-set-then-persist like above.
     private val _recordingEnabled = MutableStateFlow(true)
     val recordingEnabled: StateFlow<Boolean> = _recordingEnabled.asStateFlow()
@@ -123,6 +126,7 @@ class SettingsViewModel @Inject constructor(
 
     init {
         viewModelScope.launch { _debugEnter1.value = prefs.debugEnterWindows1Now() }
+        viewModelScope.launch { _debugSkipWakelock.value = prefs.debugSkipCaptureWakelockNow() }
         refreshExactAlarmPermission()
         refreshNotificationPermission()
         viewModelScope.launch {
@@ -151,6 +155,12 @@ class SettingsViewModel @Inject constructor(
     fun setDebugEnter1(enabled: Boolean) {
         _debugEnter1.value = enabled
         viewModelScope.launch { prefs.setDebugEnterWindows1(enabled) }
+    }
+
+    /** Applies to the NEXT recording start; a running session keeps its lock state. */
+    fun setDebugSkipWakelock(enabled: Boolean) {
+        _debugSkipWakelock.value = enabled
+        viewModelScope.launch { prefs.setDebugSkipCaptureWakelock(enabled) }
     }
 
     fun setRecordingEnabled(enabled: Boolean) {
@@ -279,6 +289,7 @@ fun SettingsScreen(
     val keyMessage by viewModel.keyMessage.collectAsStateWithLifecycle()
     val importState by viewModel.importManager.state.collectAsStateWithLifecycle()
     val debugEnter1 by viewModel.debugEnter1.collectAsStateWithLifecycle()
+    val debugSkipWakelock by viewModel.debugSkipWakelock.collectAsStateWithLifecycle()
     val recordingEnabled by viewModel.recordingEnabled.collectAsStateWithLifecycle()
     val scheduleEnabled by viewModel.scheduleEnabled.collectAsStateWithLifecycle()
     val scheduleStartMinutes by viewModel.scheduleStartMinutes.collectAsStateWithLifecycle()
@@ -577,6 +588,24 @@ fun SettingsScreen(
                         androidx.compose.material3.Switch(
                             checked = debugEnter1,
                             onCheckedChange = { viewModel.setDebugEnter1(it) },
+                        )
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(stringResource(R.string.settings_debug_wakelock_title), fontWeight = FontWeight.SemiBold)
+                            Text(
+                                stringResource(R.string.settings_debug_wakelock_body),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        androidx.compose.material3.Switch(
+                            checked = debugSkipWakelock,
+                            onCheckedChange = { viewModel.setDebugSkipWakelock(it) },
                         )
                     }
                 }

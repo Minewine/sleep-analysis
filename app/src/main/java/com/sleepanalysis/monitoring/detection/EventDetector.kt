@@ -168,6 +168,20 @@ class EventDetector(
     private class Deferred(val draft: EventDraft, val sums: WindowSums)
 
     /**
+     * True when no event machinery is in progress: neither machine has pending or active
+     * windows (nothing being entered or held open) and no deferred final awaits merge-expiry
+     * — the AudioEngine's pre-spectral level gate consults this so a machine in progress (or
+     * a held final whose window could still be merged into) always receives computed spectral
+     * features instead of the detector's null-feature fallback.
+     *
+     * Conservative asymmetry: after a snore-forced loud-machine close ([update]'s
+     * snore-precedence branch), the loud machine's `pending` count keeps its open value until
+     * the next inactive window resets it, so [isIdle] stays false — extra spectral computes,
+     * never a wrong skip.
+     */
+    fun isIdle(): Boolean = !snoreMachine.busy && !loudMachine.busy && deferred.isEmpty()
+
+    /**
      * Raw per-window accumulators of one closed event. Kept alongside the draft so a merge can
      * re-aggregate means over the true window counts instead of averaging two means (an
      * approximation that would overweight short fragments).
