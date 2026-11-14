@@ -28,8 +28,12 @@ from pathlib import Path
 # `batt=? charging=?` — note NO `%` after the ?.
 BATT_RE = re.compile(r"batt=(\d+|\?)%? charging=(true|false|\?)")
 
-# The P0 gate (docs/NEXT_STEPS.md): app usage <= 10 % per 8 h night.
-GATE_PCT_PER_8H = 10.0
+# Device-drain regression tripwire. NOT the P0 gate: the ≤10%/8h criterion in
+# docs/NEXT_STEPS.md is against the APP's attributed usage (Android Settings →
+# Battery / batterystats, read before the next full charge resets it), while
+# this number is total device drain, whose realistic floor on the A059 for a
+# continuous-recording night is well above 10% (SoC held awake + mic path).
+GATE_PCT_PER_8H = 25.0
 
 
 @dataclass(frozen=True)
@@ -171,7 +175,7 @@ def _stretch_line(stretch: Stretch) -> str:
     return line
 
 
-def format_report(summary: BatterySummary) -> str:
+def format_report(summary: BatterySummary, gate: float = GATE_PCT_PER_8H) -> str:
     if not summary.has_telemetry:
         return "no battery telemetry in this log (build predates the batt= field)"
     lines = [f"battery readings: {summary.readings}"]
@@ -199,10 +203,10 @@ def format_report(summary: BatterySummary) -> str:
         lines.append("note: partially plugged — rates are per stretch, not per night")
     longest = max(summary.stretches, key=lambda s: s.hours)
     if longest.pct_per_8h is not None:
-        gate = "OK" if longest.pct_per_8h <= GATE_PCT_PER_8H else "OVER"
+        verdict = "OK" if longest.pct_per_8h <= gate else "OVER"
         lines.append(
-            f"gate (longest stretch {_fmt_h(longest.hours)}):"
-            f" {longest.pct_per_8h:.1f}%/8h vs <= {GATE_PCT_PER_8H:g}% — {gate}"
+            f"device-drain tripwire (longest stretch {_fmt_h(longest.hours)}):"
+            f" {longest.pct_per_8h:.1f}%/8h vs <= {gate:g}% — {verdict}"
         )
     return "\n".join(lines)
 
@@ -211,7 +215,13 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
         "log",
-        help="session log file path, or - for stdin (adb exec-out run-as … cat)",
+        help="session log line path, or - for stdin (adb exec-out run-as … cat)",
+    )
+    parser.add_argument(
+        "--gate",
+        type=float,
+        default=GATE_PCT_PER_8H,
+        help="device-drain tripwire threshold in %/8h (default: %(default)s)",
     )
     args = parser.parse_args(argv)
     text = (
@@ -219,7 +229,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.log == "-"
         else Path(args.log).read_text(errors="replace")
     )
-    print(format_report(summarize(parse_log(text))))
+    print(format_report(summarize(parse_log(text)), gate=args.gate))
     return 0
 
 

@@ -37,11 +37,11 @@ def test_plugged_in_all_night_is_not_zero_drain():
     text = log(("100", "true"), ("100", "true"), ("99", "true"), ("100", "true"))
     report = nb.format_report(nb.summarize(nb.parse_log(text)))
     assert "plugged in all night" in report
-    assert "gate" not in report  # no invented drain number
+    assert "tripwire" not in report  # no invented drain number
 
 
 def test_unplugged_night_drain_and_gate():
-    # ~8 h10m unplugged, 7% drop -> 6.9%/8h, inside the <= 10% gate.
+    # ~8 h10m unplugged, 7% drop -> 6.9%/8h, inside the 25%/8h tripwire.
     text = log(("100", "false"), ("93", "false"), step_minutes=490)
     summary = nb.summarize(nb.parse_log(text))
     assert summary.unplugged_all_night
@@ -50,12 +50,12 @@ def test_unplugged_night_drain_and_gate():
     report = nb.format_report(summary)
     assert "100% -> 93% (-7%)" in report
     assert "6.9%/8h" in report
-    assert "gate (longest stretch" in report and "OK" in report
+    assert "tripwire (longest stretch" in report and "OK" in report
     assert "partially plugged" not in report
 
 
-def test_gate_fires_over_10_pct_per_8h():
-    # 20% drop in 2 h -> 80%/8h, way over the gate.
+def test_tripwire_flags_over():
+    # 20% drop in 2 h -> 80%/8h, way over the 25%/8h tripwire.
     text = log(("100", "false"), ("80", "false"), step_minutes=120)
     report = nb.format_report(nb.summarize(nb.parse_log(text)))
     assert "80.0%/8h" in report and "OVER" in report
@@ -84,7 +84,7 @@ def test_single_unplugged_reading_has_no_drain():
     summary = nb.summarize(nb.parse_log(text))
     assert summary.stretches[0].drain is None
     report = nb.format_report(nb.summarize(nb.parse_log(text)))
-    assert "single reading" in report and "gate" not in report
+    assert "single reading" in report and "tripwire" not in report
 
 
 def test_placeholder_readings_are_counted_not_crashed():
@@ -143,7 +143,7 @@ def test_zero_span_shows_drain_without_rate():
     text = log(("100", "false"), ("95", "false"), step_minutes=0)
     report = nb.format_report(nb.summarize(nb.parse_log(text)))
     assert "100% -> 95% (-5%)" in report
-    assert "/8h" not in report and "gate" not in report
+    assert "/8h" not in report and "tripwire" not in report
 
 
 def test_negative_drain_reported_as_is():
@@ -165,3 +165,11 @@ def test_main_reads_stdin(monkeypatch, capsys):
     monkeypatch.setattr("sys.stdin", io.StringIO(log(("93", "false"), ("90", "false"))))
     assert nb.main(["-"]) == 0
     assert "(-3%)" in capsys.readouterr().out
+
+
+def test_gate_threshold_overridable(tmp_path, capsys):
+    path = tmp_path / "session_x.log"
+    path.write_text(log(("100", "false"), ("93", "false"), step_minutes=490))
+    assert nb.main([str(path), "--gate", "5"]) == 0
+    out = capsys.readouterr().out
+    assert "vs <= 5%" in out and "OVER" in out
