@@ -128,4 +128,12 @@ else
     echo "== BATTERY: skipped — log pull failed (absent, device offline, or run-as denied) =="
 fi
 
+# 7. Cross-night trends: does heavy snoring line up with worse vendor sleep?
+#    Label-aware snore share per night vs the Garmin metrics already synced
+#    into the DB, Spearman-ranked over every completed night on record.
+echo "== CROSS-NIGHT TRENDS (snore share vs Garmin sleep metrics) =="
+if uv run --directory "$REPO_ROOT" tools/night_trends.py --db "$DB" | tee "$OUT/night_trends.txt"; then :; else
+    echo "== TRENDS: skipped (tool failed; earlier artifacts are intact) =="
+fi
+
 echo "== done: $OUT (charts: $OUT/chart_*.png) =="
