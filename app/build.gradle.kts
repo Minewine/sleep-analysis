@@ -147,7 +147,9 @@ tasks.register("checkPermissionAllowlist") {
             .map { it.substringBefore('#').trim() }
             .filter { it.isNotEmpty() }
             .toSortedSet()
-        val mergedManifests = fileTree(layout.buildDirectory.dir("intermediates/merged_manifests"))
+        // AGP 8.9 renamed this intermediate dir: merged_manifests → merged_manifest
+        // (exec subdir processDebugManifest → processDebugMainManifest).
+        val mergedManifests = fileTree(layout.buildDirectory.dir("intermediates/merged_manifest"))
             .matching { include("**/debug/**/AndroidManifest.xml") }
             .sortedBy { it.path }
         val merged = mergedManifests.lastOrNull()
