@@ -214,10 +214,11 @@ class GarminImportManager @Inject constructor(
                     // candidate loses its timeline (it can only have one via this import
                     // path), and an empty timeline is a delete, not a skip.
                     overlapping.map { it.first }.filter { it.id != session.id }.forEach { stale ->
-                        db.sleepStageDao().deleteForSession(stale.id)
+                        db.sleepStageDao().deleteForSession(stale.id, SOURCE)
                     }
                     db.sleepStageDao().replaceForSession(
                         session.id,
+                        SOURCE,
                         validity.validSpans.map {
                             com.sleepanalysis.data.db.entity.SleepStageEntity(
                                 sessionId = session.id,

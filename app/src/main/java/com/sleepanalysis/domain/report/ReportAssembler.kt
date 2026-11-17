@@ -132,8 +132,18 @@ data class ClipCoverage(
     val totalSeconds: Long,
 )
 
-/** One vendor stage span (epoch ms) — the sleepLevels timeline of a linked session. */
-data class StageSpan(val startMs: Long, val endMs: Long, val stage: String)
+/**
+ * One vendor stage span (epoch ms) — the sleepLevels timeline of a linked session. [source]
+ * is the writing importer's row source ("WEARABLE" = Health Connect import, "GARMIN" =
+ * Garmin import; null for rows written before the source column existed) — the report's
+ * stage section is labeled with it.
+ */
+data class StageSpan(
+    val startMs: Long,
+    val endMs: Long,
+    val stage: String,
+    val source: String? = null,
+)
 
 /** Which vendor stage a bout fell in, and how much of it that stage covered. */
 data class BoutStage(val stage: String, val coveredFraction: Double)
@@ -255,6 +265,11 @@ data class MorningReport(
     val garminStageMinutes: Map<String, Long> = emptyMap(),
     /** Garmin's own sleep score promoted from the vendor rows (null when not imported). */
     val garminSleepScore: Double? = null,
+    /**
+     * Which importer wrote the stage timeline rows ("WEARABLE" / "GARMIN", see
+     * ReportAssembler.STAGE_SOURCE_*); null without any stage rows.
+     */
+    val stageSource: String? = null,
 )
 
 object ReportAssembler {
@@ -273,6 +288,15 @@ object ReportAssembler {
      * value as its default); 0 disables filtering.
      */
     const val DEFAULT_MIN_DISPLAYED_NOISE_CONFIDENCE = 0.5
+
+    /**
+     * Stage-row provenance values. "WEARABLE" must stay equal to
+     * HealthConnectImportManager.STAGE_SOURCE (the Health Connect writer); "GARMIN" is the
+     * Garmin import's value. Literals here keep the domain report decoupled from the manager
+     * classes — the UI branches on [STAGE_SOURCE_WEARABLE] when labeling the stage section.
+     */
+    const val STAGE_SOURCE_WEARABLE = "WEARABLE"
+    const val STAGE_SOURCE_GARMIN = "GARMIN"
 
     fun assemble(
         session: SleepSessionEntity,
@@ -475,6 +499,7 @@ object ReportAssembler {
             worstBoutClip = worstBoutClip(bouts, clipRefsById),
             garminStageMinutes = garminStageMinutes(garmin),
             garminSleepScore = garminSleepScore(garmin),
+            stageSource = stageSource(garminStages),
         )
     }
 
@@ -498,6 +523,18 @@ object ReportAssembler {
         val best = overlaps.maxByOrNull { it.value } ?: return null
         if (best.value <= 0) return null
         return BoutStage(best.key, best.value.toDouble() / spanMs)
+    }
+
+    /**
+     * Provenance of the stage timeline rows: "WEARABLE" when any row came from the Health
+     * Connect import, "GARMIN" when only Garmin-written rows exist (legacy rows predate the
+     * source column — they were all Garmin's), null without any stage rows. The report's
+     * stage section is labeled with this instead of assuming Garmin.
+     */
+    fun stageSource(stages: List<StageSpan>): String? = when {
+        stages.any { it.source == STAGE_SOURCE_WEARABLE } -> STAGE_SOURCE_WEARABLE
+        stages.isNotEmpty() -> STAGE_SOURCE_GARMIN
+        else -> null
     }
 
     /**

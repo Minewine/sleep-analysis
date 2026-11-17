@@ -247,8 +247,55 @@ class MigrationTest {
         }
     }
 
+    @Test
+    fun migrate13To14_addsStageSource_defaultingLegacyRowsToGarmin() {
+        // 1. Seed at v13: a session and a sleep_stage row in the v13 column list — no source
+        //    column yet (it arrives with v14).
+        helper.createDatabase(TEST_DB, 13).use { db ->
+            db.execSQL(
+                "INSERT INTO sleep_session " +
+                    "(startedAt, endedAt, status, timeZone, deviceModel, osVersion, appVersion, " +
+                    "captureStats, audioBytesTotal, createdAt) VALUES (" +
+                    "1793653161000, 1793681421000, 'COMPLETED', 'Europe/Zurich', 'TestDevice', '15', " +
+                    "'0.1.0-phase1', '{\"schema_version\":1}', 123456, 1793681500000)"
+            )
+            db.execSQL(
+                "INSERT INTO sleep_stage (sessionId, startMs, endMs, stage, createdAt) VALUES " +
+                    "(1, 1793657000000, 1793657120000, 'DEEP', 1793681500000)"
+            )
+        }
+
+        // 2. Migrate 13 → 14, validating the ALTER against the exported schemas.
+        helper.runMigrationsAndValidate(TEST_DB, LATEST_VERSION, true, *AppDatabase.MIGRATIONS).close()
+
+        // 3. Reopen the SAME file through the app's own builder (see migrate1ToLatest).
+        val db = AppDatabase.build(context, TEST_DB)
+        try {
+            val sql = db.openHelper.writableDatabase
+
+            // The pre-v14 row reads back with the migration's DEFAULT 'GARMIN' (all pre-v14
+            // rows were Garmin-derived — truthful history, mirroring the v11 gain backfill).
+            sql.query("SELECT stage, source FROM sleep_stage WHERE sessionId = 1").use { c ->
+                assertTrue(c.moveToFirst())
+                assertEquals("DEEP", c.getString(0))
+                assertEquals("GARMIN", c.getString(1))
+            }
+            // A fresh v13-style insert (no source) defaults likewise.
+            sql.execSQL(
+                "INSERT INTO sleep_stage (sessionId, startMs, endMs, stage, createdAt) VALUES " +
+                    "(1, 1793657120000, 1793657240000, 'LIGHT', 1793681500000)"
+            )
+            sql.query("SELECT source FROM sleep_stage WHERE stage = 'LIGHT'").use { c ->
+                assertTrue(c.moveToFirst())
+                assertEquals("GARMIN", c.getString(0))
+            }
+        } finally {
+            db.close()
+        }
+    }
+
     private companion object {
         const val TEST_DB = "migration-test.db"
-        const val LATEST_VERSION = 13
+        const val LATEST_VERSION = 14
     }
 }

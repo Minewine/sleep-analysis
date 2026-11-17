@@ -230,6 +230,10 @@ data class RawPayloadEntity(
  * M13). Populated when a Garmin payload carries a sleepLevels timeline; the owning session's
  * deletion removes it (FK CASCADE). Stage is the vendor's own label, uppercased
  * (DEEP/LIGHT/REM/AWAKE, or an unknown vendor label verbatim).
+ *
+ * [source] is provenance (schema v14): GARMIN = stage spans derived from the Personal API
+ * night payload (estimate); WEARABLE = Health Connect stage timeline. Both timelines can
+ * coexist on one session — deletes and replaces are per-source.
  */
 @Entity(
     tableName = "sleep_stage",
@@ -250,6 +254,9 @@ data class SleepStageEntity(
     val endMs: Long,
     val stage: String,
     val createdAt: Long = System.currentTimeMillis(),
+    // defaultValue REQUIRED so Room's migration validation matches the ALTER-produced
+    // DEFAULT 'GARMIN' (schema v14) — pre-v14 rows were all Garmin-derived.
+    @ColumnInfo(defaultValue = "GARMIN") val source: String = "GARMIN",
 )
 
 /**

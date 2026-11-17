@@ -49,7 +49,7 @@ import kotlinx.coroutines.withContext
         ModelRegistryEntity::class,
         SleepExperimentEntity::class,
     ],
-    version = 13,
+    version = 14,
     exportSchema = true,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -305,11 +305,22 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v14 stamps each stage row's provenance (docs/DATA_MODEL.md §3.10): the Health Connect
+         * import writes WEARABLE timelines alongside the GARMIN ones, so deletes/replaces are
+         * source-scoped. Every pre-v14 row is Garmin-derived (estimate) — DEFAULT 'GARMIN'.
+         */
+        private val MIGRATION_13_14 = object : Migration(13, 14) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE sleep_stage ADD COLUMN source TEXT NOT NULL DEFAULT 'GARMIN'")
+            }
+        }
+
         /** All schema migrations in order — shared with the instrumented migration test. */
         val MIGRATIONS: Array<Migration> = arrayOf(
             MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5,
             MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10,
-            MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13,
+            MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14,
         )
     }
 }

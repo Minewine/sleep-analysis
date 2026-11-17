@@ -259,6 +259,18 @@
     <string name="settings_endpoint_status_not_ready">%1$s → not ready yet (HTTP %2$d)</string>
     <string name="settings_endpoint_status_no_http">%1$s → no response (network)</string>
     <string name="settings_endpoint_status_failed">%1$s → failed (HTTP %2$d)</string>
+    <!-- Settings: Health Connect import (manual counterpart of the report's silent backfill) -->
+    <string name="settings_hc_title">Import stage timeline from Health Connect</string>
+    <string name="settings_hc_date">Date (YYYY-MM-DD)</string>
+    <string name="settings_hc_action">Import from Health Connect</string>
+    <string name="settings_hc_unavailable">Health Connect is not available on this device — it needs Android 14 or newer, or the Health Connect app installed on the phone.</string>
+    <string name="settings_hc_running">Importing %1$s…</string>
+    <string name="settings_hc_done">Stored %1$d stage spans from Health Connect.</string>
+    <string name="settings_hc_skipped">%1$d minutes of unreadable stage data were skipped.</string>
+    <string name="settings_hc_not_ready_unavailable">Health Connect is not available right now — install or update it, then import again.</string>
+    <string name="settings_hc_not_ready_permission">Health Connect has not granted read access to this app yet.</string>
+    <string name="settings_hc_not_ready_no_session">No recorded night in this app overlaps that date — record the night here first.</string>
+    <string name="settings_hc_grant">Grant permission</string>
 
     <!-- Report: Garmin section -->
     <string name="report_garmin_section">Garmin (device-reported estimates)</string>
@@ -278,6 +290,12 @@
     <string name="report_garmin_refresh_updating">Updating report…</string>
     <string name="report_garmin_refresh_not_available">Garmin data not available yet — showing the acoustic report only.</string>
     <string name="report_garmin_refresh_included">Garmin included · %1$s</string>
+
+    <!-- Report: stage timeline section — renders with or without a Garmin link, labeled by the
+         stage rows' provenance (Health Connect import or Garmin import) -->
+    <string name="report_stage_timeline_hc">Stage timeline (Health Connect)</string>
+    <string name="report_stage_timeline_garmin">Stage timeline (Garmin estimate)</string>
+    <string name="report_hc_stages">Stage times come from Health Connect (phone or wearable) — treat them as the device\'s own estimates.</string>
 
     <!-- 7-day trend -->
     <string name="trend_title">7-day trend</string>

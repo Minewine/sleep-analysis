@@ -331,14 +331,23 @@ fun ReportScreen(
                     metrics = r.garmin,
                     snoreSeconds = r.snoreSeconds,
                     sleep = r.garminSleep,
-                    longestBoutStage = r.longestBoutStage,
-                    snoreMinutesByStage = r.snoreMinutesByStage,
                     garminStageMinutes = r.garminStageMinutes,
+                    hasStageTimeline = r.longestBoutStage != null || r.snoreMinutesByStage.isNotEmpty(),
                     garminSleepScore = r.garminSleepScore,
                     captureWindowStartMs = r.captureWindowStartMs ?: r.startedAt,
                     captureWindowEndMs = r.endedAt,
                     importState = garminImportState,
                     onImport = viewModel::importGarminForThisNight,
+                )
+            }
+
+            // The stage timeline section, provenance-labeled (Health Connect or Garmin) —
+            // independent of the Garmin card's link status (renders empty when no timeline).
+            item {
+                StageTimelineCard(
+                    longestBoutStage = r.longestBoutStage,
+                    snoreMinutesByStage = r.snoreMinutesByStage,
+                    stageSource = r.stageSource,
                 )
             }
 
@@ -1255,15 +1264,19 @@ private fun RefreshReportCard(
     }
 }
 
-/** Garmin device-reported metrics — always labeled "Garmin estimate", never clinical (M10–M13, M18). */
+/**
+ * Garmin device-reported metrics — always labeled "Garmin estimate", never clinical
+ * (M10–M13, M18). The stage timeline (bout stage + per-stage snoring minutes) lives in
+ * [StageTimelineCard] below — it renders with or without a Garmin link; this card keeps the
+ * Garmin-owned vendor totals and flags a missing timeline for its totals-only line.
+ */
 @Composable
 private fun GarminCard(
     metrics: List<com.sleepanalysis.domain.report.GarminMetric>,
     snoreSeconds: Long,
     sleep: com.sleepanalysis.domain.report.GarminSleepSummary?,
-    longestBoutStage: com.sleepanalysis.domain.report.BoutStage?,
-    snoreMinutesByStage: List<com.sleepanalysis.domain.report.StageSnoreMinutes>,
     garminStageMinutes: Map<String, Long>,
+    hasStageTimeline: Boolean,
     garminSleepScore: Double?,
     captureWindowStartMs: Long,
     captureWindowEndMs: Long,
@@ -1362,17 +1375,9 @@ private fun GarminCard(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                if (snoreMinutesByStage.isNotEmpty()) {
-                    // Timeline available: snoring minutes per vendor stage.
-                    Text(
-                        snoreMinutesByStage.joinToString(" · ") {
-                            String.format(java.util.Locale.US, "%s %dm", it.stage, it.snoreMinutes)
-                        },
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                } else if (garminStageMinutes.isNotEmpty()) {
-                    // Totals only (no sleepLevels timeline): the totals-level comparison.
+                if (garminStageMinutes.isNotEmpty() && !hasStageTimeline) {
+                    // Totals only (no sleepLevels timeline stored): the totals-level
+                    // comparison; with a timeline the section below shows the per-stage view.
                     Text(
                         stringResource(
                             R.string.report_garmin_snore_vs_stages,
@@ -1382,32 +1387,11 @@ private fun GarminCard(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                longestBoutStage?.let { bs ->
-                    Text(
-                        stringResource(
-                            R.string.report_garmin_bout_stage,
-                            bs.stage,
-                            String.format(java.util.Locale.US, "%.0f", bs.coveredFraction * 100),
-                        ),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                if (snoreMinutesByStage.isNotEmpty()) {
-                    Text(
-                        snoreMinutesByStage.joinToString(" · ") {
-                            String.format(
-                                java.util.Locale.US, "%s %dm", it.stage, it.snoreMinutes,
-                            )
-                        },
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                if (garminStageMinutes.isNotEmpty() || snoreMinutesByStage.isNotEmpty()) {
+                if (garminStageMinutes.isNotEmpty()) {
                     // The stage footnote: vendor stages are estimates — agreement with
                     // sleep-lab stages is fair-to-moderate in the literature (κ 0.21–0.54,
-                    // cited in docs, not here).
+                    // cited in docs, not here). The timeline section below carries its own
+                    // provenance-labeled footnote.
                     Text(
                         stringResource(R.string.report_garmin_stages_estimate),
                         style = MaterialTheme.typography.labelSmall,
@@ -1458,6 +1442,67 @@ private fun GarminCard(
             OutlinedButton(onClick = onImport, enabled = importState !is com.sleepanalysis.data.garmin.GarminImportManager.GarminImportState.Importing) {
                 Text(stringResource(R.string.report_garmin_import))
             }
+        }
+    }
+}
+
+/**
+ * The night's stage timeline section — longest-bout stage + snoring minutes per stage —
+ * independent of the Garmin card's link status: the rows come from whichever vendor import
+ * wrote them (Health Connect or Garmin), and [stageSource] labels which (rendered empty
+ * when the night has no timeline). The vendor stage TOTALS (garminStageMinutes) stay in
+ * the Garmin card — measurement rows, not the timeline.
+ */
+@Composable
+private fun StageTimelineCard(
+    longestBoutStage: com.sleepanalysis.domain.report.BoutStage?,
+    snoreMinutesByStage: List<com.sleepanalysis.domain.report.StageSnoreMinutes>,
+    stageSource: String?,
+) {
+    if (longestBoutStage == null && snoreMinutesByStage.isEmpty()) return
+    val fromHealthConnect =
+        stageSource == com.sleepanalysis.domain.report.ReportAssembler.STAGE_SOURCE_WEARABLE
+    Card {
+        Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(
+                stringResource(
+                    if (fromHealthConnect) R.string.report_stage_timeline_hc
+                    else R.string.report_stage_timeline_garmin,
+                ),
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+            )
+            if (snoreMinutesByStage.isNotEmpty()) {
+                // Timeline available: snoring minutes per vendor stage.
+                Text(
+                    snoreMinutesByStage.joinToString(" · ") {
+                        String.format(java.util.Locale.US, "%s %dm", it.stage, it.snoreMinutes)
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            longestBoutStage?.let { bs ->
+                Text(
+                    stringResource(
+                        R.string.report_garmin_bout_stage,
+                        bs.stage,
+                        String.format(java.util.Locale.US, "%.0f", bs.coveredFraction * 100),
+                    ),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            // The stage footnote, labeled by provenance: Health Connect rows carry their own
+            // wording, Garmin rows keep the watch-estimate caveat.
+            Text(
+                stringResource(
+                    if (fromHealthConnect) R.string.report_hc_stages
+                    else R.string.report_garmin_stages_estimate,
+                ),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }

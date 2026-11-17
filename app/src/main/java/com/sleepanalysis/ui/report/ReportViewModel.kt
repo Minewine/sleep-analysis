@@ -7,6 +7,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.sleepanalysis.data.files.ClipStore
 import com.sleepanalysis.data.garmin.GarminImportManager
+import com.sleepanalysis.data.healthconnect.HealthConnectImportManager
 import com.sleepanalysis.data.repo.SessionRepository
 import com.sleepanalysis.domain.labels.EventUserLabel
 import com.sleepanalysis.domain.report.ClipRef
@@ -80,6 +81,7 @@ class ReportViewModel @Inject constructor(
     private val clipStore: ClipStore,
     private val userPreferences: com.sleepanalysis.data.prefs.UserPreferences,
     internal val garminImportManager: GarminImportManager,
+    internal val healthConnectImportManager: HealthConnectImportManager,
 ) : ViewModel() {
 
     val sessionId: Long = savedStateHandle["sessionId"] ?: -1L
@@ -111,6 +113,7 @@ class ReportViewModel @Inject constructor(
         _report.value = loaded
         scanClipQuality(loaded)
         maybeBackfillGarmin(loaded)
+        maybeBackfillHealthConnect(loaded)
     }
 
     /**
@@ -148,6 +151,30 @@ class ReportViewModel @Inject constructor(
         } else {
             userPreferences.markGarminAutoRetry(date)
         }
+    }
+
+    /**
+     * Morning backfill for Health Connect: if this night has no wearable stage rows yet —
+     * the watch or phone app usually writes them around wake time, often after this report
+     * is first opened — silently import the wake date, then re-render. Deliberately NO
+     * attempt budget, unlike [maybeBackfillGarmin]: the import is local IPC against the
+     * Health Connect provider, not a paid network round-trip, so re-gating on [needsImport]
+     * (rows still missing) already makes every redundant open a cheap no-op — there is no
+     * quota to exhaust and nothing to mark.
+     */
+    private suspend fun maybeBackfillHealthConnect(report: MorningReport?) {
+        if (report == null) return
+        if (!healthConnectImportManager.isAvailable()) return
+        // An import already in flight must not double-fire — the singleton state flow is
+        // shared with the settings screen's manual import (same guard as Garmin's backfill).
+        if (healthConnectImportManager.state.value
+            is HealthConnectImportManager.HealthConnectImportState.Importing
+        ) return
+        if (!healthConnectImportManager.needsImport(sessionId)) return
+        val date = com.sleepanalysis.domain.report.NightDates
+            .garminWakeDate(report.startedAt, report.endedAt, report.timeZone)
+        healthConnectImportManager.importForDate(date, ZoneId.of(report.timeZone))
+        _report.value = sessionRepository.buildReport(sessionId)
     }
 
     /**

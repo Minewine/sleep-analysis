@@ -572,7 +572,7 @@ class SessionRepository @Inject constructor(
         val garminSleep = garminSleepSummaryForSession(session, capture)
         val previousNight = previousNightSummaryFor(session)
         val garminStages = db.sleepStageDao().bySession(sessionId).map {
-            com.sleepanalysis.domain.report.StageSpan(it.startMs, it.endMs, it.stage)
+            com.sleepanalysis.domain.report.StageSpan(it.startMs, it.endMs, it.stage, it.source)
         }
         val noiseMinConfidence = userPreferences.noiseDisplayMinConfidenceNow()
         // Stored gaps (schema v10) win; legacy nights fall back to report-time computation

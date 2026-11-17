@@ -254,7 +254,7 @@ interface RawPayloadDao {
     suspend fun deleteAll()
 }
 
-/** Vendor sleep-stage timeline of one session (schema v9). Device-reported context only. */
+/** Vendor sleep-stage timeline of one session (schema v9; per-source since v14). Device-reported context only. */
 @Dao
 interface SleepStageDao {
     @Insert
@@ -263,16 +263,22 @@ interface SleepStageDao {
     @Query("SELECT * FROM sleep_stage WHERE sessionId = :sessionId ORDER BY startMs")
     suspend fun bySession(sessionId: Long): List<SleepStageEntity>
 
-    @Query("DELETE FROM sleep_stage WHERE sessionId = :sessionId")
-    suspend fun deleteForSession(sessionId: Long)
+    /** Deletes ONE source's rows only — the GARMIN and WEARABLE timelines coexist (schema v14). */
+    @Query("DELETE FROM sleep_stage WHERE sessionId = :sessionId AND source = :source")
+    suspend fun deleteForSession(sessionId: Long, source: String)
 
+    /** Device purge — deliberately unscoped, wipes every source (docs/DATA_MODEL.md §6). */
     @Query("DELETE FROM sleep_stage")
     suspend fun deleteAll()
 
-    /** Atomic replace so a re-import can never duplicate a night's stage timeline. */
+    /** True (=0) when the session carries no timeline from [source] — the needs-import gate. */
+    @Query("SELECT COUNT(*) FROM sleep_stage WHERE sessionId = :sessionId AND source = :source")
+    suspend fun countForSession(sessionId: Long, source: String): Int
+
+    /** Atomic replace so a re-import can never duplicate a session's stage timeline. */
     @Transaction
-    suspend fun replaceForSession(sessionId: Long, stages: List<SleepStageEntity>) {
-        deleteForSession(sessionId)
+    suspend fun replaceForSession(sessionId: Long, source: String, stages: List<SleepStageEntity>) {
+        deleteForSession(sessionId, source)
         insertAll(stages)
     }
 }

@@ -49,6 +49,7 @@ Everything else is blocked on evidence only real nights can provide: battery, 8 
 4. **Report snapshot persistence** (DATA_MODEL §3.7). ~~Retention decision for `raw_payload`~~ — **done (2026-11-04)**: raw payloads now follow session retention in the daily worker (DATA_MODEL §3.9).
 5. **DB trigger test** for clinical immutability (in-memory Room test against the `clinical_baseline` triggers) — the only Phase 1 safety mechanism with no automated coverage.
 6. **Retention-settings UI** — the plumbing exists (`UserPreferences.setRetention`, worker already reads it); only the Settings screen section is missing.
+7. ~~**Health Connect stage import**~~ — **implemented (2026-11-16), awaiting on-device E2E validation**: connect-client 1.1.0 (compileSdk 36 / AGP 8.9.1 / Gradle 8.11.1), `READ_SLEEP` permission + rationale plumbing, schema v14 `sleep_stage.source` (GARMIN/WEARABLE, source-scoped replace), `HealthConnectImportManager` (pure mapping/filter/summary helpers + unit tests + instrumented migration test), Settings card and report backfill rendering the source-labeled stage timeline. Validate: grant the HC sleep read permission, import a date with a linked session, confirm the report's timeline and the `raw_payload` summary row.
 
 ## P2 — Phase 2 proper (acoustic intelligence; ~3–6 weeks)
 
