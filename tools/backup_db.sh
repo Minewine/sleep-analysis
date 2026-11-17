@@ -9,9 +9,16 @@ set -euo pipefail
 
 SERIAL="${1:-}"
 ADB=(adb)
-if [[ -n "$SERIAL" ]]; then ADB=(-s "$SERIAL"); fi
+# Keep `adb` in the replacement — ADB=(-s "$SERIAL") would REPLACE the whole
+# array and the guard would exec "-s" as the program, always skipping. And the
+# literal stays OUTSIDE the array expansion below: inside the same double
+# quotes bash appends it to the last element ("-s SERIAL get-state" as one arg).
+if [[ -n "$SERIAL" ]]; then ADB=(adb -s "$SERIAL"); fi
 
-if ! "${ADB[@]} get-state" >/dev/null 2>&1; then
+# NOTE: the literal must stay OUTSIDE the array expansion — inside the same
+# double quotes bash appends it to the last element ("-s SERIAL get-state"
+# becomes one argument, and the guard always reported "no device").
+if ! "${ADB[@]}" get-state >/dev/null 2>&1; then
   echo "backup: no device attached — skipped"
   exit 0
 fi
