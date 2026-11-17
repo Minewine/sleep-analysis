@@ -1,5 +1,6 @@
 """Tests for export_night_csv: CSV contents, the Garmin wake-date join, the
-phone-vs-vendor overlap math, and the outside-the-repo guard on --out."""
+phone-vs-vendor overlap math, the sleep-stage source fallback across DB schemas,
+and the outside-the-repo guard on --out."""
 
 import csv
 import json
@@ -61,8 +62,16 @@ PAYLOAD_EVENING = garmin_payload(ms(2026, 11, 3, 22, 0), ms(2026, 11, 3, 23, 0))
 PAYLOAD_WAKE = garmin_payload(*GARMIN_WINDOW)
 
 
-def build_db(path: Path, *, with_vendor: bool = True) -> sqlite3.Connection:
-    """Synthetic stand-in for sleepanalysis.db, mirroring the app's Room schema."""
+def build_db(
+    path: Path, *, with_vendor: bool = True, stage_source_column: bool = False
+) -> sqlite3.Connection:
+    """Synthetic stand-in for sleepanalysis.db, mirroring the app's Room schema.
+
+    Default is the current on-device schema v13 (sleep_stage has no source column);
+    stage_source_column=True upgrades it to the v14 shape the parallel Android
+    change introduces (Room-style ALTER TABLE, so the column also lands *after*
+    createdAt physically — the exporter must not rely on table column order).
+    """
     if path.is_dir():  # callers hand in tmp_path; keep the real DB filename
         path = path / "sleepanalysis.db"
     conn = sqlite3.connect(path)
@@ -87,6 +96,9 @@ def build_db(path: Path, *, with_vendor: bool = True) -> sqlite3.Connection:
         CREATE TABLE quiet_gap (
             id INTEGER PRIMARY KEY, sessionId INTEGER, startMs INTEGER, endMs INTEGER,
             durationMs INTEGER, kind TEXT, meanDbfs REAL, createdAt INTEGER);
+        CREATE TABLE sleep_stage (
+            id INTEGER PRIMARY KEY, sessionId INTEGER, startMs INTEGER, endMs INTEGER,
+            stage TEXT, createdAt INTEGER);
         CREATE TABLE audio_clip (
             id INTEGER PRIMARY KEY, eventId INTEGER, filePath TEXT, createdAt INTEGER);
         CREATE TABLE raw_payload (
@@ -238,6 +250,22 @@ def build_db(path: Path, *, with_vendor: bool = True) -> sqlite3.Connection:
         ],
     )
     conn.executemany(
+        "INSERT INTO sleep_stage (id, sessionId, startMs, endMs, stage, createdAt)"
+        " VALUES (?, ?, ?, ?, ?, ?)",
+        [
+            (1, 1, GARMIN_WINDOW[0], ms(2026, 11, 4, 0, 20), "DEEP", START),
+            (2, 1, ms(2026, 11, 4, 0, 20), ms(2026, 11, 4, 1, 0), "LIGHT", START),
+        ],
+    )
+    if stage_source_column:
+        # v14 shape: Room adds the column via ALTER TABLE, so it also lands after
+        # createdAt in the table's physical order. Sources stay mixed on purpose.
+        conn.execute("ALTER TABLE sleep_stage ADD COLUMN source TEXT")
+        conn.executemany(
+            "UPDATE sleep_stage SET source = ? WHERE id = ?",
+            [("GARMIN", 1), ("ACOUSTIC", 2)],
+        )
+    conn.executemany(
         "INSERT INTO audio_clip (id, eventId, filePath) VALUES (?, ?, ?)",
         [(7, 1, f"session_1/evt_snore_{ms(2026, 11, 3, 23, 10)}_1.wav")],
     )
@@ -284,6 +312,7 @@ def test_export_csv_contents(tmp_path):
         "session_1.csv",
         "measurements_1.csv",
         "quiet_gaps_1.csv",
+        "sleep_stage_1.csv",
         "garmin_sleep_window_1.csv",
     ]
 
@@ -324,10 +353,52 @@ def test_export_csv_contents(tmp_path):
     assert rows[1]["kind"] == ""  # null -> empty cell
     assert rows[1]["meanDbfs"] == ""
 
+    # v13 shape (default build): sleep_stage has no source column, yet the CSV
+    # still emits it — filled with GARMIN, since only the Garmin import wrote
+    # stage rows before v14.
+    header, rows = read_csv(out / "sleep_stage_1.csv")
+    assert header == enc.SLEEP_STAGE_COLUMNS
+    assert [r["stage"] for r in rows] == ["DEEP", "LIGHT"]
+    assert [r["source"] for r in rows] == ["GARMIN", "GARMIN"]
+    assert rows[0]["startMs"] == str(GARMIN_WINDOW[0])
+    assert rows[0]["sessionId"] == "1"
+    assert rows[0]["createdAt"] == str(START)
+
 
 def test_export_csvs_unknown_session(tmp_path):
     with pytest.raises(ValueError, match="not found"):
         enc.export_csvs(build_db(tmp_path), 99, tmp_path / "out")
+
+
+def test_sleep_stage_v14_source_column_passed_through(tmp_path):
+    """v14 shape (source column present): the stored values come through verbatim,
+    mixed sources included — GARMIN's timeline and a non-Garmin source alike."""
+    out = tmp_path / "out"
+    exp = enc.export_csvs(build_db(tmp_path, stage_source_column=True), 1, out)
+
+    header, rows = read_csv(out / "sleep_stage_1.csv")
+    assert header == enc.SLEEP_STAGE_COLUMNS
+    assert len(rows) == 2
+    assert [r["stage"] for r in rows] == ["DEEP", "LIGHT"]  # startMs, id order
+    assert [r["source"] for r in rows] == ["GARMIN", "ACOUSTIC"]
+    assert rows[0]["startMs"] == str(GARMIN_WINDOW[0])
+    assert rows[1]["endMs"] == str(ms(2026, 11, 4, 1, 0))
+    assert exp.n_sleep_stages == 2
+
+
+def test_sleep_stage_empty_table_writes_header_only_csv(tmp_path):
+    """No stage rows for the session: the CSV still exists with just its header and
+    the summary count is 0 — same behavior as quiet_gaps with no rows."""
+    conn = build_db(tmp_path)
+    conn.execute("DELETE FROM sleep_stage")
+    out = tmp_path / "out"
+    exp = enc.export_csvs(conn, 1, out)
+
+    header, rows = read_csv(out / "sleep_stage_1.csv")
+    assert header == enc.SLEEP_STAGE_COLUMNS
+    assert rows == []
+    assert exp.n_sleep_stages == 0
+    assert "sleep_stage_1.csv" in [p.name for p in exp.files]
 
 
 def test_garmin_payload_selected_by_wake_date(tmp_path):
@@ -388,6 +459,7 @@ def test_export_without_vendor_payload_omits_garmin_csv(tmp_path):
         "session_1.csv",
         "measurements_1.csv",
         "quiet_gaps_1.csv",
+        "sleep_stage_1.csv",
     ]
     assert not (out / "garmin_sleep_window_1.csv").exists()
 

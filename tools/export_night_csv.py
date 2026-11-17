@@ -8,6 +8,9 @@ Pulls the app's SQLite database from a connected phone via adb (debug build, so
   session_<sid>.csv              session row + captureStats JSON flattened to key columns
   measurements_<sid>.csv         one row per measurement
   quiet_gaps_<sid>.csv           one row per quiet_gap
+  sleep_stage_<sid>.csv          one row per sleep_stage; on pre-v14 schemas without a
+                                 source column it is emitted as GARMIN (only the Garmin
+                                 import wrote stage rows before v14)
   garmin_sleep_window_<sid>.csv  Garmin's own sleep window (epoch ms) + duration, stage
                                  seconds and awakeCount, parsed from the verbatim
                                  dailySleep raw_payload of the session's wake date —
@@ -114,6 +117,16 @@ MEASUREMENTS_COLUMNS = [
 
 QUIET_GAPS_COLUMNS = ["id", "startMs", "endMs", "durationMs", "kind", "meanDbfs"]
 
+SLEEP_STAGE_COLUMNS = [
+    "id",
+    "sessionId",
+    "startMs",
+    "endMs",
+    "stage",
+    "source",
+    "createdAt",
+]
+
 GARMIN_COLUMNS = [
     "sleepStartTimestampGMT",
     "sleepEndTimestampGMT",
@@ -136,6 +149,7 @@ class NightExport:
     events_by_type: dict[str, int]
     n_measurements: int
     n_quiet_gaps: int
+    n_sleep_stages: int
     capture_start_ms: int
     capture_end_ms: int | None
     wake_date: str
@@ -294,6 +308,27 @@ def fetch_quiet_gaps(conn: sqlite3.Connection, session_id: int) -> list[dict]:
     return [dict(zip(QUIET_GAPS_COLUMNS, r)) for r in rows]
 
 
+def fetch_sleep_stages(conn: sqlite3.Connection, session_id: int) -> list[dict]:
+    """sleep_stage rows for the session, in timeline order.
+
+    Schema-tolerant across v13/v14: the `source` column only exists from v14, so
+    on older DBs it is emitted as GARMIN — pre-v14 stage rows were written
+    exclusively by the Garmin import path.
+    """
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(sleep_stage)")}
+    source_expr = "source" if "source" in cols else f"'{GARMIN_SOURCE}'"
+    rows = conn.execute(
+        f"""
+        SELECT id, sessionId, startMs, endMs, stage, {source_expr} AS source, createdAt
+        FROM sleep_stage
+        WHERE sessionId = ?
+        ORDER BY startMs, id
+        """,
+        (session_id,),
+    ).fetchall()
+    return [dict(zip(SLEEP_STAGE_COLUMNS, r)) for r in rows]
+
+
 def garmin_wake_date(started_at_ms: int, ended_at_ms: int | None, tz_id: str) -> date:
     """The local wake calendar day — the join key for Garmin payloads (app NightDates).
 
@@ -441,6 +476,7 @@ def export_csvs(
     events = fetch_events(conn, session_id)
     measurements = fetch_measurements(conn, session_id)
     gaps = fetch_quiet_gaps(conn, session_id)
+    stages = fetch_sleep_stages(conn, session_id)
     stats = flatten_capture_stats(session["captureStats"])
     session_row = {**{c: session[c] for c in SESSION_COLUMNS}, **stats}
 
@@ -457,6 +493,9 @@ def export_csvs(
             measurements,
         ),
         write_csv(out_dir / f"quiet_gaps_{session_id}.csv", QUIET_GAPS_COLUMNS, gaps),
+        write_csv(
+            out_dir / f"sleep_stage_{session_id}.csv", SLEEP_STAGE_COLUMNS, stages
+        ),
     ]
 
     wake_iso, payload = fetch_garmin_payload(conn, session)
@@ -489,6 +528,7 @@ def export_csvs(
         events_by_type=events_by_type,
         n_measurements=len(measurements),
         n_quiet_gaps=len(gaps),
+        n_sleep_stages=len(stages),
         capture_start_ms=capture_start_ms(session),
         capture_end_ms=session["endedAt"],
         wake_date=wake_iso,
@@ -588,7 +628,10 @@ def print_summary(exp: NightExport) -> None:
     print(f"events: {exp.n_events} total")
     for event_type in sorted(exp.events_by_type):
         print(f"  {event_type}: {exp.events_by_type[event_type]}")
-    print(f"measurements: {exp.n_measurements}, quiet gaps: {exp.n_quiet_gaps}")
+    print(
+        f"measurements: {exp.n_measurements}, quiet gaps: {exp.n_quiet_gaps},"
+        f" sleep stages: {exp.n_sleep_stages}"
+    )
     print(f"wrote {len(exp.files)} CSV file(s) to the output directory:")
     for path in exp.files:
         print(f"  {path.name}")

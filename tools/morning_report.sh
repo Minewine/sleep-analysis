@@ -18,8 +18,9 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 NIGHT_ROOT="${NIGHT_ROOT:-$HOME/sleep-local/morning}"
 OUT="$NIGHT_ROOT/$(date +%Y-%m-%d_%H%M%S)"
-SERIAL_ARGS=()
-[ $# -gt 0 ] && SERIAL_ARGS=(--serial "$1")
+SERIAL_ARGS=()   # tools/*.py argparse form
+ADB_ARGS=()      # plain adb form (-s; adb has no --serial)
+[ $# -gt 0 ] && { SERIAL_ARGS=(--serial "$1"); ADB_ARGS=(-s "$1"); }
 DB="$OUT/sleepanalysis.db"
 
 echo "== morning report -> $OUT =="
@@ -118,7 +119,7 @@ NIGHT_PREV_START_MS="$(sqlite3 "$DB" "SELECT startedAt FROM sleep_session WHERE 
 #    batt=/charging=). Drain is only meaningful over charging=false stretches —
 #    the tool says "plugged in all night" rather than inventing a 0% rate.
 session_log="$OUT/session_${sid}.log"
-if adb "${SERIAL_ARGS[@]}" exec-out run-as com.sleepanalysis \
+if adb "${ADB_ARGS[@]}" exec-out run-as com.sleepanalysis \
         cat "files/logs/session_${sid}.log" > "$session_log" &&
    [ -s "$session_log" ]; then
     echo "== BATTERY (session $sid, from its session log) =="
