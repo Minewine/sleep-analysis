@@ -140,24 +140,53 @@ class HealthConnectImportManager @Inject constructor(
                     ),
                 )
             )
-            // Link to the best time-overlapping acoustic session (same rule as the Garmin
-            // import): stage spans are session-scoped context, never free-floating rows.
-            val linked = GarminImportManager.bestSessionOverlapping(db.sleepSessionDao().all(), window)
-                ?: return notReady(date, NotReadyReason.NO_ACOUSTIC_SESSION)
+            // Per-record linking: each Health Connect record carries its own sleep window,
+            // and THAT span — not the import date's day window — links to the best-
+            // overlapping acoustic session. The day window is only the read filter:
+            // linking against it mis-assigns retrospective imports, where the window's
+            // largest overlap is the PREVIOUS night's morning tail, not the record's own
+            // night (found on-device: importing 2026-11-14 linked the Nov 13→14 session
+            // while the record described Nov 14→15). Once the record span is known the
+            // rule is the same as the Garmin import: stage spans are session-scoped
+            // context, never free-floating rows.
+            val sessions = db.sleepSessionDao().all()
+            val linkedBySession = response.records.mapNotNull { record ->
+                GarminImportManager.bestSessionOverlapping(
+                    sessions,
+                    record.startTime.toEpochMilli() to record.endTime.toEpochMilli(),
+                )?.let { it.id to record }
+            }
+            if (linkedBySession.isEmpty()) {
+                return notReady(date, NotReadyReason.NO_ACOUSTIC_SESSION)
+            }
+            val rowsBySession = linkedBySession.groupBy({ it.first }, { it.second })
 
             var stagesStored = 0
             var skippedMinutes = 0L
+            val skippedByType = mutableMapOf<String, Long>()
+            var primarySessionId: Long? = null
+            var primaryRowCount = -1
+            val recordsWithoutSession = response.records.size - linkedBySession.size
             db.withTransaction {
-                // Rows + skip accounting from the in-window records (the pure filter is the
-                // auditable single source of truth for what made it into rows).
-                val mapped = buildStageRows(linked.id, response.records, window)
-                stagesStored = mapped.rows.size
-                skippedMinutes = mapped.skippedMinutes
+                for ((sessionId, records) in rowsBySession) {
+                    // Rows + skip accounting from the record's own stages (the pure mapper
+                    // is the auditable single source of truth for what made it into rows).
+                    val mapped = buildStageRows(sessionId, records)
+                    stagesStored += mapped.rows.size
+                    skippedMinutes += mapped.skippedMinutes
+                    for ((typeKey, minutes) in mapped.skippedMinutesByType) {
+                        skippedByType.merge(typeKey, minutes, Long::plus)
+                    }
+                    if (mapped.rows.size > primaryRowCount) {
+                        primaryRowCount = mapped.rows.size
+                        primarySessionId = sessionId
+                    }
 
-                // Replace-per-source: stale WEARABLE rows of a previous import go first, the
-                // session's GARMIN timeline is untouched, and an empty read is a delete,
-                // not a skip.
-                db.sleepStageDao().replaceForSession(linked.id, STAGE_SOURCE, mapped.rows)
+                    // Replace-per-source: stale WEARABLE rows of a previous import go first,
+                    // the session's GARMIN timeline is untouched, and an empty read is a
+                    // delete, not a skip.
+                    db.sleepStageDao().replaceForSession(sessionId, STAGE_SOURCE, mapped.rows)
+                }
 
                 // One summary row keeps the run auditable — the same raw-payload discipline
                 // the Garmin import follows (upsert per source/endpoint/date, docs/DATA_MODEL.md §3.9).
@@ -166,7 +195,15 @@ class HealthConnectImportManager @Inject constructor(
                         source = RAW_PAYLOAD_SOURCE,
                         endpoint = RAW_PAYLOAD_ENDPOINT,
                         date = date.toString(),
-                        payload = summaryJson(response.records.size, mapped, linked.id, window),
+                        payload = summaryJson(
+                            recordsRead = response.records.size,
+                            stagesStored = stagesStored,
+                            skippedMinutes = skippedMinutes,
+                            skippedMinutesByType = skippedByType,
+                            recordsWithoutSession = recordsWithoutSession,
+                            linkedSessionId = primarySessionId,
+                            window = window,
+                        ),
                     )
                 )
             }
@@ -175,7 +212,7 @@ class HealthConnectImportManager @Inject constructor(
                 date = date,
                 stagesStored = stagesStored,
                 skippedStageMinutes = skippedMinutes,
-                linkedSessionId = linked.id,
+                linkedSessionId = primarySessionId,
             ).also { _state.value = it }
         } catch (e: CancellationException) {
             // Scope cancelled mid-import — propagate so structured concurrency holds; the
@@ -229,25 +266,20 @@ class HealthConnectImportManager @Inject constructor(
         }
 
         /**
-         * The records whose [startTime, endTime] intersect the day window, mapped into stage
-         * rows (source [STAGE_SOURCE]), ordered by start time; skipped minutes aggregated per
-         * type. Pure — unit tested. TimeRangeFilter already bounds the read; this filter is
-         * the explicit, testable version of the same rule. Span-level input hygiene lives in
-         * [mapStageSpan].
+         * The given records' stages mapped into rows (source [STAGE_SOURCE]), ordered by
+         * start time; skipped minutes aggregated per type. Pure — unit tested. Records
+         * arrive already scoped by the read filter and linked per record span (see
+         * importForDateLocked — the day window is NOT re-applied here: a record spilling
+         * past midnight is stored whole). Span-level input hygiene lives in [mapStageSpan].
          */
         fun buildStageRows(
             sessionId: Long,
             records: List<SleepSessionRecord>,
-            window: Pair<Long, Long>,
         ): MappedStages {
-            val (windowStart, windowEnd) = window
             val rows = mutableListOf<SleepStageEntity>()
             var skippedMinutes = 0L
             val skippedByType = mutableMapOf<String, Long>()
             for (record in records) {
-                val recordStartMs = record.startTime.toEpochMilli()
-                val recordEndMs = record.endTime.toEpochMilli()
-                if (recordStartMs >= windowEnd || recordEndMs <= windowStart) continue
                 for (stage in record.stages) {
                     val mapping = mapStageSpan(
                         sessionId,
@@ -308,16 +340,20 @@ class HealthConnectImportManager @Inject constructor(
          */
         fun summaryJson(
             recordsRead: Int,
-            mapped: MappedStages,
-            linkedSessionId: Long,
+            stagesStored: Int,
+            skippedMinutes: Long,
+            skippedMinutesByType: Map<String, Long>,
+            recordsWithoutSession: Int,
+            linkedSessionId: Long?,
             window: Pair<Long, Long>,
         ): String = JSONObject().apply {
             put("schema_version", 1)
             put("records_read", recordsRead)
-            put("stages_stored", mapped.rows.size)
-            put("skipped_minutes", mapped.skippedMinutes)
-            put("skipped_minutes_by_type", JSONObject(mapped.skippedMinutesByType))
-            put("linked_session_id", linkedSessionId)
+            put("stages_stored", stagesStored)
+            put("skipped_minutes", skippedMinutes)
+            put("skipped_minutes_by_type", JSONObject(skippedMinutesByType))
+            put("records_without_session", recordsWithoutSession)
+            if (linkedSessionId != null) put("linked_session_id", linkedSessionId)
             put("window_start_ms", window.first)
             put("window_end_ms", window.second)
         }.toString()

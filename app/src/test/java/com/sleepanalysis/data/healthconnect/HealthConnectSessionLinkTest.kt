@@ -3,14 +3,18 @@ package com.sleepanalysis.data.healthconnect
 import androidx.health.connect.client.records.SleepSessionRecord
 // Alias: the simple name collides with kotlin's @Metadata annotation in K2 resolution.
 import androidx.health.connect.client.records.metadata.Metadata as HcMetadata
+import com.sleepanalysis.data.db.entity.SessionStatus
+import com.sleepanalysis.data.db.entity.SleepSessionEntity
+import com.sleepanalysis.data.garmin.GarminImportManager
 import java.time.Instant
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/** The pure half of the Health Connect import: window filtering, row building, summary JSON. */
+/** The pure half of the Health Connect import: record-span linking, row building, summary JSON. */
 class HealthConnectSessionLinkTest {
 
     private fun stage(type: Int, startMs: Long, durationMs: Long) = SleepSessionRecord.Stage(
@@ -30,26 +34,33 @@ class HealthConnectSessionLinkTest {
             stages = stages,
         )
 
-    @Test
-    fun `records outside the day window are dropped`() {
-        val inWindow = record(1_000_000, 2_000_000, listOf(stage(SleepSessionRecord.STAGE_TYPE_DEEP, 1_000_000, 100_000)))
-        val endsBefore = record(-2_000_000, -1_000_000, emptyList())
-        val startsAfter = record(5_000_000, 6_000_000, emptyList())
-        val mapped = HealthConnectImportManager.buildStageRows(
-            sessionId = 7,
-            records = listOf(startsAfter, endsBefore, inWindow),
-            window = 0L to 3_000_000L,
-        )
-        assertEquals(1, mapped.rows.size)
-        assertEquals(1_000_000, mapped.rows[0].startMs)
-    }
+    private fun session(id: Long, start: Long, end: Long) = SleepSessionEntity(
+        id = id,
+        startedAt = start,
+        endedAt = end,
+        status = SessionStatus.COMPLETED,
+        timeZone = "Europe/Zurich",
+        deviceModel = "Test",
+        osVersion = "30",
+        appVersion = "0.1.0",
+    )
 
     @Test
-    fun `partially overlapping records are kept`() {
-        // Starts before the window, ends inside it — the overlap is what qualifies.
-        val spilling = record(-1_000_000, 1_000_000, listOf(stage(SleepSessionRecord.STAGE_TYPE_LIGHT, -500_000, 1_000_000)))
-        val mapped = HealthConnectImportManager.buildStageRows(7, listOf(spilling), 0L to 3_000_000L)
-        assertEquals(1, mapped.rows.size)
+    fun `a record links by its own span not the import date's day window`() {
+        // On-device regression (2026-11-17): importing 2026-11-14 linked the Nov 13→14
+        // session, because the DAY window overlaps that night's ~7h morning tail harder
+        // than the record's own night — the record span must link instead. The wrong
+        // timeline then rendered on the wrong night's report.
+        val t0 = 0L // read as 2026-11-14 00:00 for readable offsets
+        val prevNight = session(16, start = t0 - 1_700_000, end = t0 + 25_400_000) // 13th 22:32 → 14th 07:04
+        val thisNight = session(17, start = t0 + 82_000_000, end = t0 + 112_500_000) // 14th 22:47 → 15th 07:32
+        val recordSpan = t0 + 83_000_000 to t0 + 112_300_000 // HC record 23:04 → 07:31
+
+        val byRecordSpan = GarminImportManager.bestSessionOverlapping(listOf(prevNight, thisNight), recordSpan)
+        assertEquals(17L, byRecordSpan?.id)
+        // Documents the bug the fix removes: the day window picks the previous night.
+        val byDayWindow = GarminImportManager.bestSessionOverlapping(listOf(prevNight, thisNight), t0 to t0 + 86_400_000L)
+        assertEquals(16L, byDayWindow?.id)
     }
 
     @Test
@@ -63,7 +74,7 @@ class HealthConnectSessionLinkTest {
                 stage(SleepSessionRecord.STAGE_TYPE_REM, 1_000_000, 1_000_000),
             ),
         )
-        val mapped = HealthConnectImportManager.buildStageRows(7, listOf(rec), 0L to 3_000_000L)
+        val mapped = HealthConnectImportManager.buildStageRows(7, listOf(rec))
         assertEquals(listOf(0L, 1_000_000L, 2_000_000L), mapped.rows.map { it.startMs })
         assertTrue(
             mapped.rows.all {
@@ -85,7 +96,7 @@ class HealthConnectSessionLinkTest {
                 stage(SleepSessionRecord.STAGE_TYPE_OUT_OF_BED, 780_000, 180_000), // 3 min skipped
             ),
         )
-        val mapped = HealthConnectImportManager.buildStageRows(7, listOf(rec), 0L to 5_000_000L)
+        val mapped = HealthConnectImportManager.buildStageRows(7, listOf(rec))
         assertEquals(1, mapped.rows.size)
         assertEquals(6L, mapped.skippedMinutes)
         assertEquals(mapOf("OUT_OF_BED" to 3L, "UNKNOWN" to 3L), mapped.skippedMinutesByType)
@@ -93,7 +104,7 @@ class HealthConnectSessionLinkTest {
 
     @Test
     fun `an empty timeline maps to no rows and no skipped minutes`() {
-        val mapped = HealthConnectImportManager.buildStageRows(7, emptyList(), 0L to 3_000_000L)
+        val mapped = HealthConnectImportManager.buildStageRows(7, emptyList())
         assertTrue(mapped.rows.isEmpty())
         assertEquals(0L, mapped.skippedMinutes)
         assertTrue(mapped.skippedMinutesByType.isEmpty())
@@ -122,16 +133,15 @@ class HealthConnectSessionLinkTest {
 
     @Test
     fun `summary json carries counts skips session and window`() {
-        val mapped = HealthConnectImportManager.MappedStages(
-            rows = listOf(
-                com.sleepanalysis.data.db.entity.SleepStageEntity(sessionId = 7, startMs = 0, endMs = 600_000, stage = "DEEP"),
-            ),
-            skippedMinutes = 3,
-            skippedMinutesByType = mapOf("UNKNOWN" to 3),
-        )
         val json = JSONObject(
             HealthConnectImportManager.summaryJson(
-                recordsRead = 2, mapped = mapped, linkedSessionId = 7, window = 0L to 86_400_000L,
+                recordsRead = 2,
+                stagesStored = 1,
+                skippedMinutes = 3,
+                skippedMinutesByType = mapOf("UNKNOWN" to 3),
+                recordsWithoutSession = 1,
+                linkedSessionId = 7,
+                window = 0L to 86_400_000L,
             ),
         )
         assertEquals(1, json.getInt("schema_version"))
@@ -139,8 +149,28 @@ class HealthConnectSessionLinkTest {
         assertEquals(1, json.getInt("stages_stored"))
         assertEquals(3L, json.getLong("skipped_minutes"))
         assertEquals(3L, json.getJSONObject("skipped_minutes_by_type").getLong("UNKNOWN"))
+        assertEquals(1, json.getInt("records_without_session"))
         assertEquals(7L, json.getLong("linked_session_id"))
         assertEquals(0L, json.getLong("window_start_ms"))
         assertEquals(86_400_000L, json.getLong("window_end_ms"))
+    }
+
+    @Test
+    fun `summary json omits linked session when nothing linked`() {
+        // Defensive shape: the manager never writes a summary without a linked session,
+        // but the JSON contract keeps linked_session_id absent rather than null-valued.
+        val json = JSONObject(
+            HealthConnectImportManager.summaryJson(
+                recordsRead = 1,
+                stagesStored = 0,
+                skippedMinutes = 0,
+                skippedMinutesByType = emptyMap(),
+                recordsWithoutSession = 1,
+                linkedSessionId = null,
+                window = 0L to 86_400_000L,
+            ),
+        )
+        assertFalse(json.has("linked_session_id"))
+        assertEquals(1, json.getInt("records_without_session"))
     }
 }
