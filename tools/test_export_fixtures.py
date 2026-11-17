@@ -225,14 +225,17 @@ def _pre_v11_style_db(tmp_path, applied_gain_not_null: bool):
 
 
 def test_validate_db_accepts_alter_added_column_false_positive(tmp_path):
-    # SQLite >= 3.44 quick_check flags the pre-ALTER short record ("NULL value in
-    # audio_clip.appliedGain") even though readers substitute the DEFAULT 2.5.
-    # The pull must be accepted when no row actually holds NULL.
+    # Older SQLite (< 3.44) quick_check flags the pre-ALTER short record ("NULL value in
+    # audio_clip.appliedGain") even though readers substitute the DEFAULT 2.5; newer
+    # engines (CI's CPython 3.14 wheel) return plain "ok" for the same fixture. The pull
+    # must be accepted when no row actually holds NULL — either quick_check outcome.
     path = _pre_v11_style_db(tmp_path, applied_gain_not_null=True)
     conn = sqlite3.connect(path)
     first = conn.execute("PRAGMA quick_check").fetchone()[0]
     conn.close()
-    assert first == ef.BENIGN_QUICK_CHECK, "fixture must reproduce the false positive"
+    assert first in (ef.BENIGN_QUICK_CHECK, "ok"), (
+        "fixture must reproduce the false positive (or be clean on newer SQLite)"
+    )
     ef._validate_db(path)  # must not raise
 
 

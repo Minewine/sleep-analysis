@@ -221,7 +221,7 @@ def main(argv: list[str] | None = None) -> int:
         "--gate",
         type=float,
         default=GATE_PCT_PER_8H,
-        help="device-drain tripwire threshold in %/8h (default: %(default)s)",
+        help="device-drain tripwire threshold in %%/8h (default: %(default)s)",
     )
     args = parser.parse_args(argv)
     text = (
