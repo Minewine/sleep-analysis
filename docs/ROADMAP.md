@@ -97,6 +97,10 @@ Related: [Product vision](PRODUCT_VISION.md) · [MVP scope](MVP_SCOPE.md) (Phase
 
 **Success criteria:** every feature entering this phase has a written validation plan *before* implementation; promotions/demotions follow the change control in [MEASUREMENT_RELIABILITY.md](MEASUREMENT_RELIABILITY.md) §7; rejected ideas are documented, not silently dropped.
 
+## The pain-point analysis line (decided 2026-11-19, sequenced in NEXT_STEPS)
+
+The current dogfood goal — **analyse sleep and highlight pain points** — has an approved five-item line cutting across phases: morning rating + night tags (DailyFactor extensions — deliberately user-logged context, never Measurement rows), the rolling-baseline pain-point layer (extends Phase 4's baseline-excursion direction once a multi-week baseline exists), formalized N-of-1 experiments over the shipped Playbook/`sleep_experiment` machinery, and the breathing-irregularity indicator inside the already-reserved Tier-2 slot (Phase 2's M7, behind the experimental toggle; promotion stays Phase 5). Ordering and the concrete first candidates: [NEXT_STEPS.md](NEXT_STEPS.md).
+
 ## Cross-phase gates (every release)
 
 1. Measurement tiers unchanged or changed only via §7 change control.

@@ -17,7 +17,9 @@ vendor sleep score, stage totals, snoring-minutes-per-stage (when the timeline e
 stage of the longest bout; the top-clips card leads with the worst bout's loudest clip.
 
 **TL;DR card.** One glance: snored time + % of the captured window, the worst stretch (longest
-bout with its time range), and the comparison to the previous night. The comparison reads the
+bout with its time range), the comparison to the previous night, and — on Garmin-linked nights
+with a real window overlap — the snoring share of the captured part of Garmin's sleep window
+(table below). The comparison reads the
 previous night's STORED measurements and is version-gated: the time/share delta appears only
 when both nights' detector versions are known and equal; the score delta only when the previous
 score row used the current formula (`SnoreScore.FORMULA_VERSION`). A version change hides the
@@ -29,6 +31,7 @@ delta and surfaces a banner instead of comparing across it.
 | Previous-night comparison | `PreviousNight.pick` | Anchors on the previous **full night** (≥ 4 h in bed) when one exists, falling back to the latest eligible session — a short evening test session never becomes the comparison anchor. |
 | Snore score | `SnoreScore.compute` (formula `snore-score-v3`) | 60 pts from snoring share (saturates at **40%** of the night) + 40 pts tier-weighted over **snoring TIME**, over the label-aware snore event set (a non-SNORE user label excludes the event). The report shows the breakdown ("share X + intensity Y") and the SNORE_SCORE row stores formula version + breakdown in `notes`. See §Score formula versions. |
 | Snoring time / share | `SnoreMath.unionDurationMs` over SNORE events | Union, never sum. The share denominator is **mic-live captured analysis time** (`capture_stats.windows × 0.5 s`), falling back to recording time only when no capture stats exist. The card states which denominator is in use. |
+| Garmin-normalized share | `ReportAssembler.garminNormalizedSharePercent(snoreSeconds, overlapWithCaptureMs)` | TL;DR-only line ("Snored X% of the captured part of Garmin's sleep window"), rendered only when the night is Garmin **LINKED** and the overlap is > 0 — the honest ratio when capture started late (dogfood 2026-11-18→19: capture from 01:02, Garmin's window from 22:14). A result above 100% (sub-second overlap inflation can push it there) **omits** the line instead of clamping — clamping would assert everything Garmin saw was snoring, a stronger claim than silence. Display-only: the finalize-time `snoreSharePercent` stays contract-frozen; this line is never stored or compared. |
 | Longest burst | max-duration SNORE event (`LongSnoreEvent`) | The worst continuous stretch the detector emitted — a real burst since v2-burst, never a merged train. |
 | Longest bout | `boutStats.longestBoutMs` (`BOUT_GAP_MS`) | See the bout definition below. |
 | Intensity breakdown | per-event `intensityTier` counts | Tiers: QUIET < −30 dBFS, LIGHT −30…−20, LOUD −20…−10, EPIC ≥ −10 (`DetectorConfig`). |
@@ -147,7 +150,8 @@ design — imported outside any session). The join is report-time, by wake date:
 ## 3. Last-N-nights trend
 
 Full spec: [TRENDS.md](TRENDS.md). In short: `TrendAssembler` builds one tappable row per night
-(tap → that night's Morning Summary). Mixed sources, by design — stored measurements supply the
+(tap → that night's Morning Summary; synthetic missed-night rows — [TRENDS.md](TRENDS.md) —
+carry no metrics, so no report opens from them). Mixed sources, by design — stored measurements supply the
 report-reproducible numbers (score, snore time, share), the structure numbers that are not
 persisted (longest bout, mean peak, clip coverage) are computed from the night's events/clips
 with the report's exact math, and the schema-v10 stored quiet gaps add **quiet minutes vs
