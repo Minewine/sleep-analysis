@@ -388,6 +388,26 @@ private fun TldrCard(report: com.sleepanalysis.domain.report.MorningReport) {
                 ),
                 style = MaterialTheme.typography.bodyLarge,
             )
+            // Coverage-normalized Garmin share (LINKED nights with a real overlap only — no
+            // fake 100% when the windows don't overlap): snoring as a share of the part of
+            // Garmin's sleep window the capture actually covers, honest when capture started
+            // late. The stored share above must keep its finalize-time denominator.
+            if (report.garminStatus == com.sleepanalysis.domain.report.GarminLinkStatus.LINKED) {
+                report.garminSleep?.let { sleep ->
+                    com.sleepanalysis.domain.report.ReportAssembler
+                        .garminNormalizedSharePercent(report.snoreSeconds, sleep.overlapWithCaptureMs)
+                        ?.let { normalized ->
+                            Text(
+                                stringResource(
+                                    R.string.report_tldr_garmin_normalized,
+                                    String.format(java.util.Locale.US, "%.1f", normalized),
+                                ),
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                }
+            }
             report.boutStats?.let {
                 Text(
                     stringResource(

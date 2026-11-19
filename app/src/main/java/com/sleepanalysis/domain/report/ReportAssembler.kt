@@ -683,6 +683,21 @@ object ReportAssembler {
     ): Long =
         (minOf(captureEndMs, sleepEndMs) - maxOf(captureStartMs, sleepStartMs)).coerceAtLeast(0)
 
+    /**
+     * Coverage-normalized snore share for the TL;DR (docs/NIGHT_REPORT.md §Garmin): snoring
+     * time over the part of Garmin's sleep window the capture actually covers — the honest
+     * ratio when capture started late (dogfood 2026-11-18→19: capture from 01:02, Garmin's
+     * sleep from 22:14). Display-only: the stored snoreSharePercent keeps its finalize-time
+     * denominator, so this is never stored or compared. Null when there is no meaningful
+     * ratio: no overlap at all, or a ratio above 100% (Garmin's overlap is smaller than the
+     * snoring's own span) — omitted rather than clamped to a fabricated 100%.
+     */
+    fun garminNormalizedSharePercent(snoreSeconds: Long, overlapWithCaptureMs: Long): Double? {
+        if (overlapWithCaptureMs <= 0) return null
+        val share = snoreSeconds * 100.0 / (overlapWithCaptureMs / 1000.0)
+        return share.takeIf { it <= 100.0 }
+    }
+
     private fun tierRank(tier: String): Int = when (tier) {
         SnoreScore.IntensityTiers.EPIC -> 4
         SnoreScore.IntensityTiers.LOUD -> 3

@@ -60,6 +60,12 @@
     <string name="home_schedule_next_tonight">Scheduled start tonight at %1$s</string>
     <string name="home_schedule_next">Next scheduled start: %1$s</string>
     <string name="home_schedule_skip">Skip tonight</string>
+    <string name="home_capture_window">Captured %1$s – %2$s</string>
+    <!-- Missed-night banner: calm absence made visible; skipped/recorded nights show nothing. -->
+    <string name="home_missed_night_title">No recording last night</string>
+    <string name="home_missed_night_body">Recording did not run between yesterday evening and this morning.</string>
+    <string name="home_short_night_title">Last night captured only %1$s of sleep</string>
+    <string name="home_short_night_body">Recording stopped early — the rest of the night was not captured.</string>
 
     <!-- Report -->
     <string name="report_title">Morning report</string>
@@ -70,6 +76,7 @@
     <string name="report_tldr_prev_score_nc">score %1$s (previous night not comparable)</string>
     <string name="report_tldr_quiet">%1$d quiet stretches ≥ 10 min · total %2$s</string>
     <string name="report_tldr_prev_hidden">Previous night not compared (missing data or different version)</string>
+    <string name="report_tldr_garmin_normalized">Snored %1$s%% of the captured part of Garmin\'s sleep window</string>
     <string name="report_disclaimer">Estimates from on-device microphone analysis. Not a diagnostic device. For sleep-health questions, talk to a clinician.</string>
     <string name="report_time_in_bed">Time in bed</string>
     <string name="report_snore_time">Snoring time</string>
@@ -312,6 +319,7 @@
     <string name="trend_row_coverage">clips %1$s%%</string>
     <string name="trend_row_quiet">quiet %1$s (%2$d gaps)</string>
     <string name="trend_row_uncaptured">%1$s no capture</string>
+    <string name="trend_row_missed">missed — no recording</string>
     <string name="trend_provenance_detector">%1$s</string>
     <string name="trend_provenance_score">score %1$s</string>
     <string name="history_trends">Trends</string>

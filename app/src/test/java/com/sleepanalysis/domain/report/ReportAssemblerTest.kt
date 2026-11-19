@@ -588,4 +588,105 @@ class ReportAssemblerTest {
         assertTrue(report.quietGaps.none { it.startMs <= t0 + 630_000 && it.endMs >= t0 + 634_000 })
         assertTrue(report.quietGaps.none { it.endMs <= t0 + 1_200_000 })
     }
+
+    // ---- coverage-normalized Garmin TLDR share (docs/NIGHT_REPORT.md §Garmin) ----
+
+    @Test
+    fun `normalized share divides snoring by the overlap`() {
+        // 90 s of snoring against a 1 h overlap → 2.5%.
+        assertEquals(
+            2.5,
+            ReportAssembler.garminNormalizedSharePercent(snoreSeconds = 90, overlapWithCaptureMs = 3_600_000L)!!,
+            0.0001,
+        )
+    }
+
+    @Test
+    fun `linked night with positive overlap exposes the normalization inputs`() {
+        // The TLDR gate: LINKED + overlap > 0. Capture 8 h, Garmin window 9 h, overlap 6 h,
+        // 36 min of snoring → 10% of the captured part of Garmin's window.
+        val sleep = GarminSleepSummary(
+            date = "2026-11-19", sleepStartMs = t0 - 3_600_000, sleepEndMs = t0 + 9 * 3_600_000,
+            sleepScore = 71.0, overlapWithCaptureMs = 6 * 3_600_000,
+            captureWindowStartMs = t0, captureWindowEndMs = t0 + 8 * 3_600_000,
+        )
+        val events = listOf(snoreEvent(1, offsetMs = 3_600_000, durationMs = 2_160_000, tier = "LIGHT"))
+        val report = ReportAssembler.assemble(session(), events, emptyList(), emptyList(), garminSleep = sleep)!!
+        assertEquals(GarminLinkStatus.LINKED, report.garminStatus)
+        assertEquals(2_160L, report.snoreSeconds)
+        assertEquals(
+            10.0,
+            ReportAssembler.garminNormalizedSharePercent(report.snoreSeconds, report.garminSleep!!.overlapWithCaptureMs)!!,
+            0.0001,
+        )
+    }
+
+    @Test
+    fun `zero overlap normalizes to nothing so the line is omitted`() {
+        // The disjoint-window case — the UI's "wrong night's data" signal: no line, never 0%.
+        assertNull(ReportAssembler.garminNormalizedSharePercent(snoreSeconds = 90, overlapWithCaptureMs = 0L))
+    }
+
+    @Test
+    fun `metrics-only nights have no sleep summary to normalize (line absent)`() {
+        val report = ReportAssembler.assemble(
+            session(), emptyList(), emptyList(), emptyList(),
+            garmin = listOf(GarminMetric("VENDOR_HRV_RMSSD", 45.0, "MS", t0)),
+        )!!
+        assertEquals(GarminLinkStatus.METRICS_ONLY, report.garminStatus)
+        // No GarminSleepSummary → the TLDR gate (LINKED + summary + overlap) can never fire.
+        assertNull(report.garminSleep)
+    }
+
+    @Test
+    fun `share above 100 percent is omitted, not clamped`() {
+        // Garmin's overlap (2 h) smaller than the snoring's own span (3 h): the ratio stops
+        // being interpretable — omitted rather than clamped to a fabricated 100%.
+        assertNull(
+            ReportAssembler.garminNormalizedSharePercent(
+                snoreSeconds = 3 * 3_600L,
+                overlapWithCaptureMs = 2 * 3_600_000L,
+            ),
+        )
+        // Exactly 100% (snoring fills the overlap) still renders.
+        assertEquals(
+            100.0,
+            ReportAssembler.garminNormalizedSharePercent(snoreSeconds = 7_200L, overlapWithCaptureMs = 2 * 3_600_000L)!!,
+            0.0001,
+        )
+    }
+
+    @Test
+    fun `zero snoring over a covered overlap renders a truthful 0 percent`() {
+        // A silent night inside a real overlap is data, not absence: the line renders "0%",
+        // only a MISSING ratio (null) omits it.
+        assertEquals(
+            0.0,
+            ReportAssembler.garminNormalizedSharePercent(snoreSeconds = 0, overlapWithCaptureMs = 3_600_000L)!!,
+            0.0001,
+        )
+    }
+
+    @Test
+    fun `a sub-second overlap inflates the ratio past 100 and is omitted`() {
+        // The divisor is overlap/1000.0, so 999 ms → 0.999: 90 s of snoring reads as 9009%.
+        // Anything the inflation pushes above 100 is omitted like any other absurd ratio.
+        assertNull(ReportAssembler.garminNormalizedSharePercent(snoreSeconds = 90, overlapWithCaptureMs = 999L))
+        assertNull(ReportAssembler.garminNormalizedSharePercent(snoreSeconds = 90, overlapWithCaptureMs = 1_000L))
+        // Negative overlap is no overlap at all.
+        assertNull(ReportAssembler.garminNormalizedSharePercent(snoreSeconds = 90, overlapWithCaptureMs = -1L))
+    }
+
+    @Test
+    fun `a negative snore time flows through unguarded (caller contract keeps it non-negative)`() {
+        // The pure function has no non-negativity guard: a caller that passed a negative
+        // snore time would render a negative share. Callers are safe — snoreSeconds comes
+        // from the union of event spans (never negative) — so this pins the contract
+        // instead of asserting a clamp that does not exist.
+        assertEquals(
+            -2.5,
+            ReportAssembler.garminNormalizedSharePercent(snoreSeconds = -90, overlapWithCaptureMs = 3_600_000L)!!,
+            0.0001,
+        )
+    }
 }

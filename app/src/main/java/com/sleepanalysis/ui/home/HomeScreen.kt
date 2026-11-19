@@ -55,7 +55,10 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.sleepanalysis.R
 import com.sleepanalysis.data.db.entity.SleepSessionEntity
+import com.sleepanalysis.domain.policy.MissedNightResult
+import com.sleepanalysis.domain.report.CaptureStats
 import com.sleepanalysis.monitoring.service.MonitorState
+import com.sleepanalysis.ui.components.Formatting
 import com.sleepanalysis.ui.components.formatDateTime
 import com.sleepanalysis.ui.components.formatDuration
 import com.sleepanalysis.ui.components.formatMinutesOfDay
@@ -80,6 +83,7 @@ fun HomeScreen(
     val recordingEnabled by viewModel.recordingEnabled.collectAsStateWithLifecycle()
     val scheduleEnabled by viewModel.scheduleEnabled.collectAsStateWithLifecycle()
     val nextScheduledStart by viewModel.nextScheduledStart.collectAsStateWithLifecycle()
+    val missedNight by viewModel.missedNight.collectAsStateWithLifecycle()
     val context = LocalContext.current
 
     // Re-run the pre-flight checks whenever Home becomes visible.
@@ -195,6 +199,8 @@ fun HomeScreen(
                     }
                 },
             )
+
+            MissedNightBanner(missedNight)
 
             LastNightCard(
                 session = latest,
@@ -455,6 +461,63 @@ private fun InterruptedCard(
     }
 }
 
+/**
+ * Pure pairing behind the "Captured X – Y" line on the last-night card: capture start (after
+ * a start delay) to session end as formatted clock times, null while the night is still open.
+ * Window start honors the recorded capture start and falls back to the tap time — the same
+ * rule the report's SessionHealthCard applies. A non-positive capture_started_at (payload
+ * garbage) counts as absent: the epoch must never render as the start label.
+ */
+internal fun captureWindowLabel(
+    captureStatsJson: String?,
+    startedAt: Long,
+    endedAt: Long?,
+): Pair<String, String>? {
+    val end = endedAt ?: return null
+    val startMs = CaptureStats.parse(captureStatsJson)?.captureStartMs?.takeIf { it > 0 } ?: startedAt
+    return Formatting.time(startMs) to Formatting.time(end)
+}
+
+/**
+ * Calm banner above the last-night card: the night before today produced nothing usable
+ * (missed) or was cut short — absence made visible (P0 silent-failure discipline). Skipped
+ * and recorded nights render nothing on purpose: nothing went wrong.
+ */
+@Composable
+private fun MissedNightBanner(result: MissedNightResult?) {
+    when (result) {
+        is MissedNightResult.Missed -> Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+            Column(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(
+                    stringResource(R.string.home_missed_night_title),
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    stringResource(R.string.home_missed_night_body),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        is MissedNightResult.Short -> Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+            Column(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(
+                    stringResource(R.string.home_short_night_title, formatDuration(result.capturedInBedMs)),
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    stringResource(R.string.home_short_night_body),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        else -> Unit
+    }
+}
+
 @Composable
 private fun LastNightCard(
     session: SleepSessionEntity?,
@@ -470,6 +533,21 @@ private fun LastNightCard(
                 Text(stringResource(R.string.home_no_sessions), color = MaterialTheme.colorScheme.onSurfaceVariant)
             } else {
                 Text(formatDateTime(session.startedAt), style = MaterialTheme.typography.bodyLarge)
+                // The actual capture window once the night has ended (post-start-delay start),
+                // same fallback rule as the report's SessionHealthCard: capture_started_at from
+                // the stats JSON, else the tap time. Stats are parsed once per session row,
+                // not per recomposition; startedAt/endedAt are keys too so an open→finalized
+                // transition (endedAt set, captureStats unchanged) still recomputes.
+                val windowLabel = remember(session.id, session.captureStats, session.startedAt, session.endedAt) {
+                    captureWindowLabel(session.captureStats, session.startedAt, session.endedAt)
+                }
+                windowLabel?.let { (start, end) ->
+                    Text(
+                        stringResource(R.string.home_capture_window, start, end),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
                 Row {
                     Text(
                         session.endedAt?.let { formatDuration(it - session.startedAt) } ?: "…",

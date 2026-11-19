@@ -15,6 +15,8 @@ import androidx.lifecycle.viewModelScope
 import com.sleepanalysis.data.db.entity.SleepSessionEntity
 import com.sleepanalysis.data.prefs.UserPreferences
 import com.sleepanalysis.data.repo.SessionRepository
+import com.sleepanalysis.domain.policy.MissedNightPolicy
+import com.sleepanalysis.domain.policy.MissedNightResult
 import com.sleepanalysis.domain.policy.NightStopPolicy
 import com.sleepanalysis.monitoring.schedule.RecordingScheduler
 import com.sleepanalysis.monitoring.schedule.ScheduleTimes
@@ -24,12 +26,14 @@ import com.sleepanalysis.monitoring.service.MonitorState
 import com.sleepanalysis.monitoring.service.MonitorStateHolder
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
+import java.time.LocalDate
 import java.time.ZonedDateTime
 import javax.inject.Inject
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -88,6 +92,22 @@ class HomeViewModel @Inject constructor(
     val latestSession: StateFlow<SleepSessionEntity?> = sessions
         .map { it.firstOrNull() }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    /**
+     * Was the night before today recorded, skipped, or missed (MissedNightPolicy)? Null when
+     * there is nothing to say: no session history at all (the last-night card's empty state
+     * speaks), or a session is open — the recording status and the interrupted banner own
+     * that story. Recomputed whenever sessions or the skip history change.
+     */
+    val missedNight: StateFlow<MissedNightResult?> = combine(
+        sessions,
+        prefs.scheduleSkipHistoryDays,
+    ) { allSessions, skippedDays ->
+        when {
+            allSessions.isEmpty() || allSessions.any { it.endedAt == null } -> null
+            else -> MissedNightPolicy.evaluate(allSessions, LocalDate.now().toEpochDay(), skippedDays)
+        }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
     /**
      * The last night's stored validity grade letter (A–D, domain/validity.NightValidity) for

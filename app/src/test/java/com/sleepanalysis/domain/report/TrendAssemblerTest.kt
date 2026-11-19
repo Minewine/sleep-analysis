@@ -13,6 +13,9 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.time.Instant
+import java.time.LocalDate
+import java.time.ZoneId
 
 /**
  * Trend rows: stored measurements for the report-reproducible numbers, events/clips for the
@@ -214,5 +217,163 @@ class TrendAssemblerTest {
         assertEquals(7, rows.size)
         assertEquals(4 * dayMs, rows.first().startedAt) // last 7 of the 10 completed
         assertEquals(11 * dayMs, rows.last().startedAt) // RECOVERED night included
+    }
+
+    // ---- synthetic missed-night rows (SessionRepository.buildTrends threads the skip set) ----
+
+    private val zone = ZoneId.of("Europe/Zurich")
+    private val today = LocalDate.of(2026, 11, 19)
+
+    /** A session whose night WAKES on [wakeDate] (started 22:14 the evening before). */
+    private fun wakingOn(wakeDate: LocalDate) = session(
+        wakeDate.minusDays(1).atTime(22, 14).atZone(zone).toInstant().toEpochMilli(),
+    )
+
+    private fun midnightMs(date: LocalDate): Long =
+        date.atStartOfDay(zone).toInstant().toEpochMilli()
+
+    @Test
+    fun `synthetic missed rows fill the uncovered wake dates of the 7-night span`() {
+        val rows = TrendAssembler.assemble(listOf(wakingOn(today.minusDays(2))), emptyMap(), emptyMap(), emptyMap())
+        val merged = TrendAssembler.injectMissedNights(rows, emptyList(), emptySet(), today, zone)
+        // Span = today..today-6: six uncovered dates → six synthetic rows around the real one.
+        assertEquals(7, merged.size)
+        val missed = merged.filter { it.missed }
+        assertEquals(6, missed.size)
+        missed.forEach {
+            assertEquals(TrendAssembler.MISSED_SESSION_ID, it.sessionId)
+            assertNull(it.snoreScore)
+            assertNull(it.snoreMinutes)
+            assertTrue(it.detectorChangedFromPrevious.not())
+        }
+        // The synthetic for a wake date anchors on that date's local midnight; rows stay
+        // chronological (the real row's 22:14 start slots between the midnights).
+        val expectedMidnights = listOf(today, today.minusDays(1), today.minusDays(3), today.minusDays(4), today.minusDays(5), today.minusDays(6))
+            .map { midnightMs(it) }
+        assertEquals(expectedMidnights.sorted(), missed.map { it.startedAt })
+        assertFalse(rows[0].missed) // the real row is untouched
+    }
+
+    @Test
+    fun `skip set suppresses the synthetic row for its night`() {
+        val rows = TrendAssembler.assemble(listOf(wakingOn(today.minusDays(2))), emptyMap(), emptyMap(), emptyMap())
+        // The skip key is the START evening: skipping yesterday evening suppresses the night
+        // that woke today.
+        val merged = TrendAssembler.injectMissedNights(
+            rows, emptyList(), setOf(today.minusDays(1).toEpochDay()), today, zone,
+        )
+        assertEquals(5, merged.count { it.missed })
+        assertEquals(0, merged.count { it.missed && it.startedAt == midnightMs(today) })
+    }
+
+    @Test
+    fun `a real row wins over the synthetic for its wake date`() {
+        val rows = TrendAssembler.assemble(listOf(wakingOn(today)), emptyMap(), emptyMap(), emptyMap())
+        val merged = TrendAssembler.injectMissedNights(rows, emptyList(), emptySet(), today, zone)
+        // The real row covers today's wake date: synthetics fill only today-1..today-6.
+        assertEquals(6, merged.count { it.missed })
+        assertEquals(1, merged.count { !it.missed })
+        assertEquals(0, merged.count { it.missed && it.startedAt == midnightMs(today) })
+    }
+
+    @Test
+    fun `an open session suppresses its in-progress night`() {
+        val rows = TrendAssembler.assemble(listOf(wakingOn(today.minusDays(2))), emptyMap(), emptyMap(), emptyMap())
+        // Started 23:00 yesterday, still recording: provisional wake (start + 12 h) is today.
+        val open = SleepSessionEntity(
+            id = 99, startedAt = today.minusDays(1).atTime(23, 0).atZone(zone).toInstant().toEpochMilli(),
+            endedAt = null, status = SessionStatus.RECORDING, timeZone = zone.id,
+            deviceModel = "Test", osVersion = "30", appVersion = "0.1.0",
+        )
+        val merged = TrendAssembler.injectMissedNights(rows, listOf(open), emptySet(), today, zone)
+        assertEquals(0, merged.count { it.missed && it.startedAt == midnightMs(today) })
+        assertEquals(5, merged.count { it.missed }) // the other six dates minus the real row's date
+    }
+
+    @Test
+    fun `no finalized night at all injects nothing`() {
+        val merged = TrendAssembler.injectMissedNights(emptyList(), emptyList(), emptySet(), today, zone)
+        assertTrue(merged.isEmpty())
+    }
+
+    @Test
+    fun `seven real rows covering the whole span inject nothing`() {
+        val rows = (0L until 7).map { TrendAssembler.assemble(listOf(wakingOn(today.minusDays(it))), emptyMap(), emptyMap(), emptyMap()) }
+            .reduce { acc, list -> acc + list }
+        val merged = TrendAssembler.injectMissedNights(rows, emptyList(), emptySet(), today, zone)
+        assertEquals(7, merged.size)
+        assertEquals(0, merged.count { it.missed })
+    }
+
+    @Test
+    fun `the cap bounds the candidate span, not the merged list`() {
+        // Seven consecutive missed nights behind a single real row that woke today-8: the
+        // candidate span is always exactly maxNights dates (today..today-6), so 7 synthetics
+        // — and the merged list intentionally exceeds 7. Nights older than the span keep
+        // their real rows; nothing is synthesized for today-7 or today-8.
+        val rows = TrendAssembler.assemble(listOf(wakingOn(today.minusDays(8))), emptyMap(), emptyMap(), emptyMap())
+        val merged = TrendAssembler.injectMissedNights(rows, emptyList(), emptySet(), today, zone)
+        assertEquals(8, merged.size)
+        assertEquals(7, merged.count { it.missed })
+        val missedStarts = merged.filter { it.missed }.map { it.startedAt }.toSet()
+        assertFalse(missedStarts.contains(midnightMs(today.minusDays(7))))
+        assertFalse(missedStarts.contains(midnightMs(today.minusDays(8))))
+        assertEquals(1, merged.count { !it.missed && it.startedAt == rows.single().startedAt })
+    }
+
+    @Test
+    fun `real rows older than the span leave their dates uncovered for synthesis`() {
+        // Seven real nights ending at today-4: the span (today..today-6) still synthesizes
+        // the four uncovered recent dates — old rows do not fence off the recent past.
+        val rows = (10L downTo 4L)
+            .map { TrendAssembler.assemble(listOf(wakingOn(today.minusDays(it))), emptyMap(), emptyMap(), emptyMap()) }
+            .reduce { acc, list -> acc + list }
+        val merged = TrendAssembler.injectMissedNights(rows, emptyList(), emptySet(), today, zone)
+        assertEquals(11, merged.size) // 7 real + today..today-3 synthesized
+        assertEquals(4, merged.count { it.missed })
+        assertEquals(7, merged.count { !it.missed })
+    }
+
+    @Test
+    fun `a row recorded in another zone keeps its own wake-date anchor`() {
+        // Traveler probe: the session is stored with UTC (device tz at recording time) and
+        // ends 23:30 UTC Nov 18 = 00:30 Zurich Nov 19 — it woke TODAY in today's zone, yet
+        // coverage keys on the row's OWN zone, so its wake date reads today-1 and today's
+        // synthetic is still injected (the same real night can appear twice in Zurich's
+        // frame). Pinned to make the anchoring rule explicit, not to bless it.
+        val utc = ZoneId.of("UTC")
+        val utcNight = SleepSessionEntity(
+            id = nextId++,
+            startedAt = today.minusDays(1).atTime(16, 0).atZone(utc).toInstant().toEpochMilli(),
+            endedAt = today.minusDays(1).atTime(23, 30).atZone(utc).toInstant().toEpochMilli(),
+            status = SessionStatus.COMPLETED, timeZone = utc.id, deviceModel = "Test",
+            osVersion = "30", appVersion = "0.1.0",
+        )
+        val rows = TrendAssembler.assemble(listOf(utcNight), emptyMap(), emptyMap(), emptyMap())
+        val merged = TrendAssembler.injectMissedNights(rows, emptyList(), emptySet(), today, zone)
+        // Sanity: the ended instant IS 00:30 Zurich on today's date.
+        assertEquals(
+            today.toEpochDay(),
+            Instant.ofEpochMilli(utcNight.endedAt!!).atZone(zone).toLocalDate().toEpochDay(),
+        )
+        assertEquals(1, merged.count { !it.missed })
+        assertEquals(6, merged.count { it.missed })
+        assertEquals(1, merged.count { it.missed && it.startedAt == midnightMs(today) })
+    }
+
+    @Test
+    fun `the synthetic anchor is the transition day's true local midnight`() {
+        // DST probe for the midnight anchoring: the 23 h day is Mar 29→Mar 30 2026 (clocks
+        // spring 02:00→03:00 ON Mar 29), so Mar 30's local midnight is only 23 h after Mar
+        // 29's — a 24 h-step back from today (Mar 31) would land the Mar 30 synthetic an
+        // hour off. The atStartOfDay anchor stays exact.
+        val dstToday = LocalDate.of(2026, 3, 31)
+        val rows = TrendAssembler.assemble(listOf(wakingOn(LocalDate.of(2026, 3, 23))), emptyMap(), emptyMap(), emptyMap())
+        val merged = TrendAssembler.injectMissedNights(rows, emptyList(), emptySet(), dstToday, zone)
+        assertEquals(7, merged.count { it.missed })
+        val mar29 = midnightMs(LocalDate.of(2026, 3, 29))
+        assertEquals(23 * 3_600_000L, midnightMs(LocalDate.of(2026, 3, 30)) - mar29)
+        assertEquals(1, merged.count { it.missed && it.startedAt == mar29 })
+        assertEquals(1, merged.count { it.missed && it.startedAt == midnightMs(LocalDate.of(2026, 3, 30)) })
     }
 }

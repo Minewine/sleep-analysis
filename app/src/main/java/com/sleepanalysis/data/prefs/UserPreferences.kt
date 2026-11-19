@@ -133,6 +133,11 @@ class UserPreferences @Inject constructor(@ApplicationContext context: Context) 
         val SCHEDULE_START_MINUTES = intPreferencesKey("schedule_start_minutes")
         val SCHEDULE_END_MINUTES = intPreferencesKey("schedule_end_minutes")
         val SCHEDULE_SKIP_EPOCH_DAY = longPreferencesKey("schedule_skip_epoch_day")
+        // Skip history (missed-night banner/trends): every skip write is ALSO mirrored into
+        // this additive epoch-day string set (setScheduleSkipEpochDay). The single-night key
+        // above naturally expires; the history does not, so a skip from last week still
+        // suppresses its missed-night row.
+        val SCHEDULE_SKIP_HISTORY = stringSetPreferencesKey("schedule_skip_history")
         val START_DELAY_MINUTES = intPreferencesKey("start_delay_minutes")
         val GARMIN_AUTO_RETRY_DATE = stringPreferencesKey("garmin_auto_retry_date")
         val GARMIN_AUTO_RETRY_MS = longPreferencesKey("garmin_auto_retry_ms")
@@ -243,6 +248,11 @@ class UserPreferences @Inject constructor(@ApplicationContext context: Context) 
     /** Epoch day of a skipped start occurrence (0 = none); naturally expires. */
     val scheduleSkipEpochDay: Flow<Long> = dataStore.data.map { it[Keys.SCHEDULE_SKIP_EPOCH_DAY] ?: 0L }
 
+    /** Epoch days of every skipped scheduled start (additive history — see [skipHistoryWith]). */
+    val scheduleSkipHistoryDays: Flow<Set<Long>> = dataStore.data.map { prefs ->
+        skipHistoryEpochDays(prefs[Keys.SCHEDULE_SKIP_HISTORY])
+    }
+
     suspend fun recordingEnabledNow(): Boolean = recordingEnabled.first()
 
     suspend fun scheduleEnabledNow(): Boolean = scheduleEnabled.first()
@@ -252,6 +262,8 @@ class UserPreferences @Inject constructor(@ApplicationContext context: Context) 
     suspend fun scheduleEndMinutesNow(): Int = scheduleEndMinutes.first()
 
     suspend fun scheduleSkipEpochDayNow(): Long = scheduleSkipEpochDay.first()
+
+    suspend fun scheduleSkipHistoryDaysNow(): Set<Long> = scheduleSkipHistoryDays.first()
 
     suspend fun setRecordingEnabled(enabled: Boolean) {
         dataStore.edit { it[Keys.RECORDING_ENABLED] = enabled }
@@ -270,7 +282,14 @@ class UserPreferences @Inject constructor(@ApplicationContext context: Context) 
     }
 
     suspend fun setScheduleSkipEpochDay(day: Long) {
-        dataStore.edit { it[Keys.SCHEDULE_SKIP_EPOCH_DAY] = day }
+        dataStore.edit { prefs ->
+            prefs[Keys.SCHEDULE_SKIP_EPOCH_DAY] = day
+            // Mirror into the skip history atomically. Both skip writers — the bedtime
+            // notification's Skip action (ScheduledStartReceiver) and
+            // RecordingScheduler.skipNextStart — funnel through this setter, so one write
+            // site can never drift from the other.
+            prefs[Keys.SCHEDULE_SKIP_HISTORY] = skipHistoryWith(prefs[Keys.SCHEDULE_SKIP_HISTORY], day)
+        }
     }
 
     /**
@@ -424,6 +443,21 @@ class UserPreferences @Inject constructor(@ApplicationContext context: Context) 
         /** Read-time mapping: an absent (never-stored) flag falls back to the held-wakelock default. */
         fun debugSkipCaptureWakelockOrDefault(raw: Boolean?): Boolean =
             raw ?: DEFAULT_DEBUG_SKIP_CAPTURE_WAKELOCK
+
+        /**
+         * Skip-history update: additive epoch-day strings ([SCHEDULE_SKIP_HISTORY] holds
+         * day.toLong().toString() entries). Non-positive days are ignored — never a real
+         * epoch day, so a malformed occurrence must not persist a permanent "0" entry (the
+         * single-night key keeps its own contract: written as before, callers enforce >= 0).
+         * Pure — the mirroring rule is unit-tested, since the DataStore itself needs an
+         * Android context and lives behind instrumentation.
+         */
+        fun skipHistoryWith(current: Set<String>?, day: Long): Set<String> =
+            if (day > 0) (current ?: emptySet()) + day.toString() else current.orEmpty()
+
+        /** Stored skip-history strings → epoch days; malformed entries are dropped (pure). */
+        fun skipHistoryEpochDays(raw: Set<String>?): Set<Long> =
+            raw.orEmpty().mapNotNull { it.toLongOrNull() }.toSet()
     }
 }
 

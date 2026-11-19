@@ -723,11 +723,13 @@ class SessionRepository @Inject constructor(
      * Stored measurements supply the report-reproducible numbers; the per-night structure
      * numbers (longest bout, mean peak, clip coverage) come from the night's events/clips
      * with the report's own math. Candidates are narrowed here so the per-night reads stay
-     * bounded (≤ 7 nights × 3 small queries).
+     * bounded (≤ 7 nights × 3 small queries). [skippedDays] (the persisted skip history)
+     * suppresses synthetic missed-night rows for nights skipped on purpose.
      */
-    suspend fun buildTrends(maxNights: Int = 7): List<com.sleepanalysis.domain.report.NightTrend> =
+    suspend fun buildTrends(maxNights: Int = 7, skippedDays: Set<Long> = emptySet()): List<com.sleepanalysis.domain.report.NightTrend> =
         withContext(Dispatchers.IO) {
-            val candidates = sessionDao.observeAll().first()
+            val all = sessionDao.observeAll().first()
+            val candidates = all
                 .filter(com.sleepanalysis.domain.report.TrendAssembler::isTrendNight)
                 .sortedBy { it.startedAt }
                 .takeLast(maxNights)
@@ -749,8 +751,22 @@ class SessionRepository @Inject constructor(
                 val to = day.plusDays(1).atStartOfDay(zone).toInstant().toEpochMilli()
                 s.id to measurementDao.garminBetween(from, to)
             }
-            com.sleepanalysis.domain.report.TrendAssembler.assemble(
+            val rows = com.sleepanalysis.domain.report.TrendAssembler.assemble(
                 candidates, measurements, events, clips, quietGaps, garmin, maxNights,
+            )
+            // Synthetic missed-night rows: nights in the last-7 span with neither a real row
+            // nor an in-progress session surface as "missed" (absence made visible), unless
+            // they were skipped on purpose. Zone/day anchoring matches buildInsights' idiom.
+            val zone = candidates.lastOrNull()?.timeZone
+                ?.let { runCatching { java.time.ZoneId.of(it) }.getOrNull() }
+                ?: java.time.ZoneId.systemDefault()
+            com.sleepanalysis.domain.report.TrendAssembler.injectMissedNights(
+                rows = rows,
+                openSessions = all.filter { it.endedAt == null },
+                skippedDays = skippedDays,
+                today = java.time.LocalDate.now(),
+                zone = zone,
+                maxNights = maxNights,
             )
         }
 
