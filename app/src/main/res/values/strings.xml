@@ -285,10 +285,11 @@
     <string name="report_garmin_linked">Linked to this night ✓</string>
     <string name="report_garmin_snore_vs_stages">Snoring %1$s this night · stage timeline unavailable (totals only)</string>
     <string name="report_garmin_bout_stage">Longest snore bout fell in %1$s (%2$s%% of it)</string>
-    <string name="report_garmin_refresh">Refresh with Garmin</string>
-    <string name="report_garmin_refresh_syncing">Syncing Garmin…</string>
+    <string name="report_garmin_refresh">Generate morning report</string>
+    <string name="report_garmin_refresh_syncing">Syncing Garmin &amp; Health Connect…</string>
     <string name="report_garmin_refresh_updating">Updating report…</string>
     <string name="report_garmin_refresh_not_available">Garmin data not available yet — showing the acoustic report only.</string>
+    <string name="report_garmin_refresh_stages_pending">Stage timeline not available yet — try again later.</string>
     <string name="report_garmin_refresh_included">Garmin included · %1$s</string>
 
     <!-- Report: stage timeline section — renders with or without a Garmin link, labeled by the

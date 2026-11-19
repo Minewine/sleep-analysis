@@ -67,4 +67,52 @@ class ReportRefreshStateTest {
             refreshStatusLine(RefreshPhase.IDLE, GarminLinkStatus.METRICS_ONLY, completedAtMs = 123L),
         )
     }
+
+    @Test
+    fun `completed refresh with neither timeline nor stage totals shows stages pending`() {
+        // No stage rows landed from either importer (stageSource null) and Garmin's vendor
+        // totals are empty too — the honest line is "try again later", not a failure.
+        assertEquals(
+            RefreshStatusLine.STAGES_PENDING,
+            refreshStatusLine(
+                RefreshPhase.IDLE, GarminLinkStatus.LINKED, completedAtMs = 123L,
+                hasStageTimeline = false, garminStageMinutes = emptyMap(),
+            ),
+        )
+    }
+
+    @Test
+    fun `stage totals alone still count as included`() {
+        // Vendor totals can survive while the timeline aged out — that state is the Garmin
+        // card's totals-only hint's job, not the button's.
+        assertEquals(
+            RefreshStatusLine.INCLUDED,
+            refreshStatusLine(
+                RefreshPhase.IDLE, GarminLinkStatus.LINKED, completedAtMs = 123L,
+                hasStageTimeline = false, garminStageMinutes = mapOf("DEEP" to 42L),
+            ),
+        )
+        assertEquals(
+            RefreshStatusLine.INCLUDED,
+            refreshStatusLine(
+                RefreshPhase.IDLE, GarminLinkStatus.METRICS_ONLY, completedAtMs = 123L,
+                hasStageTimeline = true, garminStageMinutes = emptyMap(),
+            ),
+        )
+    }
+
+    @Test
+    fun `health connect sync phase shows the syncing line`() {
+        assertEquals(
+            RefreshStatusLine.SYNCING,
+            refreshStatusLine(RefreshPhase.SYNCING_HEALTHCONNECT, GarminLinkStatus.LINKED, completedAtMs = 123L),
+        )
+    }
+
+    @Test
+    fun `stages missing is a pure outcome check`() {
+        assertEquals(true, stagesStillMissing(hasStageTimeline = false, garminStageMinutes = emptyMap()))
+        assertEquals(false, stagesStillMissing(hasStageTimeline = true, garminStageMinutes = emptyMap()))
+        assertEquals(false, stagesStillMissing(hasStageTimeline = false, garminStageMinutes = mapOf("LIGHT" to 1L)))
+    }
 }

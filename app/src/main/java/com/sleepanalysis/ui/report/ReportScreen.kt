@@ -130,9 +130,11 @@ fun ReportScreen(
                 RefreshReportCard(
                     refresh = refreshState,
                     garminStatus = r.garminStatus,
+                    hasStageTimeline = r.stageSource != null,
+                    garminStageMinutes = r.garminStageMinutes,
                     importRunning = garminImportState
                         is com.sleepanalysis.data.garmin.GarminImportManager.GarminImportState.Importing,
-                    onRefresh = viewModel::refreshWithGarmin,
+                    onRefresh = viewModel::refreshMorningReport,
                 )
             }
             item { QualityBannersCard(report = r, clipQuality = clipQuality) }
@@ -1214,15 +1216,18 @@ private fun eventTypeLabel(type: String): String = when (type) {
 }
 
 /**
- * "Refresh with Garmin" row at the top of the Morning Summary (docs/NIGHT_REPORT.md §2):
- * one tap re-syncs this night's wake date (or, when already LINKED, just rebuilds) and
- * updates the report in place. The status line comes from the VM's pure mapping — running
- * phases while busy, otherwise the last attempt's outcome; no line before any attempt.
+ * "Generate morning report" row at the top of the Morning Summary (docs/NIGHT_REPORT.md §2):
+ * one tap pulls this night's Garmin + Health Connect data (gated like the silent backfills,
+ * skipped when already present) and updates the report in place. The status line comes from
+ * the VM's pure mapping — running phases while busy, otherwise the last attempt's outcome,
+ * including the distinct "stage timeline not available yet" line; no line before any attempt.
  */
 @Composable
 private fun RefreshReportCard(
     refresh: RefreshState,
     garminStatus: com.sleepanalysis.domain.report.GarminLinkStatus,
+    hasStageTimeline: Boolean,
+    garminStageMinutes: Map<String, Long>,
     importRunning: Boolean,
     onRefresh: () -> Unit,
 ) {
@@ -1233,7 +1238,15 @@ private fun RefreshReportCard(
         ) {
             Text(stringResource(R.string.report_garmin_refresh))
         }
-        when (refreshStatusLine(refresh.phase, garminStatus, refresh.completedAtMs)) {
+        when (
+            refreshStatusLine(
+                refresh.phase,
+                garminStatus,
+                refresh.completedAtMs,
+                hasStageTimeline,
+                garminStageMinutes,
+            )
+        ) {
             RefreshStatusLine.SYNCING -> Text(
                 stringResource(R.string.report_garmin_refresh_syncing),
                 style = MaterialTheme.typography.bodySmall,
@@ -1246,6 +1259,11 @@ private fun RefreshReportCard(
             )
             RefreshStatusLine.NOT_AVAILABLE -> Text(
                 stringResource(R.string.report_garmin_refresh_not_available),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            RefreshStatusLine.STAGES_PENDING -> Text(
+                stringResource(R.string.report_garmin_refresh_stages_pending),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

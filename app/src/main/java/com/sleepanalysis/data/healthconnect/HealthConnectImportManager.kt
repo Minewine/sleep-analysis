@@ -1,6 +1,7 @@
 package com.sleepanalysis.data.healthconnect
 
 import android.content.Context
+import android.util.Log
 import androidx.health.connect.client.HealthConnectClient
 import androidx.health.connect.client.permission.HealthPermission
 import androidx.health.connect.client.records.SleepSessionRecord
@@ -130,7 +131,17 @@ class HealthConnectImportManager @Inject constructor(
             if (HealthPermission.getReadPermission(SleepSessionRecord::class) !in granted) {
                 return notReady(date, NotReadyReason.PERMISSION_MISSING)
             }
-            val window = GarminImportManager.dayWindowMs(date, zone)
+            // The read window is the date's day window widened INTO THE PREVIOUS EVENING:
+            // a night ending on [date] usually STARTS on [date] - 1, and HC's TimeRangeFilter
+            // matches records by their START time — the plain day window returned 0 records
+            // for a session that fell asleep before local midnight (found on-device
+            // 2026-11-18: wake-date import missed the night entirely; the previous date's
+            // window held the record). Linking is unaffected: each record links by its own
+            // span, so a widened read can only catch more of the right nights, never
+            // mis-assign (bestSessionOverlapping picks the best-overlapping session).
+            val dayWindow = GarminImportManager.dayWindowMs(date, zone)
+            val window =
+                (dayWindow.first - EVENING_READ_LEAD_MS) to dayWindow.second
             val response = client.readRecords(
                 ReadRecordsRequest(
                     SleepSessionRecord::class,
@@ -139,6 +150,11 @@ class HealthConnectImportManager @Inject constructor(
                         Instant.ofEpochMilli(window.second),
                     ),
                 )
+            )
+            Log.d(
+                TAG,
+                "import $date: window=${Instant.ofEpochMilli(window.first)}..${Instant.ofEpochMilli(window.second)} " +
+                    "records=${response.records.size}",
             )
             // Per-record linking: each Health Connect record carries its own sleep window,
             // and THAT span — not the import date's day window — links to the best-
@@ -231,9 +247,15 @@ class HealthConnectImportManager @Inject constructor(
 
     /** Terminal exit: publish + return the NotReady state in one step. */
     private fun notReady(date: LocalDate, reason: NotReadyReason): HealthConnectImportState =
-        HealthConnectImportState.NotReady(date, reason).also { _state.value = it }
+        HealthConnectImportState.NotReady(date, reason).also {
+            Log.d(TAG, "import $date not ready: $reason")
+            _state.value = it
+        }
 
     companion object {
+        private const val TAG = "HealthConnectImport"
+        /** How far into the previous evening the HC read window reaches (see importForDateLocked). */
+        private const val EVENING_READ_LEAD_MS = 6L * 60 * 60 * 1000
         /** sleep_stage.source value of the HC-imported timeline (schema v14 vocabulary). */
         const val STAGE_SOURCE = "WEARABLE"
         /** raw_payload.source value of the import summary row (mirrors Garmin's SOURCE). */

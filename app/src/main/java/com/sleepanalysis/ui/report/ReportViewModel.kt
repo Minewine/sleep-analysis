@@ -42,8 +42,41 @@ internal fun drawsNotReadyBudget(state: GarminImportManager.GarminImportState): 
 internal fun refreshSkipsImport(status: GarminLinkStatus): Boolean =
     status == GarminLinkStatus.LINKED
 
+/**
+ * Pure gate for the morning report's Garmin step: it may import only when the manager allows
+ * it at all (key stored, rate limit), nothing is already in flight, and the date's outcome
+ * budget still has room — the exact gates the silent [maybeBackfillGarmin] runs.
+ */
+internal fun refreshGarminGateOpen(
+    canImport: Boolean,
+    importing: Boolean,
+    budgetAllowed: Boolean,
+): Boolean = canImport && !importing && budgetAllowed
+
+/**
+ * Pure gate for the morning report's Health Connect step: the same three checks the silent
+ * [maybeBackfillHealthConnect] runs — provider available, no import already in flight (the
+ * singleton state flow is shared with the settings screen), and stage rows still missing
+ * ([needsImport] makes every redundant call a cheap no-op).
+ */
+internal fun refreshHealthConnectGateOpen(
+    available: Boolean,
+    importing: Boolean,
+    needsImport: Boolean,
+): Boolean = available && !importing && needsImport
+
+/**
+ * Pure outcome check for the "stage timeline not available yet" line: neither Health Connect
+ * nor Garmin produced stage rows for this night even after the refresh — the timeline is
+ * expected around wake time and may land later, so the honest line is "try again later",
+ * not a failure. The vendor stage totals alone do not count (they can survive while the
+ * timeline aged out).
+ */
+internal fun stagesStillMissing(hasStageTimeline: Boolean, garminStageMinutes: Map<String, Long>): Boolean =
+    !hasStageTimeline && garminStageMinutes.isEmpty()
+
 /** Phases of the manual refresh flow, shown verbatim under the button (no model change). */
-enum class RefreshPhase { IDLE, SYNCING_GARMIN, UPDATING_REPORT }
+enum class RefreshPhase { IDLE, SYNCING_GARMIN, SYNCING_HEALTHCONNECT, UPDATING_REPORT }
 
 /** Refresh flow state: current phase plus when a refresh last completed (UI timestamp). */
 data class RefreshState(
@@ -52,24 +85,30 @@ data class RefreshState(
 )
 
 /** What the refresh row shows under its button (ReportScreen.RefreshReportCard). */
-enum class RefreshStatusLine { NONE, SYNCING, UPDATING, NOT_AVAILABLE, INCLUDED }
+enum class RefreshStatusLine { NONE, SYNCING, UPDATING, NOT_AVAILABLE, STAGES_PENDING, INCLUDED }
 
 /**
  * Pure mapping for the refresh row's status line: the running phases win; the outcome shows
  * only after a completed attempt — a first open with MISSING data is the quality banner's
  * job, not the button's ("Garmin data not available yet" must not imply a failed attempt
  * that never happened). LINKED and METRICS_ONLY both count as "Garmin included" (data is
- * on the report either way).
+ * on the report either way). A completed refresh whose night still has neither stage
+ * timeline nor vendor stage totals shows the distinct "stage timeline not available yet"
+ * line — the watch usually writes stages around wake time, so a later retry may succeed.
  */
 internal fun refreshStatusLine(
     phase: RefreshPhase,
     garminStatus: GarminLinkStatus,
     completedAtMs: Long?,
+    hasStageTimeline: Boolean = true,
+    garminStageMinutes: Map<String, Long> = emptyMap(),
 ): RefreshStatusLine = when {
     phase == RefreshPhase.SYNCING_GARMIN -> RefreshStatusLine.SYNCING
+    phase == RefreshPhase.SYNCING_HEALTHCONNECT -> RefreshStatusLine.SYNCING
     phase == RefreshPhase.UPDATING_REPORT -> RefreshStatusLine.UPDATING
     completedAtMs == null -> RefreshStatusLine.NONE
     garminStatus == GarminLinkStatus.MISSING -> RefreshStatusLine.NOT_AVAILABLE
+    stagesStillMissing(hasStageTimeline, garminStageMinutes) -> RefreshStatusLine.STAGES_PENDING
     else -> RefreshStatusLine.INCLUDED
 }
 
@@ -251,27 +290,66 @@ class ReportViewModel @Inject constructor(
     }
 
     /**
-     * "Refresh with Garmin" (top of the report): rebuild the Morning Summary with the latest
-     * acoustic + Garmin data, in place. An already-LINKED night skips the network import
-     * ([refreshSkipsImport]) and only rebuilds; otherwise the Garmin card's exact import →
-     * budget → rebuild path runs, wrapped in the two progress phases. No duplicate imports:
-     * a re-import is replace-not-duplicate, and the marked budget keeps the silent backfill
-     * from firing right behind it. Blocks while this manager is already importing (the
-     * singleton flow is shared with the settings screen and the auto-backfill).
+     * "Generate morning report" (top of the report): pull this night's wearable data and
+     * rebuild the Morning Summary in place. Garmin step first — an already-LINKED night
+     * skips the network import ([refreshSkipsImport]); otherwise the Garmin card's exact
+     * import → budget path runs under the same gates as the silent backfill
+     * ([refreshGarminGateOpen]: [GarminImportManager.canImport], nothing in flight, the
+     * date's outcome budget). Then the Health Connect step under [maybeBackfillHealthConnect]'s
+     * exact gates ([refreshHealthConnectGateOpen]: provider available, nothing in flight,
+     * [HealthConnectImportManager.needsImport]). Finally the rebuild — [reloadSuspend], whose
+     * trailing silent backfills stay unchanged. No duplicate imports: a re-import is
+     * replace-not-duplicate, and the marked budget keeps the silent backfill from firing
+     * right behind it. Blocks while this manager is already importing (the singleton flow is
+     * shared with the settings screen and the auto-backfill). A gated step is skipped
+     * silently — the rebuild still runs on what is stored, and the status line reports the
+     * honest outcome.
      */
-    fun refreshWithGarmin() {
+    fun refreshMorningReport() {
         val r = report.value ?: return
         if (_refreshState.value.phase != RefreshPhase.IDLE) return
         if (garminImportManager.state.value is GarminImportManager.GarminImportState.Importing) return
         viewModelScope.launch {
             try {
-                if (refreshSkipsImport(r.garminStatus)) {
-                    _refreshState.value = RefreshState(RefreshPhase.UPDATING_REPORT, _refreshState.value.completedAtMs)
-                } else {
-                    _refreshState.value = RefreshState(RefreshPhase.SYNCING_GARMIN, _refreshState.value.completedAtMs)
-                    importThisNight()
-                    _refreshState.value = RefreshState(RefreshPhase.UPDATING_REPORT, _refreshState.value.completedAtMs)
+                if (!refreshSkipsImport(r.garminStatus)) {
+                    val date = com.sleepanalysis.domain.report.NightDates
+                        .garminWakeDate(r.startedAt, r.endedAt, r.timeZone)
+                    val gateOpen = refreshGarminGateOpen(
+                        canImport = garminImportManager.canImport(),
+                        importing = garminImportManager.state.value
+                            is GarminImportManager.GarminImportState.Importing,
+                        budgetAllowed = userPreferences.garminBackfillAllowed(
+                            date.toString(),
+                            System.currentTimeMillis(),
+                        ),
+                    )
+                    if (gateOpen) {
+                        _refreshState.value =
+                            RefreshState(RefreshPhase.SYNCING_GARMIN, _refreshState.value.completedAtMs)
+                        garminImportManager.importForDate(date, ZoneId.of(r.timeZone))
+                        markGarminAttemptBudget(date.toString())
+                        _report.value = sessionRepository.buildReport(sessionId)
+                    }
                 }
+                // The Health Connect step gates on the freshly imported report (a Garmin
+                // import may have changed the wake date's window — same rebuild the silent
+                // backfill does between its steps).
+                val hc = _report.value ?: r
+                val hcGateOpen = refreshHealthConnectGateOpen(
+                    available = healthConnectImportManager.isAvailable(),
+                    importing = healthConnectImportManager.state.value
+                        is HealthConnectImportManager.HealthConnectImportState.Importing,
+                    needsImport = healthConnectImportManager.needsImport(sessionId),
+                )
+                if (hcGateOpen) {
+                    _refreshState.value =
+                        RefreshState(RefreshPhase.SYNCING_HEALTHCONNECT, _refreshState.value.completedAtMs)
+                    val date = com.sleepanalysis.domain.report.NightDates
+                        .garminWakeDate(hc.startedAt, hc.endedAt, hc.timeZone)
+                    healthConnectImportManager.importForDate(date, ZoneId.of(hc.timeZone))
+                    _report.value = sessionRepository.buildReport(sessionId)
+                }
+                _refreshState.value = RefreshState(RefreshPhase.UPDATING_REPORT, _refreshState.value.completedAtMs)
                 reloadSuspend()
                 _refreshState.value = RefreshState(RefreshPhase.IDLE, System.currentTimeMillis())
             } finally {

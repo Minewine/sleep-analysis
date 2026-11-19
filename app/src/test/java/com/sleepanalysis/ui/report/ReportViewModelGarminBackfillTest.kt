@@ -73,4 +73,26 @@ class ReportViewModelGarminBackfillTest {
             ),
         )
     }
+
+    @Test
+    fun `morning report's garmin step runs under the backfill's exact gates`() {
+        // refreshGarminGateOpen mirrors maybeBackfillGarmin: the manager must allow the
+        // import at all, nothing may be in flight, and the date's outcome budget must have
+        // room — any closed gate skips the import silently (the rebuild still runs).
+        assertTrue(refreshGarminGateOpen(canImport = true, importing = false, budgetAllowed = true))
+        assertFalse(refreshGarminGateOpen(canImport = false, importing = false, budgetAllowed = true))
+        assertFalse(refreshGarminGateOpen(canImport = true, importing = true, budgetAllowed = true))
+        assertFalse(refreshGarminGateOpen(canImport = true, importing = false, budgetAllowed = false))
+    }
+
+    @Test
+    fun `morning report's health connect step runs under the backfill's exact gates`() {
+        // refreshHealthConnectGateOpen mirrors maybeBackfillHealthConnect: provider
+        // available, no import in flight (shared singleton flow with the settings screen),
+        // and stage rows still missing (needsImport makes redundant calls cheap no-ops).
+        assertTrue(refreshHealthConnectGateOpen(available = true, importing = false, needsImport = true))
+        assertFalse(refreshHealthConnectGateOpen(available = false, importing = false, needsImport = true))
+        assertFalse(refreshHealthConnectGateOpen(available = true, importing = true, needsImport = true))
+        assertFalse(refreshHealthConnectGateOpen(available = true, importing = false, needsImport = false))
+    }
 }
