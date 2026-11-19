@@ -23,6 +23,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -54,7 +55,10 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.sleepanalysis.R
 import com.sleepanalysis.data.db.entity.SleepSessionEntity
+import com.sleepanalysis.domain.policy.MissedNightResult
+import com.sleepanalysis.domain.report.CaptureStats
 import com.sleepanalysis.monitoring.service.MonitorState
+import com.sleepanalysis.ui.components.Formatting
 import com.sleepanalysis.ui.components.formatDateTime
 import com.sleepanalysis.ui.components.formatDuration
 import com.sleepanalysis.ui.components.formatMinutesOfDay
@@ -72,11 +76,14 @@ fun HomeScreen(
 ) {
     val state by viewModel.monitorState.collectAsStateWithLifecycle()
     val latest by viewModel.latestSession.collectAsStateWithLifecycle()
+    val validityGrade by viewModel.latestValidityGrade.collectAsStateWithLifecycle()
     val preFlight by viewModel.preFlight.collectAsStateWithLifecycle()
     val interrupted by viewModel.interrupted.collectAsStateWithLifecycle()
+    val experimentChip by viewModel.experimentChip.collectAsStateWithLifecycle()
     val recordingEnabled by viewModel.recordingEnabled.collectAsStateWithLifecycle()
     val scheduleEnabled by viewModel.scheduleEnabled.collectAsStateWithLifecycle()
     val nextScheduledStart by viewModel.nextScheduledStart.collectAsStateWithLifecycle()
+    val missedNight by viewModel.missedNight.collectAsStateWithLifecycle()
     val context = LocalContext.current
 
     // Re-run the pre-flight checks whenever Home becomes visible.
@@ -86,6 +93,7 @@ fun HomeScreen(
             if (event == Lifecycle.Event.ON_RESUME) {
                 viewModel.refreshPreFlight()
                 viewModel.refreshSchedule()
+                viewModel.refreshExperimentChip()
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -163,7 +171,9 @@ fun HomeScreen(
             StatusCard(
                 state = state,
                 onStart = ::onStartClick,
+                onStartNow = viewModel::startCaptureNow,
                 onStop = viewModel::stopRecording,
+                shouldConfirmStop = viewModel::shouldConfirmStopNow,
                 // Start also gates on the storage pre-flight: below ~500 MB MonitorService bails
                 // out before capture. Stop stays enabled for an active session (StatusCard).
                 startEnabled = recordingEnabled && (preFlight?.storageOk ?: true),
@@ -190,9 +200,13 @@ fun HomeScreen(
                 },
             )
 
+            MissedNightBanner(missedNight)
+
             LastNightCard(
                 session = latest,
+                validityGrade = validityGrade,
                 statusLabel = viewModel::statusLabel,
+                experimentChip = experimentChip,
                 onOpen = onOpenReport,
             )
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -223,12 +237,17 @@ fun HomeScreen(
 private fun StatusCard(
     state: MonitorState,
     onStart: () -> Unit,
+    onStartNow: () -> Unit,
     onStop: () -> Unit,
+    shouldConfirmStop: () -> Boolean,
     startEnabled: Boolean,
 ) {
     val recording = state is MonitorState.Recording
     val delayed = state is MonitorState.Delayed
     val active = recording || delayed
+    // Evaluated at TAP time (a 23:00 tap confirms, a 07:00 tap doesn't) — never at composition.
+    // Saveable: the dialog must survive rotation mid-decision.
+    var confirmStop by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(false) }
     // Ticks once per second so the elapsed readout is live while recording (and the countdown
     // live during the start delay).
     var nowTick by remember { mutableStateOf(System.currentTimeMillis()) }
@@ -267,7 +286,11 @@ private fun StatusCard(
                 )
             }
             Button(
-                onClick = if (active) onStop else onStart,
+                onClick = {
+                    if (!active) onStart()
+                    else if (recording && shouldConfirmStop()) confirmStop = true
+                    else onStop()
+                },
                 modifier = Modifier.fillMaxWidth(),
                 enabled = active || startEnabled,
             ) {
@@ -275,6 +298,14 @@ private fun StatusCard(
                     if (active) stringResource(R.string.home_stop_recording)
                     else stringResource(R.string.home_start_recording)
                 )
+            }
+            if (delayed) {
+                // Start-delay skip: capture begins at the tap (the wait was armed on purpose —
+                // this only ends it early). Not gated on the master switch, same as the
+                // natural delay expiry it replaces mid-flight: the mic session is already open.
+                OutlinedButton(onClick = onStartNow, modifier = Modifier.fillMaxWidth()) {
+                    Text(stringResource(R.string.home_start_capture_now))
+                }
             }
             if (!active && !startEnabled) {
                 Text(
@@ -284,6 +315,24 @@ private fun StatusCard(
                 )
             }
         }
+    }
+    if (confirmStop) {
+        AlertDialog(
+            onDismissRequest = { confirmStop = false },
+            title = { Text(stringResource(R.string.home_stop_confirm_title)) },
+            text = { Text(stringResource(R.string.home_stop_confirm_text)) },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmStop = false
+                    onStop()
+                }) { Text(stringResource(R.string.home_stop_confirm_ok)) }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmStop = false }) {
+                    Text(stringResource(R.string.home_stop_confirm_cancel))
+                }
+            },
+        )
     }
 }
 
@@ -412,10 +461,69 @@ private fun InterruptedCard(
     }
 }
 
+/**
+ * Pure pairing behind the "Captured X – Y" line on the last-night card: capture start (after
+ * a start delay) to session end as formatted clock times, null while the night is still open.
+ * Window start honors the recorded capture start and falls back to the tap time — the same
+ * rule the report's SessionHealthCard applies. A non-positive capture_started_at (payload
+ * garbage) counts as absent: the epoch must never render as the start label.
+ */
+internal fun captureWindowLabel(
+    captureStatsJson: String?,
+    startedAt: Long,
+    endedAt: Long?,
+): Pair<String, String>? {
+    val end = endedAt ?: return null
+    val startMs = CaptureStats.parse(captureStatsJson)?.captureStartMs?.takeIf { it > 0 } ?: startedAt
+    return Formatting.time(startMs) to Formatting.time(end)
+}
+
+/**
+ * Calm banner above the last-night card: the night before today produced nothing usable
+ * (missed) or was cut short — absence made visible (P0 silent-failure discipline). Skipped
+ * and recorded nights render nothing on purpose: nothing went wrong.
+ */
+@Composable
+private fun MissedNightBanner(result: MissedNightResult?) {
+    when (result) {
+        is MissedNightResult.Missed -> Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+            Column(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(
+                    stringResource(R.string.home_missed_night_title),
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    stringResource(R.string.home_missed_night_body),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        is MissedNightResult.Short -> Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+            Column(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(
+                    stringResource(R.string.home_short_night_title, formatDuration(result.capturedInBedMs)),
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    stringResource(R.string.home_short_night_body),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        else -> Unit
+    }
+}
+
 @Composable
 private fun LastNightCard(
     session: SleepSessionEntity?,
+    validityGrade: String?,
     statusLabel: (String) -> String,
+    experimentChip: HomeViewModel.ExperimentChip?,
     onOpen: (Long) -> Unit,
 ) {
     Card(onClick = { session?.let { onOpen(it.id) } }, enabled = session != null) {
@@ -425,6 +533,21 @@ private fun LastNightCard(
                 Text(stringResource(R.string.home_no_sessions), color = MaterialTheme.colorScheme.onSurfaceVariant)
             } else {
                 Text(formatDateTime(session.startedAt), style = MaterialTheme.typography.bodyLarge)
+                // The actual capture window once the night has ended (post-start-delay start),
+                // same fallback rule as the report's SessionHealthCard: capture_started_at from
+                // the stats JSON, else the tap time. Stats are parsed once per session row,
+                // not per recomposition; startedAt/endedAt are keys too so an open→finalized
+                // transition (endedAt set, captureStats unchanged) still recomputes.
+                val windowLabel = remember(session.id, session.captureStats, session.startedAt, session.endedAt) {
+                    captureWindowLabel(session.captureStats, session.startedAt, session.endedAt)
+                }
+                windowLabel?.let { (start, end) ->
+                    Text(
+                        stringResource(R.string.home_capture_window, start, end),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
                 Row {
                     Text(
                         session.endedAt?.let { formatDuration(it - session.startedAt) } ?: "…",
@@ -437,7 +560,41 @@ private fun LastNightCard(
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                    // The night's stored validity grade (A–D) — the "was this night solid?"
+                    // glance, same source as the report's badge (docs/NIGHT_REPORT.md).
+                    validityGrade?.let { grade ->
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            grade,
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = if (grade == "D") {
+                                MaterialTheme.colorScheme.error
+                            } else {
+                                MaterialTheme.colorScheme.primary
+                            },
+                        )
+                    }
                 }
+            }
+            // Active N-of-1 experiment chip (docs/INSIGHTS.md §Playbook): honest day count,
+            // same instruction copy the Insights screen shows.
+            experimentChip?.let { chip ->
+                val instruction = com.sleepanalysis.ui.insights.playbookInstruction(chip.actionId) // cross-screen shared copy
+                Text(
+                    if (chip.confirming) {
+                        stringResource(
+                            R.string.experiment_confirm_chip,
+                            chip.usableNights,
+                            chip.plannedNights,
+                            instruction,
+                        )
+                    } else {
+                        stringResource(R.string.experiment_chip, chip.usableNights, chip.plannedNights, instruction)
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.primary,
+                )
             }
         }
     }

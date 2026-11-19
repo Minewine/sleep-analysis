@@ -9,6 +9,7 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
+import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.sleepanalysis.domain.policy.StartDelayPolicy
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -51,9 +52,72 @@ class UserPreferences @Inject constructor(@ApplicationContext context: Context) 
             lastCount: Int,
             date: String,
             nowMs: Long,
+        ): Boolean = retryAllowed(lastDate, lastMs, lastCount, date, nowMs, MAX_ATTEMPTS_PER_DATE, AUTO_RETRY_COOLDOWN_MS)
+
+        /** [retryAllowed] under explicit bounds — the shared core of the general and not-ready budgets. */
+        fun retryAllowed(
+            lastDate: String?,
+            lastMs: Long,
+            lastCount: Int,
+            date: String,
+            nowMs: Long,
+            maxAttempts: Int,
+            cooldownMs: Long,
         ): Boolean =
             lastDate != date ||
-                (lastCount < MAX_ATTEMPTS_PER_DATE && nowMs - lastMs >= AUTO_RETRY_COOLDOWN_MS)
+                (lastCount < maxAttempts && nowMs - lastMs >= cooldownMs)
+    }
+
+    /**
+     * Separate, looser retry budget for not-ready outcomes (GarminImportState.NotReady —
+     * Garmin hasn't processed the night server-side yet): up to [MAX_ATTEMPTS_PER_DATE]
+     * attempts per wake date with a [NOT_READY_COOLDOWN_MS] cooldown, drawn ONLY by not-ready
+     * results. A real failure keeps the general [GarminRetryBounds] budget and vice versa, so
+     * a string of too-early morning imports never exhausts the general 2/day cap — the reason
+     * this budget exists.
+     */
+    object GarminNotReadyBounds {
+        /** Garmin usually processes a night within hours — retry a not-ready import hourly. */
+        const val NOT_READY_COOLDOWN_MS: Long = 1 * 60 * 60 * 1000L
+
+        /** Attempts allowed per wake date for not-ready outcomes only. */
+        const val MAX_ATTEMPTS_PER_DATE: Int = 4
+
+        /** [GarminRetryBounds.retryAllowed] under these bounds — the per-kind gate. */
+        fun retryAllowed(
+            lastDate: String?,
+            lastMs: Long,
+            lastCount: Int,
+            date: String,
+            nowMs: Long,
+        ): Boolean = GarminRetryBounds.retryAllowed(
+            lastDate, lastMs, lastCount, date, nowMs, MAX_ATTEMPTS_PER_DATE, NOT_READY_COOLDOWN_MS,
+        )
+
+        /**
+         * Pure gate over BOTH counters (the backfill's entry point): a date with no attempt of
+         * either kind always allows; otherwise the budget of whichever kind was attempted LAST
+         * on [date] decides. A not-ready attempt must not consume the general cap, and a real
+         * failure must not consume the not-ready budget.
+         */
+        fun backfillAllowed(
+            generalDate: String?,
+            generalMs: Long,
+            generalCount: Int,
+            notReadyDate: String?,
+            notReadyMs: Long,
+            notReadyCount: Int,
+            date: String,
+            nowMs: Long,
+        ): Boolean {
+            if (generalDate != date && notReadyDate != date) return true
+            val lastWasNotReady = notReadyDate == date && (generalDate != date || notReadyMs >= generalMs)
+            return if (lastWasNotReady) {
+                retryAllowed(notReadyDate, notReadyMs, notReadyCount, date, nowMs)
+            } else {
+                GarminRetryBounds.retryAllowed(generalDate, generalMs, generalCount, date, nowMs)
+            }
+        }
     }
 
     private val dataStore = context.dataStore
@@ -63,16 +127,38 @@ class UserPreferences @Inject constructor(@ApplicationContext context: Context) 
         val CLIPS_RETENTION_DAYS = intPreferencesKey("clips_retention_days")
         val SESSION_RETENTION_DAYS = intPreferencesKey("session_retention_days")
         val DEBUG_ENTER_WINDOWS_1 = booleanPreferencesKey("debug_enter_windows_1")
+        val DEBUG_SKIP_CAPTURE_WAKELOCK = booleanPreferencesKey("debug_skip_capture_wakelock")
         val RECORDING_ENABLED = booleanPreferencesKey("recording_enabled")
         val SCHEDULE_ENABLED = booleanPreferencesKey("schedule_enabled")
         val SCHEDULE_START_MINUTES = intPreferencesKey("schedule_start_minutes")
         val SCHEDULE_END_MINUTES = intPreferencesKey("schedule_end_minutes")
         val SCHEDULE_SKIP_EPOCH_DAY = longPreferencesKey("schedule_skip_epoch_day")
+        // Skip history (missed-night banner/trends): every skip write is ALSO mirrored into
+        // this additive epoch-day string set (setScheduleSkipEpochDay). The single-night key
+        // above naturally expires; the history does not, so a skip from last week still
+        // suppresses its missed-night row.
+        val SCHEDULE_SKIP_HISTORY = stringSetPreferencesKey("schedule_skip_history")
         val START_DELAY_MINUTES = intPreferencesKey("start_delay_minutes")
         val GARMIN_AUTO_RETRY_DATE = stringPreferencesKey("garmin_auto_retry_date")
         val GARMIN_AUTO_RETRY_MS = longPreferencesKey("garmin_auto_retry_ms")
         val GARMIN_AUTO_RETRY_COUNT = intPreferencesKey("garmin_auto_retry_count")
+        // Not-ready attempts (the GarminImportState.NotReady outcome) keep their OWN date/ms/count so they
+        // never consume the general budget above; GarminNotReadyBounds.backfillAllowed consults
+        // the counter of the date's last attempt kind.
+        val GARMIN_NOT_READY_RETRY_DATE = stringPreferencesKey("garmin_not_ready_retry_date")
+        val GARMIN_NOT_READY_RETRY_MS = longPreferencesKey("garmin_not_ready_retry_ms")
+        val GARMIN_NOT_READY_RETRY_COUNT = intPreferencesKey("garmin_not_ready_retry_count")
         val NOISE_DISPLAY_MIN_CONFIDENCE = doublePreferencesKey("noise_display_min_confidence")
+        // Dismissed insight rule ids (docs/INSIGHTS.md): a dismissed rule stops rendering in the
+        // Insights screen; un-dismissing re-shows it. Rule ids are the stable InsightRules ids.
+        val INSIGHTS_DISMISSED_RULES = stringSetPreferencesKey("insights_dismissed_rules")
+        // Escalation self-report (docs/INSIGHTS.md §Escalation): three STOP-BANG-derived
+        // screening questions (S/O/T), collected once and editable. A separate "answered" flag
+        // distinguishes "never asked" from "answered all NO".
+        val ESCALATION_SELF_REPORT_ANSWERED = booleanPreferencesKey("escalation_self_report_answered")
+        val ESCALATION_SNORING_LOUD = booleanPreferencesKey("escalation_snoring_loud")
+        val ESCALATION_WITNESSED_PAUSES = booleanPreferencesKey("escalation_witnessed_pauses")
+        val ESCALATION_DAYTIME_SLEEPINESS = booleanPreferencesKey("escalation_daytime_sleepiness")
     }
 
     val disclaimerAcceptedAt: Flow<Long?> = dataStore.data.map { it[Keys.DISCLAIMER_ACCEPTED_AT] }
@@ -117,6 +203,27 @@ class UserPreferences @Inject constructor(@ApplicationContext context: Context) 
     }
 
     /**
+     * Debug-only battery A/B experiment (the documented planned experiment of the capture
+     * wakelock, MonitorService class KDoc): when on, the next recording runs WITHOUT the
+     * session-long PARTIAL_WAKE_LOCK so the SoC can suspend between hops — expect possible
+     * missed audio. A configured start delay keeps its lock (the delay wait is a plain
+     * coroutine with no alarm backup): the lock is dropped when audio capture begins, so only
+     * a zero-delay recording is unlocked end to end. The arm is marked in the session log
+     * (recording_start gains "wl=off", or "wl=off-delay-covered" when a delay held the lock
+     * until capture). Takes effect on the NEXT recording; default off, i.e. the wakelock is
+     * held exactly as always.
+     */
+    val debugSkipCaptureWakelock: Flow<Boolean> = dataStore.data.map {
+        debugSkipCaptureWakelockOrDefault(it[Keys.DEBUG_SKIP_CAPTURE_WAKELOCK])
+    }
+
+    suspend fun debugSkipCaptureWakelockNow(): Boolean = debugSkipCaptureWakelock.first()
+
+    suspend fun setDebugSkipCaptureWakelock(enabled: Boolean) {
+        dataStore.edit { it[Keys.DEBUG_SKIP_CAPTURE_WAKELOCK] = enabled }
+    }
+
+    /**
      * Recording controls (design: recording controls). [recordingEnabled] is the master
      * switch — when off, the app must not start a recording session: it gates manual starts,
      * scheduled starts AND the interrupted-notification resume (the session then stays open
@@ -141,6 +248,11 @@ class UserPreferences @Inject constructor(@ApplicationContext context: Context) 
     /** Epoch day of a skipped start occurrence (0 = none); naturally expires. */
     val scheduleSkipEpochDay: Flow<Long> = dataStore.data.map { it[Keys.SCHEDULE_SKIP_EPOCH_DAY] ?: 0L }
 
+    /** Epoch days of every skipped scheduled start (additive history — see [skipHistoryWith]). */
+    val scheduleSkipHistoryDays: Flow<Set<Long>> = dataStore.data.map { prefs ->
+        skipHistoryEpochDays(prefs[Keys.SCHEDULE_SKIP_HISTORY])
+    }
+
     suspend fun recordingEnabledNow(): Boolean = recordingEnabled.first()
 
     suspend fun scheduleEnabledNow(): Boolean = scheduleEnabled.first()
@@ -150,6 +262,8 @@ class UserPreferences @Inject constructor(@ApplicationContext context: Context) 
     suspend fun scheduleEndMinutesNow(): Int = scheduleEndMinutes.first()
 
     suspend fun scheduleSkipEpochDayNow(): Long = scheduleSkipEpochDay.first()
+
+    suspend fun scheduleSkipHistoryDaysNow(): Set<Long> = scheduleSkipHistoryDays.first()
 
     suspend fun setRecordingEnabled(enabled: Boolean) {
         dataStore.edit { it[Keys.RECORDING_ENABLED] = enabled }
@@ -168,22 +282,37 @@ class UserPreferences @Inject constructor(@ApplicationContext context: Context) 
     }
 
     suspend fun setScheduleSkipEpochDay(day: Long) {
-        dataStore.edit { it[Keys.SCHEDULE_SKIP_EPOCH_DAY] = day }
+        dataStore.edit { prefs ->
+            prefs[Keys.SCHEDULE_SKIP_EPOCH_DAY] = day
+            // Mirror into the skip history atomically. Both skip writers — the bedtime
+            // notification's Skip action (ScheduledStartReceiver) and
+            // RecordingScheduler.skipNextStart — funnel through this setter, so one write
+            // site can never drift from the other.
+            prefs[Keys.SCHEDULE_SKIP_HISTORY] = skipHistoryWith(prefs[Keys.SCHEDULE_SKIP_HISTORY], day)
+        }
     }
 
     /**
      * Auto-backfill gate for the report's silent Garmin retry (docs/NIGHT_REPORT.md §Garmin):
-     * one attempt per wake date, plus at most one more after the cooldown — a morning that
-     * synced too early (Garmin's payload not ready) gets exactly one later try, never an
-     * unbounded re-import series. Call [markGarminAutoRetry] after every attempt (auto OR
-     * manual — a manual import also consumes the date's auto attempt).
+     * the budget of whichever kind the wake date's LAST attempt drew from decides — a
+     * not-ready morning (Garmin's payload not ready yet) gets the looser
+     * [GarminNotReadyBounds] (4/day, 1 h cooldown), any other outcome the general
+     * [GarminRetryBounds] (2/day, 6 h cooldown) — never an unbounded re-import series, and
+     * the two kinds can never exhaust each other's CAP (the counters are independent). The
+     * KIND of the last attempt still gates the next try, so a general failure's 6 h cooldown
+     * also delays the following not-ready attempt on that date — bounded and accepted.
+     * Call the matching mark* after every AUTO attempt; manual imports (Settings) do not
+     * consume any budget.
      */
-    suspend fun garminAutoRetryAllowed(date: String, nowMs: Long): Boolean {
+    suspend fun garminBackfillAllowed(date: String, nowMs: Long): Boolean {
         val prefs = dataStore.data.first()
-        return GarminRetryBounds.retryAllowed(
-            lastDate = prefs[Keys.GARMIN_AUTO_RETRY_DATE],
-            lastMs = prefs[Keys.GARMIN_AUTO_RETRY_MS] ?: 0L,
-            lastCount = prefs[Keys.GARMIN_AUTO_RETRY_COUNT] ?: 0,
+        return GarminNotReadyBounds.backfillAllowed(
+            generalDate = prefs[Keys.GARMIN_AUTO_RETRY_DATE],
+            generalMs = prefs[Keys.GARMIN_AUTO_RETRY_MS] ?: 0L,
+            generalCount = prefs[Keys.GARMIN_AUTO_RETRY_COUNT] ?: 0,
+            notReadyDate = prefs[Keys.GARMIN_NOT_READY_RETRY_DATE],
+            notReadyMs = prefs[Keys.GARMIN_NOT_READY_RETRY_MS] ?: 0L,
+            notReadyCount = prefs[Keys.GARMIN_NOT_READY_RETRY_COUNT] ?: 0,
             date = date,
             nowMs = nowMs,
         )
@@ -208,6 +337,66 @@ class UserPreferences @Inject constructor(@ApplicationContext context: Context) 
         dataStore.edit { it[Keys.NOISE_DISPLAY_MIN_CONFIDENCE] = PreferenceBounds.sanitizeConfidence(value) }
     }
 
+    /** Insight rules the user dismissed (docs/INSIGHTS.md) — hidden from the Insights screen. */
+    val dismissedInsightRules: Flow<Set<String>> = dataStore.data.map {
+        it[Keys.INSIGHTS_DISMISSED_RULES] ?: emptySet()
+    }
+
+    suspend fun dismissedInsightRulesNow(): Set<String> = dismissedInsightRules.first()
+
+    /** Dismisses (or re-shows) one rule id; unknown ids persist harmlessly until they exist. */
+    suspend fun setInsightRuleDismissed(ruleId: String, dismissed: Boolean) {
+        dataStore.edit { prefs ->
+            val current = prefs[Keys.INSIGHTS_DISMISSED_RULES] ?: emptySet()
+            prefs[Keys.INSIGHTS_DISMISSED_RULES] = if (dismissed) current + ruleId else current - ruleId
+        }
+    }
+
+    /**
+     * The escalation self-report (docs/INSIGHTS.md §Escalation): collected once under the
+     * escalation card, editable afterwards. [answered] is stored separately so "never asked"
+     * and "answered all NO" can never be confused (booleans default to false when absent).
+     */
+    data class EscalationSelfReport(
+        val answered: Boolean,
+        val snoringLoud: Boolean,
+        val witnessedPauses: Boolean,
+        val daytimeSleepiness: Boolean,
+    ) {
+        /** The rule's input; null while never answered (the card then collects first). */
+        fun toRuleReport(): com.sleepanalysis.domain.insights.EscalationRule.SelfReport? =
+            if (!answered) {
+                null
+            } else {
+                com.sleepanalysis.domain.insights.EscalationRule.SelfReport(
+                    snoringLoud = snoringLoud,
+                    witnessedPauses = witnessedPauses,
+                    daytimeSleepiness = daytimeSleepiness,
+                )
+            }
+    }
+
+    val escalationSelfReport: Flow<EscalationSelfReport> = dataStore.data.map { prefs ->
+        EscalationSelfReport(
+            answered = prefs[Keys.ESCALATION_SELF_REPORT_ANSWERED] ?: false,
+            snoringLoud = prefs[Keys.ESCALATION_SNORING_LOUD] ?: false,
+            witnessedPauses = prefs[Keys.ESCALATION_WITNESSED_PAUSES] ?: false,
+            daytimeSleepiness = prefs[Keys.ESCALATION_DAYTIME_SLEEPINESS] ?: false,
+        )
+    }
+
+    suspend fun escalationSelfReportNow(): EscalationSelfReport = escalationSelfReport.first()
+
+    suspend fun setEscalationSelfReport(report: com.sleepanalysis.domain.insights.EscalationRule.SelfReport) {
+        dataStore.edit { prefs ->
+            prefs[Keys.ESCALATION_SNORING_LOUD] = report.snoringLoud
+            prefs[Keys.ESCALATION_WITNESSED_PAUSES] = report.witnessedPauses
+            prefs[Keys.ESCALATION_DAYTIME_SLEEPINESS] = report.daytimeSleepiness
+            prefs[Keys.ESCALATION_SELF_REPORT_ANSWERED] = true
+        }
+    }
+
+    /** Marks a general attempt (any outcome except the not-ready one — see [markGarminNotReadyRetry]). */
     suspend fun markGarminAutoRetry(date: String, nowMs: Long = System.currentTimeMillis()) {
         dataStore.edit { prefs ->
             val sameDate = prefs[Keys.GARMIN_AUTO_RETRY_DATE] == date
@@ -215,6 +404,17 @@ class UserPreferences @Inject constructor(@ApplicationContext context: Context) 
             prefs[Keys.GARMIN_AUTO_RETRY_MS] = nowMs
             prefs[Keys.GARMIN_AUTO_RETRY_COUNT] =
                 if (sameDate) (prefs[Keys.GARMIN_AUTO_RETRY_COUNT] ?: 0) + 1 else 1
+        }
+    }
+
+    /** Marks a not-ready attempt on its own budget, independent of [markGarminAutoRetry]'s. */
+    suspend fun markGarminNotReadyRetry(date: String, nowMs: Long = System.currentTimeMillis()) {
+        dataStore.edit { prefs ->
+            val sameDate = prefs[Keys.GARMIN_NOT_READY_RETRY_DATE] == date
+            prefs[Keys.GARMIN_NOT_READY_RETRY_DATE] = date
+            prefs[Keys.GARMIN_NOT_READY_RETRY_MS] = nowMs
+            prefs[Keys.GARMIN_NOT_READY_RETRY_COUNT] =
+                if (sameDate) (prefs[Keys.GARMIN_NOT_READY_RETRY_COUNT] ?: 0) + 1 else 1
         }
     }
 
@@ -236,6 +436,28 @@ class UserPreferences @Inject constructor(@ApplicationContext context: Context) 
     companion object {
         const val DEFAULT_SCHEDULE_START_MINUTES = 22 * 60 + 30 // 22:30
         const val DEFAULT_SCHEDULE_END_MINUTES = 6 * 60 + 30 // 06:30
+
+        /** Default = wakelock HELD (today's behavior); the flag only opts out for the A/B night. */
+        const val DEFAULT_DEBUG_SKIP_CAPTURE_WAKELOCK = false
+
+        /** Read-time mapping: an absent (never-stored) flag falls back to the held-wakelock default. */
+        fun debugSkipCaptureWakelockOrDefault(raw: Boolean?): Boolean =
+            raw ?: DEFAULT_DEBUG_SKIP_CAPTURE_WAKELOCK
+
+        /**
+         * Skip-history update: additive epoch-day strings ([SCHEDULE_SKIP_HISTORY] holds
+         * day.toLong().toString() entries). Non-positive days are ignored — never a real
+         * epoch day, so a malformed occurrence must not persist a permanent "0" entry (the
+         * single-night key keeps its own contract: written as before, callers enforce >= 0).
+         * Pure — the mirroring rule is unit-tested, since the DataStore itself needs an
+         * Android context and lives behind instrumentation.
+         */
+        fun skipHistoryWith(current: Set<String>?, day: Long): Set<String> =
+            if (day > 0) (current ?: emptySet()) + day.toString() else current.orEmpty()
+
+        /** Stored skip-history strings → epoch days; malformed entries are dropped (pure). */
+        fun skipHistoryEpochDays(raw: Set<String>?): Set<Long> =
+            raw.orEmpty().mapNotNull { it.toLongOrNull() }.toSet()
     }
 }
 

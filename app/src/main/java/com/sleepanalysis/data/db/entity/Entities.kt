@@ -91,8 +91,10 @@ data class AcousticEventEntity(
     /**
      * User-corrected class from clip playback (docs/DATA_MODEL.md §3.5): what the user says the
      * event really was — SNORE / COUGH / SPEECH / MOVEMENT / OTHER_NOT_SNORE. This is the
-     * personal labeled dataset Phase 2 model improvement trains against; it never alters
-     * Phase 1 scores.
+     * personal labeled dataset Phase 2 model improvement trains against. Since snore-score-v3
+     * it also re-weighs the night's snore aggregates (docs/MEASUREMENT_RELIABILITY.md §7.1):
+     * non-SNORE excludes, SNORE includes, no label keeps the detector's class. The stored type
+     * is never changed.
      */
     val userLabel: String? = null,
     /** When the user applied the label — dataset curation needs to distinguish label age. */
@@ -228,6 +230,10 @@ data class RawPayloadEntity(
  * M13). Populated when a Garmin payload carries a sleepLevels timeline; the owning session's
  * deletion removes it (FK CASCADE). Stage is the vendor's own label, uppercased
  * (DEEP/LIGHT/REM/AWAKE, or an unknown vendor label verbatim).
+ *
+ * [source] is provenance (schema v14): GARMIN = stage spans derived from the Personal API
+ * night payload (estimate); WEARABLE = Health Connect stage timeline. Both timelines can
+ * coexist on one session — deletes and replaces are per-source.
  */
 @Entity(
     tableName = "sleep_stage",
@@ -248,6 +254,9 @@ data class SleepStageEntity(
     val endMs: Long,
     val stage: String,
     val createdAt: Long = System.currentTimeMillis(),
+    // defaultValue REQUIRED so Room's migration validation matches the ALTER-produced
+    // DEFAULT 'GARMIN' (schema v14) — pre-v14 rows were all Garmin-derived.
+    @ColumnInfo(defaultValue = "GARMIN") val source: String = "GARMIN",
 )
 
 /**
@@ -297,4 +306,96 @@ data class UserFactorEntity(
     val valueNum: Double? = null,
     val valueText: String? = null,
     val recordedAt: Long = System.currentTimeMillis(),
+)
+
+/**
+ * One finalize-time snapshot of the night's headline metrics (schema v12,
+ * docs/DATA_MODEL.md §3.7): a compact, ClaimPolicy-safe JSON payload plus the model
+ * provenance (detector + score versions) so later analysis can gate comparisons on what
+ * produced the numbers. One row per session (unique index, regeneration upserts); the
+ * session's deletion removes it (FK CASCADE) — reports are regenerable while source data
+ * exists, never a second source of truth (docs/DATA_MODEL.md §6).
+ */
+@Entity(
+    tableName = "report",
+    foreignKeys = [
+        ForeignKey(
+            entity = SleepSessionEntity::class,
+            parentColumns = ["id"],
+            childColumns = ["sessionId"],
+            onDelete = ForeignKey.CASCADE,
+        ),
+    ],
+    indices = [Index(value = ["sessionId"], unique = true)],
+)
+data class ReportSnapshotEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val sessionId: Long,
+    val generatedAt: Long,
+    val appVersion: String,
+    /** First snore event's model version (null: a night with no snoring cannot name one). */
+    val detectorVersion: String? = null,
+    /** SNORE_SCORE formula version that produced the snapshot's score ([SnoreScore.FORMULA_VERSION]). */
+    val scoreVersion: String? = null,
+    /** Compact headline JSON (docs/DATA_MODEL.md §5.2, domain/report.ReportSnapshot). */
+    val payload: String,
+)
+
+/** N-of-1 experiment lifecycle values stored in [SleepExperimentEntity.status] (docs/DATA_MODEL.md §3.12). */
+object ExperimentStatus {
+    const val ACTIVE = "ACTIVE"
+    const val DONE = "DONE"
+    const val ABANDONED = "ABANDONED"
+}
+
+/**
+ * One N-of-1 experiment (schema v13, docs/DATA_MODEL.md §3.12): a playbook action tried for a
+ * planned number of nights against the personal baseline captured at start. Exactly ONE row
+ * may be ACTIVE — enforced in tracker logic, not SQL (the A-B-A confirm phase re-activates the
+ * same row, so the single-ACTIVE invariant survives). Not session-bound: an experiment spans
+ * many nights and outlives any of them (no FK, never CASCADE-deleted); delete-all purges it.
+ */
+@Entity(tableName = "sleep_experiment", indices = [Index("status")])
+data class SleepExperimentEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    /** Insight rule that suggested the experiment ([InsightRules.RuleIds] id); null: user-started. */
+    val hypothesisRuleId: String? = null,
+    /** Playbook action tried (docs/INSIGHTS.md §Playbook); null: a free-form hypothesis. */
+    val playbookActionId: String? = null,
+    /** [PersonalBaseline.Metrics]-style verification metric the verdict tests. */
+    val metric: String,
+    val startedAt: Long,
+    val plannedNights: Int,
+    val status: String,
+    /** Baseline band captured at start ([ExperimentTracker.baselineJson]): {metric, median, mad, low, high}. */
+    val baselineStatsJson: String,
+    /** Phase verdict ([ExperimentTracker.verdictJson]); null until the phase reached its threshold. */
+    val resultJson: String? = null,
+    /** Optional A-B-A return-to-baseline phase ([ExperimentTracker.confirmPhaseJson]); null = none run. */
+    val confirmPhaseJson: String? = null,
+    val createdAt: Long = System.currentTimeMillis(),
+)
+
+/** Registry kinds stored in [ModelRegistryEntity.kind] (docs/DATA_MODEL.md §3.8). */
+object ModelRegistryKind {
+    const val DETECTOR = "DETECTOR"
+    const val SCORE = "SCORE"
+}
+
+/**
+ * One model/formula version's validity range (schema v12, docs/DATA_MODEL.md §3.8): the
+ * temporal record of which DETECTOR and SCORE versions produced which nights — the gate
+ * personal baselines and trends need to avoid comparing across a version change.
+ * [validToUtc] null = still current. Exactly one open row per kind is kept (the writer
+ * closes the previous open row when a new version appears).
+ */
+@Entity(tableName = "model_registry", indices = [Index("kind", "validFromUtc")])
+data class ModelRegistryEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    /** [ModelRegistryKind.DETECTOR] or [ModelRegistryKind.SCORE]. */
+    val kind: String,
+    val version: String,
+    val validFromUtc: Long,
+    /** Null = the version is still current (no later row of the same kind was registered). */
+    val validToUtc: Long? = null,
 )

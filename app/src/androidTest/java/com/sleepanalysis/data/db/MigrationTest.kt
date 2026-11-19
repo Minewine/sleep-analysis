@@ -160,6 +160,36 @@ class MigrationTest {
                 assertEquals(2.5, c.getDouble(0), 0.0001) // v11 DEFAULT backfill
                 assertTrue(c.isNull(1))
             }
+            // v12 round-trip: the report snapshot and the temporal model registry are writable,
+            // the snapshot's unique per-session index enforces one row per session, and both
+            // follow the FK CASCADE (snapshot) / stay registry-side rows.
+            sql.execSQL(
+                "INSERT INTO report (sessionId, generatedAt, appVersion, detectorVersion, scoreVersion, payload) VALUES " +
+                    "(1, 1793681500000, '0.1.0-phase1', 'energy-heuristic-v2-burst', 'snore-score-v3', " +
+                    "'{\"schema_version\":1,\"validity_grade\":\"B\",\"snore_seconds\":812}')"
+            )
+            sql.query(
+                "SELECT detectorVersion, scoreVersion, payload FROM report WHERE sessionId = 1"
+            ).use { c ->
+                assertTrue(c.moveToFirst())
+                assertEquals("energy-heuristic-v2-burst", c.getString(0))
+                assertEquals("snore-score-v3", c.getString(1))
+                assertTrue(c.getString(2).contains("\"validity_grade\":\"B\""))
+            }
+            sql.execSQL(
+                "INSERT INTO model_registry (kind, version, validFromUtc, validToUtc) VALUES " +
+                    "('DETECTOR', 'energy-heuristic-v1-spectral', 1792000000000, 1793000000000)"
+            )
+            sql.execSQL(
+                "INSERT INTO model_registry (kind, version, validFromUtc, validToUtc) VALUES " +
+                    "('DETECTOR', 'energy-heuristic-v2-burst', 1793000000000, NULL)"
+            )
+            sql.query(
+                "SELECT COUNT(*) FROM model_registry WHERE kind = 'DETECTOR' AND validToUtc IS NULL"
+            ).use { c ->
+                c.moveToFirst()
+                assertEquals(1, c.getInt(0)) // exactly one open row per kind
+            }
             sql.execSQL("DELETE FROM sleep_session WHERE id = 1")
             sql.query("SELECT COUNT(*) FROM sleep_stage").use { c ->
                 c.moveToFirst()
@@ -173,6 +203,92 @@ class MigrationTest {
                 c.moveToFirst()
                 assertEquals(0, c.getInt(0)) // …and the clips
             }
+            sql.query("SELECT COUNT(*) FROM report").use { c ->
+                c.moveToFirst()
+                assertEquals(0, c.getInt(0)) // …and the report snapshot (v12 CASCADE)
+            }
+            sql.query("SELECT COUNT(*) FROM model_registry").use { c ->
+                c.moveToFirst()
+                assertEquals(2, c.getInt(0)) // registry rows are version history — NOT session-bound
+            }
+            // v13 sleep_experiment round-trip: the N-of-1 row is writable and its columns
+            // persist (baseline band JSON, verdict JSON). Not session-bound by design (no FK,
+            // docs/DATA_MODEL.md §3.12) — verified below: the session delete must NOT remove it.
+            sql.execSQL(
+                "INSERT INTO sleep_experiment (hypothesisRuleId, playbookActionId, metric, startedAt, " +
+                    "plannedNights, status, baselineStatsJson, resultJson, confirmPhaseJson, createdAt) VALUES " +
+                    "('alcohol_nights', 'no_evening_alcohol', 'snore_share', 1793000000000, 7, 'DONE', " +
+                    "'{\"metric\":\"snore_share\",\"median\":0.1,\"mad\":0.02,\"low\":0.04,\"high\":0.16}', " +
+                    "'{\"schema_version\":1,\"change_detected\":true,\"direction\":\"DOWN\",\"confidence\":\"LOW\"}', " +
+                    "NULL, 1793000000000)"
+            )
+            sql.query(
+                "SELECT hypothesisRuleId, playbookActionId, metric, plannedNights, status, baselineStatsJson " +
+                    "FROM sleep_experiment WHERE playbookActionId = 'no_evening_alcohol'"
+            ).use { c ->
+                assertTrue(c.moveToFirst())
+                assertEquals("alcohol_nights", c.getString(0))
+                assertEquals("no_evening_alcohol", c.getString(1))
+                assertEquals("snore_share", c.getString(2))
+                assertEquals(7, c.getInt(3))
+                assertEquals("DONE", c.getString(4))
+                assertTrue(c.getString(5).contains("\"median\":0.1"))
+            }
+            sql.query("SELECT COUNT(*) FROM sleep_experiment").use { c ->
+                c.moveToFirst()
+                assertEquals(1, c.getInt(0)) // NOT session-bound (no FK) — survived the session delete above
+            }
+            sql.query("SELECT COUNT(*) FROM sleep_experiment WHERE status = 'DONE'").use { c ->
+                c.moveToFirst()
+                assertEquals(1, c.getInt(0))
+            }
+        } finally {
+            db.close()
+        }
+    }
+
+    @Test
+    fun migrate13To14_addsStageSource_defaultingLegacyRowsToGarmin() {
+        // 1. Seed at v13: a session and a sleep_stage row in the v13 column list — no source
+        //    column yet (it arrives with v14).
+        helper.createDatabase(TEST_DB, 13).use { db ->
+            db.execSQL(
+                "INSERT INTO sleep_session " +
+                    "(startedAt, endedAt, status, timeZone, deviceModel, osVersion, appVersion, " +
+                    "captureStats, audioBytesTotal, createdAt) VALUES (" +
+                    "1793653161000, 1793681421000, 'COMPLETED', 'Europe/Zurich', 'TestDevice', '15', " +
+                    "'0.1.0-phase1', '{\"schema_version\":1}', 123456, 1793681500000)"
+            )
+            db.execSQL(
+                "INSERT INTO sleep_stage (sessionId, startMs, endMs, stage, createdAt) VALUES " +
+                    "(1, 1793657000000, 1793657120000, 'DEEP', 1793681500000)"
+            )
+        }
+
+        // 2. Migrate 13 → 14, validating the ALTER against the exported schemas.
+        helper.runMigrationsAndValidate(TEST_DB, LATEST_VERSION, true, *AppDatabase.MIGRATIONS).close()
+
+        // 3. Reopen the SAME file through the app's own builder (see migrate1ToLatest).
+        val db = AppDatabase.build(context, TEST_DB)
+        try {
+            val sql = db.openHelper.writableDatabase
+
+            // The pre-v14 row reads back with the migration's DEFAULT 'GARMIN' (all pre-v14
+            // rows were Garmin-derived — truthful history, mirroring the v11 gain backfill).
+            sql.query("SELECT stage, source FROM sleep_stage WHERE sessionId = 1").use { c ->
+                assertTrue(c.moveToFirst())
+                assertEquals("DEEP", c.getString(0))
+                assertEquals("GARMIN", c.getString(1))
+            }
+            // A fresh v13-style insert (no source) defaults likewise.
+            sql.execSQL(
+                "INSERT INTO sleep_stage (sessionId, startMs, endMs, stage, createdAt) VALUES " +
+                    "(1, 1793657120000, 1793657240000, 'LIGHT', 1793681500000)"
+            )
+            sql.query("SELECT source FROM sleep_stage WHERE stage = 'LIGHT'").use { c ->
+                assertTrue(c.moveToFirst())
+                assertEquals("GARMIN", c.getString(0))
+            }
         } finally {
             db.close()
         }
@@ -180,6 +296,6 @@ class MigrationTest {
 
     private companion object {
         const val TEST_DB = "migration-test.db"
-        const val LATEST_VERSION = 11
+        const val LATEST_VERSION = 14
     }
 }

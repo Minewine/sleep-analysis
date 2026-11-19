@@ -11,8 +11,11 @@ import com.sleepanalysis.data.db.dao.AcousticEventDao
 import com.sleepanalysis.data.db.dao.AudioClipDao
 import com.sleepanalysis.data.db.dao.ClinicalBaselineDao
 import com.sleepanalysis.data.db.dao.MeasurementDao
+import com.sleepanalysis.data.db.dao.ModelRegistryDao
 import com.sleepanalysis.data.db.dao.QuietGapDao
 import com.sleepanalysis.data.db.dao.RawPayloadDao
+import com.sleepanalysis.data.db.dao.ReportDao
+import com.sleepanalysis.data.db.dao.SleepExperimentDao
 import com.sleepanalysis.data.db.dao.SleepSessionDao
 import com.sleepanalysis.data.db.dao.SleepStageDao
 import com.sleepanalysis.data.db.dao.UserFactorDao
@@ -20,8 +23,11 @@ import com.sleepanalysis.data.db.entity.AcousticEventEntity
 import com.sleepanalysis.data.db.entity.AudioClipEntity
 import com.sleepanalysis.data.db.entity.ClinicalBaselineEntity
 import com.sleepanalysis.data.db.entity.MeasurementEntity
+import com.sleepanalysis.data.db.entity.ModelRegistryEntity
 import com.sleepanalysis.data.db.entity.QuietGapEntity
 import com.sleepanalysis.data.db.entity.RawPayloadEntity
+import com.sleepanalysis.data.db.entity.ReportSnapshotEntity
+import com.sleepanalysis.data.db.entity.SleepExperimentEntity
 import com.sleepanalysis.data.db.entity.SleepSessionEntity
 import com.sleepanalysis.data.db.entity.SleepStageEntity
 import com.sleepanalysis.data.db.entity.UserFactorEntity
@@ -39,8 +45,11 @@ import kotlinx.coroutines.withContext
         UserFactorEntity::class,
         SleepStageEntity::class,
         QuietGapEntity::class,
+        ReportSnapshotEntity::class,
+        ModelRegistryEntity::class,
+        SleepExperimentEntity::class,
     ],
-    version = 11,
+    version = 14,
     exportSchema = true,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -53,6 +62,9 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun userFactorDao(): UserFactorDao
     abstract fun sleepStageDao(): SleepStageDao
     abstract fun quietGapDao(): QuietGapDao
+    abstract fun reportDao(): ReportDao
+    abstract fun modelRegistryDao(): ModelRegistryDao
+    abstract fun sleepExperimentDao(): SleepExperimentDao
 
     /**
      * Removes every row including the clinical baseline. The immutability triggers must be
@@ -74,6 +86,9 @@ abstract class AppDatabase : RoomDatabase() {
                 userFactorDao().deleteAll()
                 sleepStageDao().deleteAll()
                 quietGapDao().deleteAll()
+                reportDao().deleteAll()
+                modelRegistryDao().deleteAll()
+                sleepExperimentDao().deleteAll()
             } finally {
                 createImmutabilityTriggers(raw)
             }
@@ -232,11 +247,80 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v12 adds the report snapshot table (docs/DATA_MODEL.md §3.7) and the temporal
+         * model-version registry (§3.8): finalize now stores each night's headline JSON plus
+         * the detector/score versions that produced it, giving the personal-baseline gates a
+         * registry-backed comparability record. Both start empty — snapshots are written at
+         * each new finalize, never back-filled.
+         */
+        private val MIGRATION_11_12 = object : Migration(11, 12) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `report` (" +
+                        "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                        "`sessionId` INTEGER NOT NULL, `generatedAt` INTEGER NOT NULL, " +
+                        "`appVersion` TEXT NOT NULL, `detectorVersion` TEXT, `scoreVersion` TEXT, " +
+                        "`payload` TEXT NOT NULL, " +
+                        "FOREIGN KEY(`sessionId`) REFERENCES `sleep_session`(`id`) " +
+                        "ON UPDATE NO ACTION ON DELETE CASCADE )"
+                )
+                db.execSQL(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS `index_report_sessionId` ON `report` (`sessionId`)"
+                )
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `model_registry` (" +
+                        "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                        "`kind` TEXT NOT NULL, `version` TEXT NOT NULL, " +
+                        "`validFromUtc` INTEGER NOT NULL, `validToUtc` INTEGER)"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_model_registry_kind_validFromUtc` " +
+                        "ON `model_registry` (`kind`, `validFromUtc`)"
+                )
+            }
+        }
+
+        /**
+         * v13 adds the N-of-1 experiment table (docs/DATA_MODEL.md §3.12): one playbook action
+         * tried for a planned number of nights against the baseline band captured at start.
+         * Starts empty — rows are written when the user starts an experiment, never back-filled.
+         * Not session-bound (experiments span nights and outlive them): no FK, no CASCADE.
+         */
+        private val MIGRATION_12_13 = object : Migration(12, 13) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `sleep_experiment` (" +
+                        "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                        "`hypothesisRuleId` TEXT, `playbookActionId` TEXT, " +
+                        "`metric` TEXT NOT NULL, `startedAt` INTEGER NOT NULL, " +
+                        "`plannedNights` INTEGER NOT NULL, `status` TEXT NOT NULL, " +
+                        "`baselineStatsJson` TEXT NOT NULL, `resultJson` TEXT, " +
+                        "`confirmPhaseJson` TEXT, `createdAt` INTEGER NOT NULL)"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_sleep_experiment_status` " +
+                        "ON `sleep_experiment` (`status`)"
+                )
+            }
+        }
+
+        /**
+         * v14 stamps each stage row's provenance (docs/DATA_MODEL.md §3.10): the Health Connect
+         * import writes WEARABLE timelines alongside the GARMIN ones, so deletes/replaces are
+         * source-scoped. Every pre-v14 row is Garmin-derived (estimate) — DEFAULT 'GARMIN'.
+         */
+        private val MIGRATION_13_14 = object : Migration(13, 14) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE sleep_stage ADD COLUMN source TEXT NOT NULL DEFAULT 'GARMIN'")
+            }
+        }
+
         /** All schema migrations in order — shared with the instrumented migration test. */
         val MIGRATIONS: Array<Migration> = arrayOf(
             MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5,
             MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10,
-            MIGRATION_10_11,
+            MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14,
         )
     }
 }

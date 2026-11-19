@@ -19,6 +19,13 @@ import com.sleepanalysis.data.db.entity.EventType
  * [gateHardFloorDbfs] (DetectorConfig.gateThresholdDbfs) — is downgraded to OTHER_NOISE: it
  * stays in the database as an event but is never labeled snore and (via ClipPolicy) never
  * persists a clip. Relative to the floor, the gate self-calibrates across rooms/mic placements.
+ * In ultra-quiet rooms the mean gate alone still under-gates (breathing means clear the −60
+ * hard floor), so when the event's mean noise floor is at or below
+ * [DetectorConfig.QUIET_ROOM_FLOOR_DBFS] the event's PEAK must additionally stay above
+ * [DetectorConfig.QUIET_ROOM_PEAK_DBFS] (DetectorConfig.quietRoomPeakGateDbfs) — real snores
+ * burst above an absolute audibility line, steady breathing trains never do (session 13:
+ * −39.6…−54.3 dBFS trains vs −16.3…−34.9 real snores). The tier never arms in normal rooms,
+ * where an absolute cutoff would eat clearly-audible snoring (DetectorConfig.GATE_MARGIN_DB).
  *
  * ## Deferred emission (docs/ARCHITECTURE.md §4; merging parameterized, shipped at 0)
  *
@@ -161,6 +168,20 @@ class EventDetector(
     private class Deferred(val draft: EventDraft, val sums: WindowSums)
 
     /**
+     * True when no event machinery is in progress: neither machine has pending or active
+     * windows (nothing being entered or held open) and no deferred final awaits merge-expiry
+     * — the AudioEngine's pre-spectral level gate consults this so a machine in progress (or
+     * a held final whose window could still be merged into) always receives computed spectral
+     * features instead of the detector's null-feature fallback.
+     *
+     * Conservative asymmetry: after a snore-forced loud-machine close ([update]'s
+     * snore-precedence branch), the loud machine's `pending` count keeps its open value until
+     * the next inactive window resets it, so [isIdle] stays false — extra spectral computes,
+     * never a wrong skip.
+     */
+    fun isIdle(): Boolean = !snoreMachine.busy && !loudMachine.busy && deferred.isEmpty()
+
+    /**
      * Raw per-window accumulators of one closed event. Kept alongside the draft so a merge can
      * re-aggregate means over the true window counts instead of averaging two means (an
      * approximation that would overweight short fragments).
@@ -176,6 +197,9 @@ class EventDetector(
         val lowBandRatioSum: Double,
         val noiseFloorDbfsSum: Double,
         val openWindows: Int,
+        val flatSum: Double,
+        val flatCount: Int,
+        val harmSum: Double,
     )
 
     /** Deferred finals by post-gate-downgrade type — at most one held final per type. */
@@ -298,6 +322,9 @@ class EventDetector(
         val ratioPeak = maxOf(sA.lowBandRatioPeak, sB.lowBandRatioPeak)
         val ratioSum = sA.lowBandRatioSum + sB.lowBandRatioSum
         val floorSum = sA.noiseFloorDbfsSum + sB.noiseFloorDbfsSum
+        val flatSum = sA.flatSum + sB.flatSum
+        val flatCount = sA.flatCount + sB.flatCount
+        val harmSum = sA.harmSum + sB.harmSum
         val fA = a.features
         val fB = incoming.features
         val openWindows = fA.openWindows + fB.openWindows
@@ -319,11 +346,13 @@ class EventDetector(
                 lowBandRatioPeak = ratioPeak,
                 lowBandRatioMean = if (windows > 0) ratioSum / windows else fA.lowBandRatioMean,
                 noiseFloorDbfsMean = if (windows > 0) floorSum / windows else fA.noiseFloorDbfsMean,
+                spectralFlatnessMean = if (flatCount > 0) flatSum / flatCount else null,
+                harmonicRatioMean = if (flatCount > 0) harmSum / flatCount else null,
             ),
         )
         return Deferred(
             merged,
-            WindowSums(windows, peakDbfs, sumDbfs, sumConfidence, snrPeakDb, snrSumDb, ratioPeak, ratioSum, floorSum, openWindows),
+            WindowSums(windows, peakDbfs, sumDbfs, sumConfidence, snrPeakDb, snrSumDb, ratioPeak, ratioSum, floorSum, openWindows, flatSum, flatCount, harmSum),
         )
     }
 
@@ -347,6 +376,9 @@ class EventDetector(
         var ratioPeak = 0.0
         var ratioSum = 0.0
         var floorSum = 0.0
+        var flatSum = 0.0
+        var flatCount = 0
+        var harmSum = 0.0
 
         /**
          * Raw sums of the event closed by the most recent [close] call — read (via the
@@ -382,6 +414,9 @@ class EventDetector(
                         ratioPeak = 0.0
                         ratioSum = 0.0
                         floorSum = 0.0
+                        flatSum = 0.0
+                        flatCount = 0
+                        harmSum = 0.0
                     }
                 }
                 if (active) {
@@ -395,6 +430,11 @@ class EventDetector(
                     ratioPeak = maxOf(ratioPeak, features.lowBandRatio)
                     ratioSum += features.lowBandRatio
                     floorSum += features.noiseFloorDbfs
+                    features.spectralFlatness?.let { flatSum += it; flatCount++ }
+                    // harmonicRatioMean divides harmSum by flatCount: both spectral fields
+                    // derive from the same per-window SpectralFeatures object (SnoreDetector
+                    // fills both or neither), so the two counts are identical by construction.
+                    features.harmonicRatio?.let { harmSum += it }
                 }
                 return null
             }
@@ -422,13 +462,25 @@ class EventDetector(
             val floorMean = if (windows > 0) floorSum / windows else 0.0
             val gateThreshold =
                 DetectorConfig.gateThresholdDbfs(floorMean, gateMarginDb, gateHardFloorDbfs)
+            // Ultra-quiet rooms (floor at mic self-noise) additionally require the PEAK to clear
+            // an absolute audibility gate: steady breathing clears the mean gate there because
+            // every relative threshold has lost meaning (see DetectorConfig QUIET_ROOM_*).
+            val quietRoomPeakGate = DetectorConfig.quietRoomPeakGateDbfs(floorMean)
+            val belowQuietRoomPeakGate = quietRoomPeakGate != null && peak <= quietRoomPeakGate
             val effectiveType =
-                if (type == EventType.SNORE && meanDbfs < gateThreshold) EventType.OTHER_NOISE else type
+                if (type == EventType.SNORE && (meanDbfs < gateThreshold || belowQuietRoomPeakGate)) {
+                    EventType.OTHER_NOISE
+                } else {
+                    type
+                }
             closedSums = WindowSums(
                 windows = windows,
                 peakDbfs = peak,
                 sumDbfs = sumDbfs,
                 sumConfidence = sumConfidence,
+                flatSum = flatSum,
+                flatCount = flatCount,
+                harmSum = harmSum,
                 snrPeakDb = snrPeak,
                 snrSumDb = snrSum,
                 lowBandRatioPeak = ratioPeak,
@@ -454,6 +506,8 @@ class EventDetector(
                     lowBandRatioPeak = ratioPeak,
                     lowBandRatioMean = if (windows > 0) ratioSum / windows else 0.0,
                     noiseFloorDbfsMean = floorMean,
+                    spectralFlatnessMean = if (flatCount > 0) flatSum / flatCount else null,
+                    harmonicRatioMean = if (flatCount > 0) harmSum / flatCount else null,
                 ),
             )
         }

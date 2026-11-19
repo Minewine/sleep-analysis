@@ -15,19 +15,25 @@ import androidx.lifecycle.viewModelScope
 import com.sleepanalysis.data.db.entity.SleepSessionEntity
 import com.sleepanalysis.data.prefs.UserPreferences
 import com.sleepanalysis.data.repo.SessionRepository
+import com.sleepanalysis.domain.policy.MissedNightPolicy
+import com.sleepanalysis.domain.policy.MissedNightResult
+import com.sleepanalysis.domain.policy.NightStopPolicy
 import com.sleepanalysis.monitoring.schedule.RecordingScheduler
+import com.sleepanalysis.monitoring.schedule.ScheduleTimes
 import com.sleepanalysis.monitoring.service.InterruptedNotification
 import com.sleepanalysis.monitoring.service.MonitorService
 import com.sleepanalysis.monitoring.service.MonitorState
 import com.sleepanalysis.monitoring.service.MonitorStateHolder
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
+import java.time.LocalDate
 import java.time.ZonedDateTime
 import javax.inject.Inject
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -61,6 +67,7 @@ class HomeViewModel @Inject constructor(
     private val stateHolder: MonitorStateHolder,
     private val prefs: UserPreferences,
     private val scheduler: RecordingScheduler,
+    private val experimentTracker: com.sleepanalysis.domain.experiments.ExperimentTracker,
 ) : ViewModel() {
 
     val monitorState: StateFlow<MonitorState> = stateHolder.state
@@ -73,6 +80,9 @@ class HomeViewModel @Inject constructor(
     val scheduleEnabled: StateFlow<Boolean> = prefs.scheduleEnabled
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
 
+    val scheduleEndMinutes: StateFlow<Int> = prefs.scheduleEndMinutes
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 6 * 60 + 30)
+
     private val _nextScheduledStart = MutableStateFlow<ZonedDateTime?>(null)
     val nextScheduledStart: StateFlow<ZonedDateTime?> = _nextScheduledStart.asStateFlow()
 
@@ -83,6 +93,30 @@ class HomeViewModel @Inject constructor(
         .map { it.firstOrNull() }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
+    /**
+     * Was the night before today recorded, skipped, or missed (MissedNightPolicy)? Null when
+     * there is nothing to say: no session history at all (the last-night card's empty state
+     * speaks), or a session is open — the recording status and the interrupted banner own
+     * that story. Recomputed whenever sessions or the skip history change.
+     */
+    val missedNight: StateFlow<MissedNightResult?> = combine(
+        sessions,
+        prefs.scheduleSkipHistoryDays,
+    ) { allSessions, skippedDays ->
+        when {
+            allSessions.isEmpty() || allSessions.any { it.endedAt == null } -> null
+            else -> MissedNightPolicy.evaluate(allSessions, LocalDate.now().toEpochDay(), skippedDays)
+        }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    /**
+     * The last night's stored validity grade letter (A–D, domain/validity.NightValidity) for
+     * the Home card — read from the NIGHT_VALIDITY row, null when the night predates it.
+     */
+    val latestValidityGrade: StateFlow<String?> = latestSession
+        .map { session -> session?.let { sessionRepository.validityGradeFor(it.id) } }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
     private val _preFlight = MutableStateFlow<PreFlightChecklist?>(null)
     val preFlight: StateFlow<PreFlightChecklist?> = _preFlight.asStateFlow()
 
@@ -91,6 +125,22 @@ class HomeViewModel @Inject constructor(
 
     private val _interrupted = MutableStateFlow<InterruptedSummary?>(null)
     val interrupted: StateFlow<InterruptedSummary?> = _interrupted.asStateFlow()
+
+    /**
+     * The active N-of-1 experiment's chip state (docs/INSIGHTS.md §Playbook): shown on the
+     * Home last-night card — "Experiment day n/7: <instruction>" (n = usable nights, honest
+     * even when it lags; capped at the planned count — past the threshold the verdict is due).
+     * Read-only here; the Insights screen owns start/abandon/verdicts.
+     */
+    data class ExperimentChip(
+        val usableNights: Int,
+        val plannedNights: Int,
+        val actionId: String?,
+        val confirming: Boolean,
+    )
+
+    private val _experimentChip = MutableStateFlow<ExperimentChip?>(null)
+    val experimentChip: StateFlow<ExperimentChip?> = _experimentChip.asStateFlow()
 
     init {
         // Safety net for process recreation: the open session row is ground truth. If the live
@@ -117,6 +167,30 @@ class HomeViewModel @Inject constructor(
         // Self-heal the nightly alarms on app open: force-stop and package updates cancel
         // them, and nothing else re-arms until the next settings change or boot.
         viewModelScope.launch { scheduler.arm() }
+        refreshExperimentChip()
+    }
+
+    /**
+     * Read-only chip refresh — called on init AND every Home ON_RESUME: a night that landed,
+     * or an experiment started/finished on the Insights screen, must not leave a stale chip.
+     * (Non-suspend wrapper, same pattern as [refreshPreFlight]/[refreshSchedule].)
+     */
+    fun refreshExperimentChip() {
+        viewModelScope.launch { loadExperimentChip() }
+    }
+
+    /** The chip load itself: the ACTIVE experiment's honest usable-night count (if any). */
+    private suspend fun loadExperimentChip() {
+        val active = experimentTracker.activeExperiment()
+        val progress = active?.let { experimentTracker.progress(it) }
+        _experimentChip.value = progress?.let {
+            ExperimentChip(
+                usableNights = it.usableNights.coerceAtMost(it.plannedNights),
+                plannedNights = it.plannedNights,
+                actionId = active?.playbookActionId,
+                confirming = it.phase == com.sleepanalysis.domain.experiments.ExperimentTracker.Phase.CONFIRM,
+            )
+        }
     }
 
     /** Recomputed on every Home resume so permission/whitelist changes are reflected. */
@@ -154,6 +228,23 @@ class HomeViewModel @Inject constructor(
 
     fun startRecording() {
         MonitorService.start(appContext)
+    }
+
+    /** Skips the remaining start delay and begins audio capture immediately (Home "start now"). */
+    fun startCaptureNow() {
+        MonitorService.startNow(appContext)
+    }
+
+    /**
+     * Whether a stop tap should ask for confirmation first: a manual stop before tonight's
+     * scheduled end is how nights get cut short (2026-11-08: a 04:13 stop while the watch
+     * showed sleep until 06:41). Pure decision in [NightStopPolicy]; the tap-time evaluation
+     * (not composition time) is why this is a function, not a state read.
+     */
+    fun shouldConfirmStopNow(): Boolean {
+        val now = ZonedDateTime.now()
+        val nextEnd = ScheduleTimes.nextOccurrence(now, scheduleEndMinutes.value)
+        return NightStopPolicy.shouldConfirmStop(now, scheduleEnabled.value, nextEnd)
     }
 
     fun stopRecording() {

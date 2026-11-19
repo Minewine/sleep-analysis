@@ -9,6 +9,9 @@ import com.sleepanalysis.data.db.entity.SessionStatus
 import com.sleepanalysis.data.db.entity.SleepSessionEntity
 import com.sleepanalysis.domain.policy.MeasurementType
 import com.sleepanalysis.domain.scoring.SnoreMath
+import java.time.Instant
+import java.time.LocalDate
+import java.time.ZoneId
 
 /**
  * One night's row of the last-N-nights trend. Stored measurements supply the numbers the
@@ -54,6 +57,10 @@ data class NightTrend(
     val quietMinutes: Long?,
     /** Total minutes of UNCAPTURED-classified gaps (process death) — kept apart from quiet. */
     val uncapturedMinutes: Long?,
+    /** The night's stored NIGHT_VALIDITY grade letter (valueText); null = no row yet. */
+    val validityGrade: String? = null,
+    /** True for a synthetic missed-night row ([TrendAssembler.MISSED_SESSION_ID], null metrics). */
+    val missed: Boolean = false,
 )
 
 object TrendAssembler {
@@ -156,6 +163,8 @@ object TrendAssembler {
                     ?.takeIf { it.isNotEmpty() }
                     ?.filter { it.kind == QuietGapKind.UNCAPTURED }
                     ?.sumOf { it.durationMs }?.div(60_000),
+                validityGrade = measurements
+                    .firstOrNull { it.measurementType == MeasurementType.NIGHT_VALIDITY.name }?.valueText,
             )
         }
     }
@@ -163,4 +172,70 @@ object TrendAssembler {
     /** True when any night in [trends] changed detector or score version vs its predecessor. */
     fun anyVersionChange(trends: List<NightTrend>): Boolean =
         trends.any { it.detectorChangedFromPrevious || it.scoreFormulaChangedFromPrevious }
+
+    /** Session id of a synthetic missed-night row — never a real session; Trends guards the click. */
+    const val MISSED_SESSION_ID = -1L
+
+    /**
+     * Injects a synthetic missed-night row (sessionId [MISSED_SESSION_ID], null metrics,
+     * missed = true) for every wake date of the last-[maxNights]-night span (ending [today])
+     * that has neither a real trend row nor an in-progress session and was not skipped on
+     * purpose — absence made visible, same rule as the Home banner's MissedNightPolicy. A
+     * skip is a deliberate absence, not a capture failure, so it renders no row; the skip key
+     * is the START evening's epoch day (the scheduled alarm's occurrence day), i.e. the day
+     * before the wake date. Real rows win: a short night keeps its real row (the banner
+     * explains it). An open session's in-progress night is never missed (its provisional wake
+     * date = start + [NightDates.OPEN_SESSION_WAKE_OFFSET_MS], the open-session fallback).
+     * With no finalized night at all there is nothing to extend: the empty state speaks.
+     * Returned rows are chronological; synthetic startedAt = the wake date's local midnight.
+     */
+    fun injectMissedNights(
+        rows: List<NightTrend>,
+        openSessions: List<SleepSessionEntity>,
+        skippedDays: Set<Long>,
+        today: LocalDate,
+        zone: ZoneId,
+        maxNights: Int = 7,
+    ): List<NightTrend> {
+        if (rows.isEmpty()) return rows
+        val coveredDays = rows.mapTo(mutableSetOf()) { row -> epochDay(row.endedAt, row.timeZone) }
+        openSessions.mapTo(coveredDays) { session ->
+            epochDay(session.startedAt + NightDates.OPEN_SESSION_WAKE_OFFSET_MS, session.timeZone)
+        }
+        val synthetic = (0 until maxNights)
+            .map { today.minusDays(it.toLong()) }
+            .filter { it.toEpochDay() !in coveredDays && it.toEpochDay() - 1 !in skippedDays }
+            .map { wakeDate ->
+                val startedAt = wakeDate.atStartOfDay(zone).toInstant().toEpochMilli()
+                NightTrend(
+                    sessionId = MISSED_SESSION_ID,
+                    startedAt = startedAt,
+                    endedAt = startedAt,
+                    timeZone = zone.id,
+                    status = "MISSED",
+                    snoreMinutes = null,
+                    snoreSharePercent = null,
+                    longestBoutMs = null,
+                    meanPeakDbfs = null,
+                    snoreScore = null,
+                    scoreFormulaVersion = null,
+                    detectorVersion = null,
+                    detectorChangedFromPrevious = false,
+                    scoreFormulaChangedFromPrevious = false,
+                    clipCoveragePercent = null,
+                    garminScore = null,
+                    garminDeepMinutes = null,
+                    garminRemMinutes = null,
+                    quietGapCount = null,
+                    quietMinutes = null,
+                    uncapturedMinutes = null,
+                    missed = true,
+                )
+            }
+        return (rows + synthetic).sortedBy { it.startedAt }
+    }
+
+    /** Local-date epoch day of an instant in [timeZoneId] — the wake-date anchor. */
+    private fun epochDay(epochMs: Long, timeZoneId: String): Long =
+        Instant.ofEpochMilli(epochMs).atZone(ZoneId.of(timeZoneId)).toLocalDate().toEpochDay()
 }

@@ -68,20 +68,34 @@ enum class GarminLinkStatus {
 
 /** Pure pick of the previous comparable night (COMPLETED/RECOVERED, strictly earlier). */
 object PreviousNight {
+    /**
+     * What makes a session a full night for comparison purposes: a stray short evening test
+     * session (e.g. a 1 h recording stopped at bedtime) must not become the anchor of the
+     * TL;DR "vs previous night" line when a real 7 h night exists just before it.
+     */
+    const val NIGHT_LIKE_MIN_IN_BED_MS: Long = 4 * 3_600_000L
+
     fun isEligible(session: SleepSessionEntity): Boolean =
         session.endedAt != null && (session.status == SessionStatus.COMPLETED ||
             session.status == SessionStatus.RECOVERED)
 
     /**
-     * The latest eligible session strictly before [current]'s start; id tie-break keeps the
-     * pick deterministic when two sessions share a start timestamp.
+     * The latest eligible session strictly before [current]'s start, preferring NIGHT-LIKE
+     * ones ([NIGHT_LIKE_MIN_IN_BED_MS] in bed) — the comparison anchors on a full night when
+     * one exists and falls back to the latest eligible session otherwise, so a history of
+     * only short sessions still gets a comparison. The id tie-break keeps the pick
+     * deterministic when two sessions share a start timestamp.
      */
-    fun pick(sessions: List<SleepSessionEntity>, current: SleepSessionEntity): SleepSessionEntity? =
-        sessions.asSequence()
+    fun pick(sessions: List<SleepSessionEntity>, current: SleepSessionEntity): SleepSessionEntity? {
+        val candidates = sessions.asSequence()
             .filter { it.id != current.id && it.startedAt < current.startedAt }
             .filter(::isEligible)
             .sortedWith(compareByDescending<SleepSessionEntity> { it.startedAt }.thenByDescending { it.id })
-            .firstOrNull()
+        val nightLike = candidates.firstOrNull {
+            it.endedAt!! - it.startedAt >= NIGHT_LIKE_MIN_IN_BED_MS
+        }
+        return nightLike ?: candidates.firstOrNull()
+    }
 }
 
 /** The previous completed night, as its stored measurements recorded it — comparison input. */
@@ -118,8 +132,18 @@ data class ClipCoverage(
     val totalSeconds: Long,
 )
 
-/** One vendor stage span (epoch ms) — the sleepLevels timeline of a linked session. */
-data class StageSpan(val startMs: Long, val endMs: Long, val stage: String)
+/**
+ * One vendor stage span (epoch ms) — the sleepLevels timeline of a linked session. [source]
+ * is the writing importer's row source ("WEARABLE" = Health Connect import, "GARMIN" =
+ * Garmin import; null for rows written before the source column existed) — the report's
+ * stage section is labeled with it.
+ */
+data class StageSpan(
+    val startMs: Long,
+    val endMs: Long,
+    val stage: String,
+    val source: String? = null,
+)
 
 /** Which vendor stage a bout fell in, and how much of it that stage covered. */
 data class BoutStage(val stage: String, val coveredFraction: Double)
@@ -178,6 +202,13 @@ data class MorningReport(
     val capture: CaptureStats? = null,
     /** Derived from capture stats — why a night might look incomplete. */
     val healthWarnings: List<String> = emptyList(),
+    /**
+     * The night's validity grade as the finalize-time NIGHT_VALIDITY row recorded it
+     * (domain/validity.NightValidity) — read back from the row's notes, never re-graded at
+     * report time, so the badge and the trend show the same stored verdict. Null for nights
+     * recorded before the row existed.
+     */
+    val validity: com.sleepanalysis.domain.validity.NightValidity.Result? = null,
     /** Short user note added after the night (user context, never a measurement). */
     val morningNotes: String? = null,
     /**
@@ -234,6 +265,11 @@ data class MorningReport(
     val garminStageMinutes: Map<String, Long> = emptyMap(),
     /** Garmin's own sleep score promoted from the vendor rows (null when not imported). */
     val garminSleepScore: Double? = null,
+    /**
+     * Which importer wrote the stage timeline rows ("WEARABLE" / "GARMIN", see
+     * ReportAssembler.STAGE_SOURCE_*); null without any stage rows.
+     */
+    val stageSource: String? = null,
 )
 
 object ReportAssembler {
@@ -253,6 +289,15 @@ object ReportAssembler {
      */
     const val DEFAULT_MIN_DISPLAYED_NOISE_CONFIDENCE = 0.5
 
+    /**
+     * Stage-row provenance values. "WEARABLE" must stay equal to
+     * HealthConnectImportManager.STAGE_SOURCE (the Health Connect writer); "GARMIN" is the
+     * Garmin import's value. Literals here keep the domain report decoupled from the manager
+     * classes — the UI branches on [STAGE_SOURCE_WEARABLE] when labeling the stage section.
+     */
+    const val STAGE_SOURCE_WEARABLE = "WEARABLE"
+    const val STAGE_SOURCE_GARMIN = "GARMIN"
+
     fun assemble(
         session: SleepSessionEntity,
         events: List<AcousticEventEntity>,
@@ -267,6 +312,8 @@ object ReportAssembler {
         noiseMinConfidence: Double = DEFAULT_MIN_DISPLAYED_NOISE_CONFIDENCE,
         /** Stored quiet gaps (schema v10) — replaces the report-time computation when present. */
         quietGapsOverride: List<QuietGap>? = null,
+        /** The stored NIGHT_VALIDITY grade (parsed notes) — passed through verbatim. */
+        validity: com.sleepanalysis.domain.validity.NightValidity.Result? = null,
     ): MorningReport? {
         val endedAt = session.endedAt ?: return null
         val timeInBedSeconds = ((endedAt - session.startedAt).coerceAtLeast(0)) / 1000
@@ -283,7 +330,14 @@ object ReportAssembler {
         }
         val excludedNoise = events.size - visibleEvents.size
 
-        val snoreEvents = visibleEvents.filter { it.type == EventType.SNORE }
+        // Label-aware snore set (SnoreMath) — computed from ALL events, exactly like the
+        // finalize writer and the label-corrected rewrite (the low-confidence display filter
+        // above is presentation-only: a SNORE-labeled event must count toward the aggregates
+        // whether or not the display filter would hide its row, or the live recompute would
+        // contradict the stored rows the trend reads — docs/NIGHT_REPORT.md §Score). A user
+        // label re-weighs aggregates only: display (timeline, episodes, counts) still shows
+        // every visible event with its detector type.
+        val snoreEvents = com.sleepanalysis.domain.scoring.SnoreMath.eventsCountingAsSnore(events)
         // Union, not sum — the same math as the stored measurements (SnoreMath): merged
         // overlapping event windows must count their audio once.
         val snoreSeconds = com.sleepanalysis.domain.scoring.SnoreMath
@@ -424,6 +478,7 @@ object ReportAssembler {
             dailyFactors = factors,
             capture = capture,
             healthWarnings = healthWarnings,
+            validity = validity,
             morningNotes = session.morningNotes,
             loudestEpisodes = episodes,
             lowConfidenceNoiseExcluded = excludedNoise,
@@ -444,6 +499,7 @@ object ReportAssembler {
             worstBoutClip = worstBoutClip(bouts, clipRefsById),
             garminStageMinutes = garminStageMinutes(garmin),
             garminSleepScore = garminSleepScore(garmin),
+            stageSource = stageSource(garminStages),
         )
     }
 
@@ -467,6 +523,18 @@ object ReportAssembler {
         val best = overlaps.maxByOrNull { it.value } ?: return null
         if (best.value <= 0) return null
         return BoutStage(best.key, best.value.toDouble() / spanMs)
+    }
+
+    /**
+     * Provenance of the stage timeline rows: "WEARABLE" when any row came from the Health
+     * Connect import, "GARMIN" when only Garmin-written rows exist (legacy rows predate the
+     * source column — they were all Garmin's), null without any stage rows. The report's
+     * stage section is labeled with this instead of assuming Garmin.
+     */
+    fun stageSource(stages: List<StageSpan>): String? = when {
+        stages.any { it.source == STAGE_SOURCE_WEARABLE } -> STAGE_SOURCE_WEARABLE
+        stages.isNotEmpty() -> STAGE_SOURCE_GARMIN
+        else -> null
     }
 
     /**
@@ -614,6 +682,21 @@ object ReportAssembler {
         sleepEndMs: Long,
     ): Long =
         (minOf(captureEndMs, sleepEndMs) - maxOf(captureStartMs, sleepStartMs)).coerceAtLeast(0)
+
+    /**
+     * Coverage-normalized snore share for the TL;DR (docs/NIGHT_REPORT.md §Garmin): snoring
+     * time over the part of Garmin's sleep window the capture actually covers — the honest
+     * ratio when capture started late (dogfood 2026-11-18→19: capture from 01:02, Garmin's
+     * sleep from 22:14). Display-only: the stored snoreSharePercent keeps its finalize-time
+     * denominator, so this is never stored or compared. Null when there is no meaningful
+     * ratio: no overlap at all, or a ratio above 100% (Garmin's overlap is smaller than the
+     * snoring's own span) — omitted rather than clamped to a fabricated 100%.
+     */
+    fun garminNormalizedSharePercent(snoreSeconds: Long, overlapWithCaptureMs: Long): Double? {
+        if (overlapWithCaptureMs <= 0) return null
+        val share = snoreSeconds * 100.0 / (overlapWithCaptureMs / 1000.0)
+        return share.takeIf { it <= 100.0 }
+    }
 
     private fun tierRank(tier: String): Int = when (tier) {
         SnoreScore.IntensityTiers.EPIC -> 4

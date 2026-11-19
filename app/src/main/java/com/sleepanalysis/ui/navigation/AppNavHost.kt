@@ -17,14 +17,17 @@ object Routes {
     const val HOME = "home"
     const val REPORT = "report/{sessionId}"
     const val REPORT_LOG = "report/{sessionId}/log"
+    const val REPORT_LABELING = "report/{sessionId}/label"
     const val HISTORY = "history"
     const val TRENDS = "trends"
+    const val INSIGHTS = "insights"
     const val BASELINE = "baseline"
     const val SETTINGS = "settings"
     const val DAILY_LOG = "dailylog"
 
     fun report(sessionId: Long) = "report/$sessionId"
     fun reportLog(sessionId: Long) = "report/$sessionId/log"
+    fun reportLabeling(sessionId: Long) = "report/$sessionId/label"
 }
 
 @Composable
@@ -48,7 +51,14 @@ fun AppNavHost() {
             ReportScreen(
                 onBack = { navController.popBackStack() },
                 onOpenSessionLog = { navController.navigate(Routes.reportLog(sessionId)) },
+                onLabelClips = { navController.navigate(Routes.reportLabeling(sessionId)) },
             )
+        }
+        composable(
+            Routes.REPORT_LABELING,
+            arguments = listOf(navArgument("sessionId") { type = NavType.LongType }),
+        ) {
+            com.sleepanalysis.ui.report.LabelingScreen(onBack = { navController.popBackStack() })
         }
         composable(
             Routes.REPORT_LOG,
@@ -61,10 +71,17 @@ fun AppNavHost() {
                 onBack = { navController.popBackStack() },
                 onOpenReport = { navController.navigate(Routes.report(it)) },
                 onOpenTrends = { navController.navigate(Routes.TRENDS) },
+                onOpenInsights = { navController.navigate(Routes.INSIGHTS) },
             )
         }
         composable(Routes.TRENDS) {
             com.sleepanalysis.ui.trends.TrendsScreen(
+                onBack = { navController.popBackStack() },
+                onOpenReport = { navController.navigate(Routes.report(it)) },
+            )
+        }
+        composable(Routes.INSIGHTS) {
+            com.sleepanalysis.ui.insights.InsightsScreen(
                 onBack = { navController.popBackStack() },
                 onOpenReport = { navController.navigate(Routes.report(it)) },
             )

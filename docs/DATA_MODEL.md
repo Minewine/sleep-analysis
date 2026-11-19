@@ -20,7 +20,7 @@ erDiagram
     USER_FACTOR }o--|| MEASUREMENT : "mirrored into (user rows)"
 ```
 
-`REPORT` (§3.7) and `MODEL_REGISTRY` (§3.8) are **planned tables**, not yet in the schema (reports are computed live; the active model is a version constant). Everything else is implemented.
+`REPORT` (§3.7, schema v12) and `MODEL_REGISTRY` (§3.8, schema v12) are implemented: finalize writes each night's headline snapshot and registers the detector/score versions that produced it. Everything else is implemented.
 
 Two write paths exist, both through `MeasurementRecorder` ([ARCHITECTURE.md](ARCHITECTURE.md) §6):
 
@@ -65,7 +65,7 @@ One row per metric value. This is the table all longitudinal analysis (Phase 4+)
 | `id` | Long PK | |
 | `session_id` | Long? FK → sleep_session, **ON DELETE SET NULL** | Null for clinical/user/period rows; survives session deletion |
 | `baseline_id` | Long? FK → clinical_baseline | *Planned, not in the implemented table* — clinical values live in `clinical_baseline` (§3.1); mirroring into `measurement` is a Phase 4+ option |
-| `source_type` | TEXT enum | `CLINICAL` / `PHONE` / `USER` / `GARMIN` (implemented) · `WEARABLE` reserved for Health Connect |
+| `source_type` | TEXT enum | `CLINICAL` / `PHONE` / `USER` / `GARMIN` (implemented) · `WEARABLE` reserved for Health Connect on this table (the HC import writes no measurement rows — its provenance lives on `sleep_stage.source`, schema v14, §3.10) |
 | `method` | TEXT enum | `CLINICAL_MEASURED` / `ALGORITHM_ESTIMATED` / `DEVICE_REPORTED` / `USER_REPORTED` |
 | `measurement_type` | TEXT enum | See §3.3 |
 | `tier` | TEXT enum | `ESTABLISHED` / `EXPERIMENTAL` — validated against `ClaimPolicy` at write time; Tier 3 types are rejected |
@@ -74,7 +74,7 @@ One row per metric value. This is the table all longitudinal analysis (Phase 4+)
 | `unit` | TEXT enum | `SECONDS` / `MINUTES` / `PERCENT` / `COUNT` / `PER_HOUR` / `DBFS` / `INDEX_0_100` / `INDEX_0_10` / `MS` / `BPM` / `BREATHS_PER_MINUTE` |
 | `is_clinical` | Bool | True only for clinical-source rows — SQL triggers + recorder logic key on it |
 | `confidence` | REAL? | 0–1, nullable (user/clinical rows typically null) |
-| `model_version` | TEXT? | Model identity stamped at write time — currently the `energy-heuristic-v2-burst` constant (v1-spectral on pre-v2 rows; `+dbg1` suffix when the debug enter-windows toggle was active). The FK to `model_registry` applies once the registry exists (§3.8, Phase 2) |
+| `model_version` | TEXT? | Model identity stamped at write time — currently the `energy-heuristic-v3-peakgate` constant (v1-spectral on pre-v2 rows; `+dbg1` suffix when the debug enter-windows toggle was active). The FK to `model_registry` applies once the registry exists (§3.8, Phase 2) |
 | `period_start` / `period_end` | Long? | For period-scoped rows (e.g., per-hour, weekly) |
 | `notes` | TEXT? | |
 | `timestamp` | Long | When the value occurred (event/measurement time — not row-write time) |
@@ -102,7 +102,7 @@ Clinical baseline values (e.g., AHI 17.6) currently live in `clinical_baseline` 
 
 **Clinical:** `TST`, `SLEEP_EFFICIENCY`, `AROUSAL_INDEX`, `N3_PERCENT`, `AHI`, plus free-text hypnogram summary via `notes`/`value_text`.
 
-**Wearable (Phase 3, Garmin slice implemented — all `ESTABLISHED` device-reported pass-through, tiers per [MEASUREMENT_RELIABILITY.md](MEASUREMENT_RELIABILITY.md) §8):** `VENDOR_SLEEP_DURATION`, `VENDOR_SLEEP_SCORE`, `VENDOR_HRV_RMSSD`, `VENDOR_BODY_BATTERY`, `VENDOR_RESTING_HEART_RATE`, stage totals as four per-stage types (`VENDOR_DEEP_SLEEP` / `VENDOR_LIGHT_SLEEP` / `VENDOR_REM_SLEEP` / `VENDOR_AWAKE_SLEEP`; there is no `VENDOR_SLEEP_STAGES` row type), overnight heart rate (`VENDOR_AVG_HEART_RATE_SLEEP`), respiration (`VENDOR_RESPIRATION_AVG_SLEEP`), stress composites (`VENDOR_SLEEP_STRESS_AVG`, `VENDOR_STRESS_DAILY_AVG`), SpO₂ levels (`VENDOR_SPO2_AVG_SLEEP`, `VENDOR_SPO2_LOWEST_SLEEP`), `VENDOR_SLEEP_AWAKENINGS`, `VENDOR_NAP_TIME`, `VENDOR_SLEEP_NEED`, and the four sleep-score factor sub-scores (`VENDOR_SLEEP_FACTOR_{DURATION,QUALITY,STRESS,TIMING}`). `WEARABLE`-source rows arrive with the Health Connect slice.
+**Wearable (Phase 3, Garmin slice implemented — all `ESTABLISHED` device-reported pass-through, tiers per [MEASUREMENT_RELIABILITY.md](MEASUREMENT_RELIABILITY.md) §8):** `VENDOR_SLEEP_DURATION`, `VENDOR_SLEEP_SCORE`, `VENDOR_HRV_RMSSD`, `VENDOR_BODY_BATTERY`, `VENDOR_RESTING_HEART_RATE`, stage totals as four per-stage types (`VENDOR_DEEP_SLEEP` / `VENDOR_LIGHT_SLEEP` / `VENDOR_REM_SLEEP` / `VENDOR_AWAKE_SLEEP`; there is no `VENDOR_SLEEP_STAGES` row type), overnight heart rate (`VENDOR_AVG_HEART_RATE_SLEEP`), respiration (`VENDOR_RESPIRATION_AVG_SLEEP`), stress composites (`VENDOR_SLEEP_STRESS_AVG`, `VENDOR_STRESS_DAILY_AVG`), SpO₂ levels (`VENDOR_SPO2_AVG_SLEEP`, `VENDOR_SPO2_LOWEST_SLEEP`), `VENDOR_SLEEP_AWAKENINGS`, `VENDOR_NAP_TIME`, `VENDOR_SLEEP_NEED`, and the four sleep-score factor sub-scores (`VENDOR_SLEEP_FACTOR_{DURATION,QUALITY,STRESS,TIMING}`). The Health Connect slice writes stage-timeline rows instead (§3.10), not measurement rows — `WEARABLE` stays reserved on this table.
 
 **User:** factor keys (§3.6).
 
@@ -136,9 +136,9 @@ Clinical baseline values (e.g., AHI 17.6) currently live in `clinical_baseline` 
 | `confidence` | REAL | Model probability at peak |
 | `model_version` | TEXT | Detector identity (e.g. `energy-heuristic-v2-burst`; v1-spectral on pre-2026-11-06 rows); no model_id/registry FK yet (§3.8) |
 | `clip_id` | Long? FK → audio_clip | |
-| `user_label` | TEXT? | User-corrected class from clip playback: `SNORE` / `COUGH` / `SPEECH` / `MOVEMENT` / `OTHER_NOT_SNORE` — the personal labeled dataset Phase 2 model improvement trains against; never alters scores |
+| `user_label` | TEXT? | User-corrected class from clip playback: `SNORE` / `COUGH` / `SPEECH` / `MOVEMENT` / `OTHER_NOT_SNORE` / `SILENCE` (nothing real on the clip) — the personal labeled dataset Phase 2 model improvement trains against. **Since `snore-score-v3` (2026-11-08) labels also re-weigh the night's aggregates**: a non-SNORE label excludes the event from every snore aggregate, `SNORE` includes it, no label keeps the detector's class (`SnoreMath.eventsCountingAsSnore`) — the session's snore-aggregate PHONE rows are recomputed and rewritten on label save, flagged `label_corrected=true` in notes (§3.2). The stored `type` column is never changed |
 | `labeled_at` | Long? | When the user applied the label (schema v4) — distinguishes label age when curating training data |
-| `features_json` | TEXT? | The detection model's decision inputs as JSON (schema v5; for `energy-heuristic-v1-spectral`: `enter_windows`, `exit_windows`, `open_windows`, `close_windows`, `snr_peak_db`, `snr_mean_db`, `low_band_ratio_peak`, `low_band_ratio_mean`, `noise_floor_dbfs` — the v0 rows predate `exit/open/close_windows` (added schema v7 era, 2026-11-02)). Debug visibility of detector decisions — never a measurement, never rendered as clinical |
+| `features_json` | TEXT? | The detection model's decision inputs as JSON (schema v5; for `energy-heuristic-v1-spectral`: `enter_windows`, `exit_windows`, `open_windows`, `close_windows`, `snr_peak_db`, `snr_mean_db`, `low_band_ratio_peak`, `low_band_ratio_mean`, `noise_floor_dbfs`, `spectral_flatness_mean`, `harmonic_ratio_mean` — the v0 rows predate `exit/open/close_windows` (added schema v7 era, 2026-11-02), and rows recorded before 2026-11-05 lack the two spectral means (absent key = null on parse)). Debug visibility of detector decisions — never a measurement, never rendered as clinical |
 
 `audio_clip`:
 
@@ -167,35 +167,35 @@ Clinical baseline values (e.g., AHI 17.6) currently live in `clinical_baseline` 
 
 Only set/affirmative factors are stored — absence means "not logged that day". Saving a date replaces that date's rows. These are **user-entered context, not measurements**: no tier, no confidence, no Measurement rows; the report renders them under "Daily factors (self-logged)". Mirroring into `measurement` (`source_type = USER`, `method = USER_REPORTED`) is deferred to Phase 4's analysis engine, which will read them with explicit user-reported framing. Wiped by delete-all.
 
-### 3.7 `report` — morning report snapshot — **documented, not yet implemented**
+### 3.7 `report` — morning report snapshot (schema v12, implemented)
 
-Reports are currently **computed live in memory** (`ReportAssembler` → `MorningReport`) from events, measurements, and session context; they exist for the 90-day session retention window. This table is deferred to Phase 4 (reprocessing/trends) — the payload shape below (§5.2) is its target design.
+The full report stays a **live in-memory computation** (`ReportAssembler` → `MorningReport`); this table stores one compact HEADLINE snapshot per session at finalize — the numbers the night's own measurements carry, plus the model provenance later analysis needs to gate comparisons (schema v12, docs/INSIGHTS.md). One row per session (unique index, regeneration upserts); the session's deletion removes it (FK CASCADE) — reports remain regenerable while source data exists, never a second source of truth (§6). Delete-all purges the table.
 
 | Column | Type | Notes |
 |---|---|---|
 | `id` | Long PK | |
 | `session_id` | Long FK, CASCADE | |
-| `schema_version` | Int | Payload version |
-| `payload` | TEXT (JSON) | Assembled under `ClaimPolicy` — see §5.2 |
 | `generated_at` | Long | |
+| `app_version` | TEXT | App version at finalize |
+| `detector_version` | TEXT? | First snore event's model version (null: no snoring that night) |
+| `score_version` | TEXT? | SNORE_SCORE formula version ([SnoreScore.FORMULA_VERSION]) |
+| `payload` | TEXT (JSON) | Compact headline JSON (`schema_version` INSIDE the JSON — `domain/report/ReportSnapshot.kt`), shape per §5.2 |
 
-Unique index `(session_id, schema_version)`; regeneration upserts. Reports never contain values ClaimPolicy would refuse to render.
+Written only at finalize, inside the same transaction as the measurements and the NIGHT_VALIDITY row; a user-label recompute (`labelEvent`) refreshes the snapshot in ITS transaction so the payload keeps mirroring the rewritten aggregates — one pure builder (`reportSnapshotHeadline`) serves both paths, so neither can drift from the stored rows. Never contains values ClaimPolicy would refuse to render.
 
-### 3.8 `model_registry` — **documented, not yet implemented**
+### 3.8 `model_registry` — temporal model-version registry (schema v12, implemented)
 
-Planned per the table below, to land when a second model exists (Phase 2 model v1). Until then the active model identity is the constant `MODEL_VERSION = "energy-heuristic-v1-spectral"` in `SessionRepository`, stamped onto events and measurements.
+One row per (kind, version) validity range: which DETECTOR and SCORE versions produced which nights — the comparability record the personal-baseline eligibility gates read (docs/INSIGHTS.md §Eligibility). Written at finalize: when the current detector/score version differs from the latest registry row of its kind, a new row opens (`validFromUtc` = now) and the previous open row closes (`validToUtc` = now); `validToUtc` null = still current, exactly one open row per kind.
 
 | Column | Type | Notes |
 |---|---|---|
-| `id` | TEXT PK | e.g. `yamnet-mapped-v0`, `snorecnn-v1` |
-| `asset_path`, `sha256` | TEXT | Bundled TFLite/ONNX file identity |
-| `runtime` | TEXT enum | `TFLITE` / `ONNX` |
-| `input_spec` | TEXT (JSON) | `{sample_rate: 16000, window_ms: 1000, hop_ms: 500, mel_bins: 64, frames: 96}` |
-| `classes` | TEXT (JSON) | Ordered class list + label mapping |
-| `thresholds` | TEXT (JSON) | Enter/exit/min-duration/merge defaults |
-| `tier_map` | TEXT (JSON) | Which emitted event types are Tier 1 vs Tier 2 |
-| `active` | INTEGER | Exactly one active |
-| `created_at` | Long | |
+| `id` | Long PK | |
+| `kind` | TEXT | `DETECTOR` or `SCORE` |
+| `version` | TEXT | e.g. `energy-heuristic-v2-burst`, `snore-score-v3` |
+| `valid_from_utc` | Long | |
+| `valid_to_utc` | Long? | Null = current |
+
+Read paths: current version per kind, full history, and range queries (versions valid at a given instant). A night's detector version is resolved once — the label-aware first snore event's version, else (zero-snore night) the detector current at finalize — and that single resolved value lands on the snapshot (§3.7), the registry row and the insight eligibility gate (docs/INSIGHTS.md §Eligibility). The Phase-2 asset-level registry (bundled TFLite/ONNX file identity, runtime, input spec, thresholds) remains deferred until a second binary model exists — the version-provenance need it serves is covered by this table today.
 
 ### 3.9 `raw_payload` — vendor JSON storage (schema v2)
 
@@ -212,9 +212,39 @@ on re-finalize; session deletion removes them (FK CASCADE); delete-all purges th
 report reads stored rows and falls back to the identical report-time computation for legacy
 nights ([NIGHT_REPORT.md](NIGHT_REPORT.md) §1).
 
-### 3.10 `sleep_stage` — vendor stage timeline (schema v9)
+### 3.10 `sleep_stage` — vendor stage timeline (schema v9, per-source since v14)
 
-One row per contiguous stage span of a **linked** session: `(sessionId FK CASCADE, startMs, endMs, stage)` with a `(sessionId, startMs)` index. Populated by the Garmin import only when the dailySleep payload carries a `sleepLevels` timeline AND a time-overlapping session was identified (§5, §6); a re-import replaces the session's timeline atomically. Device-reported context only (M13) — never compared to PSG stages; the night report uses it to say which stage the longest snore bout fell in. Stage labels are the vendor's own, canonicalized to DEEP/LIGHT/REM/AWAKE where known, unknown labels kept verbatim. Session deletion removes the timeline (FK CASCADE); delete-all purges the table.
+One row per contiguous stage span of a **linked** session: `(sessionId FK CASCADE, startMs, endMs, stage, source)` with a `(sessionId, startMs)` index. Populated by the Garmin import only when the dailySleep payload carries a `sleepLevels` timeline AND a time-overlapping session was identified (§5, §6), and by the Health Connect import from the wearable stage timeline over on-device IPC (user-triggered, docs/PRIVACY_AND_REGULATORY.md §3); each re-import replaces atomically. Device-reported context only (M13) — never compared to PSG stages; the night report uses it to say which stage the longest snore bout fell in. Stage labels are the vendor's own, canonicalized to DEEP/LIGHT/REM/AWAKE where known, unknown labels kept verbatim (HC: AWAKE_IN_BED folds to AWAKE; SLEEPING/OUT_OF_BED/UNKNOWN spans are skipped but accounted per type in the raw_payload summary row). `source` (schema v14) is provenance: `GARMIN` = stage spans derived from the Personal API night payload (estimate), `WEARABLE` = Health Connect stage timeline — both timelines can coexist on one session, so deletes/replaces are per-source. Session deletion removes the timeline (FK CASCADE); delete-all purges the table (all sources).
+
+### 3.12 `sleep_experiment` — N-of-1 experiment rows (schema v13, implemented)
+
+One row per N-of-1 experiment (docs/INSIGHTS.md §Playbook): a playbook action tried for a
+planned number of nights against the personal baseline band captured at start. Exactly ONE row
+may be ACTIVE — enforced in tracker logic (`ExperimentTracker`), not SQL, because the optional
+A-B-A confirm phase re-activates the same DONE row (status machine: ACTIVE → DONE with the
+phase verdict → ACTIVE (confirm) → DONE/final; ABANDONED at any user step). NOT session-bound
+(an experiment spans nights and outlives them): no FK, never CASCADE-deleted; delete-all
+purges it. Starts empty — rows are written when the user starts an experiment, never
+back-filled.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | Long PK | |
+| `hypothesis_rule_id` | TEXT? | Suggesting insight-rule id (docs/INSIGHTS.md §Rule catalog); null = user-started |
+| `playbook_action_id` | TEXT? | Playbook action (docs/INSIGHTS.md §Playbook); null = free-form hypothesis |
+| `metric` | TEXT | Verification metric id ([PersonalBaseline.Metrics]) |
+| `started_at` | Long | Phase-1 start (epoch ms) |
+| `planned_nights` | Int | ≥ 5 (WWC 2010 floor), default 7 — clamped in the tracker |
+| `status` | TEXT | `ACTIVE` / `DONE` / `ABANDONED` ([ExperimentStatus]) |
+| `baseline_stats_json` | TEXT | Band captured at start: `{"metric":…,"median":…,"mad":…,"low":…,"high":…}` |
+| `result_json` | TEXT? | Verdict JSON (`schema_version`, change_detected, direction, confidence, phase_median, robust_z, used/excluded night ids, kept; after A-B-A: confirmed, confirm_median, confirm_returned_to_band) |
+| `confirm_phase_json` | TEXT? | Optional A-B-A confirm phase: `{"phase":"CONFIRM","started_at":…}` while collecting, plus the outcome when final |
+| `created_at` | Long | |
+
+The verdict math is pure (`domain/experiments/ExperimentMath`): usable nights = eligible nights
+since the phase start minus confound exclusions (any logged factor outside the experiment's
+own — [Playbook.ownFactorKeys]) minus missing metric values; a verdict renders at ≥
+planned_nights usable nights.
 
 ## 4. Clinical immutability
 
@@ -306,5 +336,5 @@ Deletion paths:
 - JSON payloads (`capture_stats`, report payload) carry `schema_version`; readers handle older versions defensively.
 - `measurement_type`/enum growth is additive; `ClaimPolicy` is the gate, so unknown types in the DB can never render in the UI.
 - GARMIN measurement rows carry `sessionId` when the import identified a time-overlapping session (schema v9); rows written before then have `NULL` and join by day window only.
-- Schema history: 1→11 via ten real migrations (v9 `sleep_stage` §3.10; v10 `quiet_gap` §3.11; v11 `audio_clip.appliedGain`/`filePeakDbfs` §3.5); v8 is declaration-only (`@ColumnInfo(defaultValue = "0")` on `sleep_session.resumedAfterInterruption`, matching the `DEFAULT 0` the column has carried since v7). **v9** adds `sleep_stage` (§3.10): the vendor sleep-stage timeline of a linked session, FK CASCADE on session delete.
+- Schema history: 1→14 via thirteen real migrations (v9 `sleep_stage` §3.10; v10 `quiet_gap` §3.11; v11 `audio_clip.appliedGain`/`filePeakDbfs` §3.5; v12 `report` §3.7 + `model_registry` §3.8; v13 `sleep_experiment` §3.12; v14 `sleep_stage.source` §3.10); v8 is declaration-only (`@ColumnInfo(defaultValue = "0")` on `sleep_session.resumedAfterInterruption`, matching the `DEFAULT 0` the column has carried since v7). **v9** adds `sleep_stage` (§3.10): the vendor sleep-stage timeline of a linked session, FK CASCADE on session delete. **v12** adds the per-session report snapshot (§3.7) and the temporal model-version registry (§3.8); both start empty — snapshots and registry rows are written at each new finalize, never back-filled. **v13** adds `sleep_experiment` (§3.12): N-of-1 experiment rows, not session-bound (no FK), starting empty — written only when the user starts an experiment. **v14** adds `sleep_stage.source` (§3.10): per-row provenance — `GARMIN` (Personal API estimate) vs `WEARABLE` (Health Connect stage timeline) — backfilled `DEFAULT 'GARMIN'` so pre-v14 rows keep their truthful history.
 - Reprocessing (Phase 4+): re-running a newer model over stored clips writes **new** Measurement rows with the new `model_id`; old rows remain — provenance history is append-only.

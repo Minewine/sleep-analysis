@@ -7,6 +7,7 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
@@ -47,12 +48,16 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.health.connect.client.PermissionController
+import androidx.health.connect.client.permission.HealthPermission
+import androidx.health.connect.client.records.SleepSessionRecord
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
 import com.sleepanalysis.R
 import com.sleepanalysis.data.garmin.GarminImportManager
+import com.sleepanalysis.data.healthconnect.HealthConnectImportManager
 import com.sleepanalysis.data.secure.GarminKeyStore
 import com.sleepanalysis.ui.components.formatDateTime
 import com.sleepanalysis.ui.components.formatMinutesOfDay
@@ -74,6 +79,7 @@ class SettingsViewModel @Inject constructor(
     private val keyStore: GarminKeyStore,
     private val prefs: com.sleepanalysis.data.prefs.UserPreferences,
     internal val importManager: GarminImportManager,
+    internal val healthConnectImportManager: HealthConnectImportManager,
     private val scheduler: com.sleepanalysis.monitoring.schedule.RecordingScheduler,
 ) : ViewModel() {
 
@@ -85,6 +91,9 @@ class SettingsViewModel @Inject constructor(
 
     private val _debugEnter1 = MutableStateFlow(false)
     val debugEnter1: StateFlow<Boolean> = _debugEnter1.asStateFlow()
+
+    private val _debugSkipWakelock = MutableStateFlow(false)
+    val debugSkipWakelock: StateFlow<Boolean> = _debugSkipWakelock.asStateFlow()
 
     // Recording controls (design: recording controls) — optimistic-set-then-persist like above.
     private val _recordingEnabled = MutableStateFlow(true)
@@ -123,6 +132,7 @@ class SettingsViewModel @Inject constructor(
 
     init {
         viewModelScope.launch { _debugEnter1.value = prefs.debugEnterWindows1Now() }
+        viewModelScope.launch { _debugSkipWakelock.value = prefs.debugSkipCaptureWakelockNow() }
         refreshExactAlarmPermission()
         refreshNotificationPermission()
         viewModelScope.launch {
@@ -151,6 +161,12 @@ class SettingsViewModel @Inject constructor(
     fun setDebugEnter1(enabled: Boolean) {
         _debugEnter1.value = enabled
         viewModelScope.launch { prefs.setDebugEnterWindows1(enabled) }
+    }
+
+    /** Applies to the NEXT recording start; a running session keeps its lock state. */
+    fun setDebugSkipWakelock(enabled: Boolean) {
+        _debugSkipWakelock.value = enabled
+        viewModelScope.launch { prefs.setDebugSkipCaptureWakelock(enabled) }
     }
 
     fun setRecordingEnabled(enabled: Boolean) {
@@ -267,6 +283,14 @@ class SettingsViewModel @Inject constructor(
         // the correct explicit choice (the session report uses the session zone instead).
         viewModelScope.launch { importManager.importForDate(parsed, ZoneId.systemDefault()) }
     }
+
+    /** Health Connect manual import — same parse/zone handling as [importForDate]. */
+    fun importForHealthConnect(date: String) {
+        val parsed = runCatching { LocalDate.parse(date) }.getOrNull() ?: return
+        // Manual import: the date is picked as shown on this device, so the device zone is
+        // the correct explicit choice (the session report uses the session zone instead).
+        viewModelScope.launch { healthConnectImportManager.importForDate(parsed, ZoneId.systemDefault()) }
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -278,7 +302,9 @@ fun SettingsScreen(
     val keyStatus by viewModel.keyStatus.collectAsStateWithLifecycle()
     val keyMessage by viewModel.keyMessage.collectAsStateWithLifecycle()
     val importState by viewModel.importManager.state.collectAsStateWithLifecycle()
+    val hcImportState by viewModel.healthConnectImportManager.state.collectAsStateWithLifecycle()
     val debugEnter1 by viewModel.debugEnter1.collectAsStateWithLifecycle()
+    val debugSkipWakelock by viewModel.debugSkipWakelock.collectAsStateWithLifecycle()
     val recordingEnabled by viewModel.recordingEnabled.collectAsStateWithLifecycle()
     val scheduleEnabled by viewModel.scheduleEnabled.collectAsStateWithLifecycle()
     val scheduleStartMinutes by viewModel.scheduleStartMinutes.collectAsStateWithLifecycle()
@@ -307,8 +333,16 @@ fun SettingsScreen(
     }
     var keyInput by remember { mutableStateOf("") }
     var importDate by remember { mutableStateOf(LocalDate.now().minusDays(1).toString()) }
+    var hcImportDate by remember { mutableStateOf(LocalDate.now().minusDays(1).toString()) }
     var showStartPicker by remember { mutableStateOf(false) }
     var showEndPicker by remember { mutableStateOf(false) }
+
+    // Health Connect read permission for the manual import's PERMISSION_MISSING outcome —
+    // the contract does the rest: after granting, the user re-taps Import and the manager
+    // re-checks (the grant itself imports nothing).
+    val hcPermissionLauncher = rememberLauncherForActivityResult(
+        PermissionController.createRequestPermissionResultContract(),
+    ) { }
 
     Scaffold(topBar = {
         TopAppBar(
@@ -521,12 +555,110 @@ fun SettingsScreen(
                                 style = MaterialTheme.typography.bodyMedium,
                             )
                             s.endpointStatuses.forEach { (endpoint, status) ->
-                                Text("$endpoint → HTTP $status", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text(
+                                    endpointStatusLabel(endpoint, status),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                        is GarminImportManager.GarminImportState.NotReady -> {
+                            Text(
+                                stringResource(R.string.settings_import_not_ready),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                            // The raw per-endpoint verdicts (what exactly 404'd) — same
+                            // diagnostics the Success branch shows.
+                            s.endpointStatuses.forEach { (endpoint, status) ->
+                                Text(
+                                    endpointStatusLabel(endpoint, status),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
                             }
                         }
                         is GarminImportManager.GarminImportState.Error ->
                             Text(s.message, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
                         else -> {}
+                    }
+                }
+            }
+
+            // Health Connect import card (see docs/NIGHT_REPORT.md): the manual counterpart
+            // of the report's silent backfill. Unavailable HC is surfaced here — the backfill
+            // alone would be a silent no-op — with the import button disabled.
+            Card {
+                Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text(stringResource(R.string.settings_hc_title), fontWeight = FontWeight.SemiBold)
+                    if (!viewModel.healthConnectImportManager.isAvailable()) {
+                        Text(
+                            stringResource(R.string.settings_hc_unavailable),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Button(onClick = { viewModel.importForHealthConnect(hcImportDate) }, enabled = false) {
+                            Text(stringResource(R.string.settings_hc_action))
+                        }
+                    } else {
+                        OutlinedTextField(
+                            value = hcImportDate,
+                            onValueChange = { hcImportDate = it },
+                            label = { Text(stringResource(R.string.settings_hc_date)) },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        Button(
+                            onClick = { viewModel.importForHealthConnect(hcImportDate) },
+                            enabled = hcImportDate.matches(Regex("\\d{4}-\\d{2}-\\d{2}")) &&
+                                hcImportState !is HealthConnectImportManager.HealthConnectImportState.Importing,
+                        ) { Text(stringResource(R.string.settings_hc_action)) }
+                        when (val s = hcImportState) {
+                            is HealthConnectImportManager.HealthConnectImportState.Importing ->
+                                Text(stringResource(R.string.settings_hc_running, s.date), style = MaterialTheme.typography.bodySmall)
+                            is HealthConnectImportManager.HealthConnectImportState.Success -> {
+                                Text(
+                                    stringResource(R.string.settings_hc_done, s.stagesStored),
+                                    color = MaterialTheme.colorScheme.primary,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                )
+                                if (s.skippedStageMinutes > 0) {
+                                    Text(
+                                        stringResource(R.string.settings_hc_skipped, s.skippedStageMinutes),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                            }
+                            is HealthConnectImportManager.HealthConnectImportState.NotReady -> {
+                                Text(
+                                    when (s.reason) {
+                                        HealthConnectImportManager.NotReadyReason.HC_UNAVAILABLE ->
+                                            stringResource(R.string.settings_hc_not_ready_unavailable)
+                                        HealthConnectImportManager.NotReadyReason.PERMISSION_MISSING ->
+                                            stringResource(R.string.settings_hc_not_ready_permission)
+                                        HealthConnectImportManager.NotReadyReason.NO_ACOUSTIC_SESSION ->
+                                            stringResource(R.string.settings_hc_not_ready_no_session)
+                                    },
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    style = MaterialTheme.typography.bodySmall,
+                                )
+                                // The grant itself imports nothing — after granting, the user
+                                // re-taps Import and the manager re-checks the permission.
+                                if (s.reason == HealthConnectImportManager.NotReadyReason.PERMISSION_MISSING) {
+                                    Button(
+                                        onClick = {
+                                            hcPermissionLauncher.launch(
+                                                setOf(HealthPermission.getReadPermission(SleepSessionRecord::class)),
+                                            )
+                                        },
+                                    ) { Text(stringResource(R.string.settings_hc_grant)) }
+                                }
+                            }
+                            is HealthConnectImportManager.HealthConnectImportState.Error ->
+                                Text(s.message, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                            else -> {}
+                        }
                     }
                 }
             }
@@ -557,6 +689,24 @@ fun SettingsScreen(
                         androidx.compose.material3.Switch(
                             checked = debugEnter1,
                             onCheckedChange = { viewModel.setDebugEnter1(it) },
+                        )
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(stringResource(R.string.settings_debug_wakelock_title), fontWeight = FontWeight.SemiBold)
+                            Text(
+                                stringResource(R.string.settings_debug_wakelock_body),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        androidx.compose.material3.Switch(
+                            checked = debugSkipWakelock,
+                            onCheckedChange = { viewModel.setDebugSkipWakelock(it) },
                         )
                     }
                 }
@@ -667,6 +817,19 @@ private fun StartDelayRow(selectedMinutes: Int, onSelect: (Int) -> Unit) {
             }
         }
     }
+}
+
+/**
+ * One endpoint status line of the import card: human meaning first, the raw HTTP code kept
+ * for diagnostics — 404 means Garmin hasn't processed that endpoint's night yet, a negative
+ * status means no HTTP verdict at all (network failure / failed token re-exchange).
+ */
+@Composable
+private fun endpointStatusLabel(endpoint: String, status: Int): String = when {
+    status in 200..299 -> stringResource(R.string.settings_endpoint_status_ok, endpoint, status)
+    status == 404 -> stringResource(R.string.settings_endpoint_status_not_ready, endpoint, status)
+    status < 0 -> stringResource(R.string.settings_endpoint_status_no_http, endpoint)
+    else -> stringResource(R.string.settings_endpoint_status_failed, endpoint, status)
 }
 
 /** Small dialog wrapping the Material3 TimePicker (24 h, matching the "22:30" display). */

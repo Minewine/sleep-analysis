@@ -21,7 +21,9 @@ import kotlin.math.sqrt
  * Overnight capture pipeline (docs/ARCHITECTURE.md §5). Runs entirely on one capture thread:
  *
  *   AudioRecord (16 kHz mono PCM16) → 1 s windows @ 0.5 s hop → features (dBFS, low-band ratio,
- *   rolling noise floor) → [SnoreDetector] → [EventDetector] → finalized events →
+ *   cached rolling noise floor) → pre-spectral level gate ([SpectralGatePolicy]: quiet windows
+ *   with a fully idle detector skip the spectral compute) → [SnoreDetector] → [EventDetector] →
+ *   finalized events →
  *   clip flush from the in-memory ring buffer (RAW, pre-gain samples) → [ClipPolicy] gates →
  *   [ClipStore] (float mic gain + −1 dBFS block peak-limit at write time).
  *
@@ -106,6 +108,8 @@ class AudioEngine(
         val thermalThrottleEvents: Int,
         /** Events dropped by the relative level gate (DetectorConfig.gateThresholdDbfs). */
         val levelGateSkipped: Int = 0,
+        /** Analyzed windows whose spectral compute the pre-spectral level gate skipped ([SpectralGatePolicy]). */
+        val spectralSkipped: Long = 0,
         /** Thermally skipped analysis hops as merged epoch spans — analysis-correctable coverage. */
         val skippedHopSpans: List<SkippedHopSpan> = emptyList(),
         /** Mean window dBFS per 5-minute epoch bucket — quiet-sleep vs no-capture evidence. */
@@ -155,6 +159,17 @@ class AudioEngine(
     private var noiseFloorIndex = 0
 
     /**
+     * Cached rolling noise floor ([NoiseFloorCache]): same percentile over the same 240-sample
+     * ring as the per-window copy+sort it replaced, recomputed per push while the ring fills
+     * and every 8 pushes (4 s) once full — the old per-window copy+sort dropped ~100 MB of
+     * transient arrays per night on the capture thread.
+     */
+    private val noiseFloorCache = NoiseFloorCache(
+        ringSize = DetectorConfig.NOISE_FLOOR_WINDOW_COUNT,
+        percentile = DetectorConfig.NOISE_FLOOR_PERCENTILE,
+    )
+
+    /**
      * Ambient levels for session statistics. Mutated by the capture thread, iterated by
      * [stats] from the service heartbeat — every access to the list itself holds [statsLock].
      * (Night 1 dogfood: an unsynchronized read here crashed the process with a
@@ -183,6 +198,8 @@ class AudioEngine(
     @Volatile private var windowsSkipped = 0L
     @Volatile private var thermalThrottleEvents = 0
     @Volatile private var levelGateSkipped = 0
+    /** Own counter — windowsSkipped reports thermal skips and feeds validity/stats semantics. */
+    @Volatile private var spectralSkipped = 0L
     @Volatile private var clipBytes = 0L
     /** Hour bucket of the last clip_budget_skipped log — rate-limits the session log. Capture-thread-only. */
     private var lastBudgetLogBucket = Long.MIN_VALUE
@@ -195,11 +212,13 @@ class AudioEngine(
         eventDetector.reset()
         noiseFloorCount = 0
         noiseFloorIndex = 0
+        noiseFloorCache.reset()
         synchronized(statsLock) { ambientDbfs.clear() }
         windowsProcessed = 0
         windowsSkipped = 0
         thermalThrottleEvents = 0
         levelGateSkipped = 0
+        spectralSkipped = 0
         lastBudgetLogBucket = Long.MIN_VALUE
         clipBytes = 0
         skippedHops.reset()
@@ -240,6 +259,7 @@ class AudioEngine(
             clipBytesTotal = clipBytes,
             thermalThrottleEvents = thermalThrottleEvents,
             levelGateSkipped = levelGateSkipped,
+            spectralSkipped = spectralSkipped,
             skippedHopSpans = skippedHops.spans(),
             ambientBuckets = ambientBuckets.snapshot().map {
                 com.sleepanalysis.domain.report.AmbientLevelBucket(it.startMs, it.endMs, it.meanDbfs)
@@ -356,6 +376,9 @@ class AudioEngine(
         noiseFloorRing[noiseFloorIndex] = dbfs
         noiseFloorIndex = (noiseFloorIndex + 1) % noiseFloorRing.size
         noiseFloorCount = minOf(noiseFloorCount + 1, noiseFloorRing.size)
+        // The floor is always read with the current window included — refresh the cache right
+        // after the push (per push while the ring fills, every 8 pushes once full).
+        noiseFloorCache.onWindowPushed(noiseFloorRing, noiseFloorCount)
         synchronized(statsLock) {
             if (ambientDbfs.size < 100_000) ambientDbfs.add(dbfs)
         }
@@ -380,18 +403,29 @@ class AudioEngine(
             return
         }
 
-        // Stage 2 spectral features, once per ANALYZED window (31 frames x 1024-pt FFT +
-        // one full-window autocorrelation, ~3.2M multiply-adds — fine within the 500 ms hop
-        // budget, never per hop; scratch comes from the preallocated workspace, allocation-free).
-        val spectral = spectralWorkspace.compute(windowBuf)
+        // Stage 2 spectral features, once per ANALYZED window that needs them (31 frames x
+        // 1024-pt FFT + one full-window autocorrelation, ~3.2M multiply-adds — fine within the
+        // 500 ms hop budget, never per hop; scratch comes from the preallocated workspace,
+        // allocation-free). Quiet windows with a fully idle detector skip the compute and
+        // classify on the detector's documented null-feature path — SpectralGatePolicy carries
+        // the proof that such windows classify byte-identically and never contribute to a
+        // persisted event's features. Thermal-skipped windows return above, before this.
+        val noiseFloor = noiseFloorCache.floor()
+        val computeSpectral = SpectralGatePolicy.shouldComputeSpectral(
+            windowDbfs = dbfs,
+            noiseFloorDbfs = noiseFloor,
+            detectorBusy = !eventDetector.isIdle(),
+        )
+        if (!computeSpectral) spectralSkipped++
+        val spectral = if (computeSpectral) spectralWorkspace.compute(windowBuf) else null
 
         val features = AudioFeatures(
             windowDbfs = dbfs,
-            noiseFloorDbfs = currentNoiseFloor(),
+            noiseFloorDbfs = noiseFloor,
             lowBandRatio = lowRatio,
             timestampMs = clipRing.totalWritten * 1000 / config.sampleRate,
-            spectralFlatness = spectral.flatness,
-            harmonicRatio = spectral.harmonicRatio,
+            spectralFlatness = spectral?.flatness,
+            harmonicRatio = spectral?.harmonicRatio,
         )
         val result = detector.classify(features)
         val drafts = eventDetector.update(
@@ -400,14 +434,6 @@ class AudioEngine(
             result = result,
         )
         deliver(drafts)
-    }
-
-    private fun currentNoiseFloor(): Double {
-        if (noiseFloorCount == 0) return -70.0
-        val copy = DoubleArray(noiseFloorCount)
-        System.arraycopy(noiseFloorRing, 0, copy, 0, noiseFloorCount)
-        copy.sort()
-        return copy[((noiseFloorCount - 1) * DetectorConfig.NOISE_FLOOR_PERCENTILE).toInt().coerceAtLeast(0)]
     }
 
     /**
@@ -449,6 +475,7 @@ class AudioEngine(
                         // endMs + 5 s + one hop when a machine is busy), so the 8 s snapshot
                         // covers ≥ 2.5 s of the event head plus its full tail — comfortably
                         // inside the ring (the v1 2 s gap capped at 7.5 s, 0.5 s inside).
+
                         // Horizon guard (defense in depth): if the event's tail has slid past
                         // the ring horizon anyway (thermally-delayed emission, or a config
                         // whose hold bounds exceed clipMs), the snapshot would hold zero

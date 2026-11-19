@@ -371,6 +371,13 @@ class FixtureEvalTest {
         assertEquals(1, snore.getInt("tp"))
         assertEquals(1.0, snore.getDouble("recall"), 1e-9)
         assertFalse(json.getJSONArray("scores").getJSONObject(1).getBoolean("snore_positive"))
+
+        // Event-level verdict (additive key): the snoreLike clip's replayed event is OTHER_NOISE
+        // after the finalization gate — the synthesized tone's floor tracks itself, so the mean
+        // gate downgrades it even though every window was snore-flagged. Exactly the window- vs
+        // event-level distinction snore_event_count exists to expose.
+        assertEquals(1, json.getJSONArray("scores").getJSONObject(0).getInt("event_count"))
+        assertEquals(0, json.getJSONArray("scores").getJSONObject(0).getInt("snore_event_count"))
     }
 
     @Test

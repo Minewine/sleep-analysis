@@ -10,6 +10,8 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
@@ -24,6 +26,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -33,6 +36,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
 import com.sleepanalysis.R
+import com.sleepanalysis.data.prefs.UserPreferences
 import com.sleepanalysis.data.repo.SessionRepository
 import com.sleepanalysis.domain.report.NightTrend
 import com.sleepanalysis.ui.components.Formatting
@@ -49,6 +53,7 @@ import kotlinx.coroutines.launch
 @HiltViewModel
 class TrendsViewModel @Inject constructor(
     private val sessionRepository: SessionRepository,
+    private val prefs: UserPreferences,
 ) : ViewModel() {
 
     private val _trends = MutableStateFlow<List<NightTrend>>(emptyList())
@@ -60,7 +65,9 @@ class TrendsViewModel @Inject constructor(
 
     init {
         viewModelScope.launch {
-            _trends.value = sessionRepository.buildTrends()
+            // The persisted skip history suppresses synthetic missed-night rows for nights
+            // skipped on purpose (same rule as the Home banner's MissedNightPolicy).
+            _trends.value = sessionRepository.buildTrends(skippedDays = prefs.scheduleSkipHistoryDaysNow())
             _loaded.value = true
         }
     }
@@ -101,8 +108,19 @@ fun TrendsScreen(
                 item { Text(stringResource(R.string.trend_empty)) }
             }
             val maxMinutes = trends.maxOfOrNull { it.snoreMinutes ?: 0L } ?: 0L
-            items(trends, key = { it.sessionId }) { night ->
-                TrendRow(night, maxMinutes, onClick = { onOpenReport(night.sessionId) })
+            // Key includes startedAt: synthetic missed rows all share the sentinel session id,
+            // so the id alone is not unique (LazyColumn keys must be).
+            items(trends, key = { "${it.sessionId}:${it.startedAt}" }) { night ->
+                TrendRow(
+                    night,
+                    maxMinutes,
+                    // Sentinel id -1 is not a session — a missed row never opens a report.
+                    onClick = {
+                        if (night.sessionId != com.sleepanalysis.domain.report.TrendAssembler.MISSED_SESSION_ID) {
+                            onOpenReport(night.sessionId)
+                        }
+                    },
+                )
             }
             if (com.sleepanalysis.domain.report.TrendAssembler.anyVersionChange(trends)) {
                 item {
@@ -119,7 +137,8 @@ fun TrendsScreen(
 
 @Composable
 private fun TrendRow(night: NightTrend, maxMinutes: Long, onClick: () -> Unit) {
-    Card(onClick = onClick) {
+    // Synthetic missed rows have no report behind them — not clickable at all.
+    Card(onClick = onClick, enabled = !night.missed) {
         Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 Text(
@@ -127,11 +146,35 @@ private fun TrendRow(night: NightTrend, maxMinutes: Long, onClick: () -> Unit) {
                     style = MaterialTheme.typography.bodyMedium,
                     fontWeight = FontWeight.SemiBold,
                 )
-                Text(
-                    night.snoreScore?.toString() ?: stringResource(R.string.trend_no_score),
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
-                )
+                if (night.missed) {
+                    Text(
+                        stringResource(R.string.trend_row_missed),
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    // The night's stored validity grade (A–D) when the NIGHT_VALIDITY row exists.
+                    night.validityGrade?.let { grade ->
+                        Text(
+                            grade,
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = if (grade == "D") {
+                                MaterialTheme.colorScheme.error
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                        )
+                        Spacer(Modifier.width(8.dp))
+                    }
+                    Text(
+                        night.snoreScore?.toString() ?: stringResource(R.string.trend_no_score),
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                    )
+                }
             }
             Text(
                 listOfNotNull(
@@ -211,7 +254,7 @@ private fun TrendRow(night: NightTrend, maxMinutes: Long, onClick: () -> Unit) {
     }
 }
 
-/** "energy-heuristic-v2-burst" → "v2-burst"; unknown shapes render verbatim. */
+/** "energy-heuristic-v3-peakgate" → "v3-peakgate"; unknown shapes render verbatim. */
 private fun shortVersion(version: String): String =
     version.removePrefix("energy-heuristic-").ifEmpty { version }
 

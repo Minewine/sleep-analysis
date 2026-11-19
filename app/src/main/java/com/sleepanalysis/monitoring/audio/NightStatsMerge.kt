@@ -24,6 +24,7 @@ data class StatsCarry(
     val windowsSkipped: Long,
     val thermalThrottleEvents: Int,
     val levelGateSkipped: Int = 0,
+    val spectralSkipped: Long = 0,
     val skippedHopSpans: List<SkippedHopSpan> = emptyList(),
     val ambientBuckets: List<AmbientLevelBucket> = emptyList(),
 ) {
@@ -36,6 +37,7 @@ data class StatsCarry(
                 windowsSkipped = capture.windowsSkipped ?: 0L,
                 thermalThrottleEvents = capture.thermalThrottleEvents ?: 0,
                 levelGateSkipped = capture.levelGateSkipped ?: 0,
+                spectralSkipped = capture.spectralSkipped ?: 0L,
                 skippedHopSpans = capture.skippedHopSpans,
                 ambientBuckets = capture.ambientBuckets,
             )
@@ -51,6 +53,7 @@ fun AudioEngine.NightStats.withCarry(carry: StatsCarry?): AudioEngine.NightStats
         windowsSkipped = windowsSkipped + carry.windowsSkipped,
         thermalThrottleEvents = thermalThrottleEvents + carry.thermalThrottleEvents,
         levelGateSkipped = levelGateSkipped + carry.levelGateSkipped,
+        spectralSkipped = spectralSkipped + carry.spectralSkipped,
         skippedHopSpans = (carry.skippedHopSpans + skippedHopSpans).sortedBy { it.startEpochMs },
         // The current engine's buckets arrive as monitoring.audio types — carried as the
         // domain type the capture stats (and the gap classification) consume.
@@ -72,7 +75,8 @@ fun AudioEngine.NightStats.withCarry(carry: StatsCarry?): AudioEngine.NightStats
  * shared by heartbeat progress writes and finalize. v2 adds thermal_skipped_hops (arrays of
  * [startEpochMs, endEpochMs, hops]); v3 adds ambient_level_buckets ([startMs, endMs, meanDbfs]
  * — the per-window level summary that lets event-free gaps be classified quiet vs uncaptured);
- * the parser tolerates the absence of both.
+ * v4 adds spectral_skipped (analyzed windows whose spectral compute the pre-spectral level
+ * gate skipped — SpectralGatePolicy); the parser tolerates the absence of all three.
  */
 fun captureStatsJson(
     stats: AudioEngine.NightStats?,
@@ -94,12 +98,13 @@ fun captureStatsJson(
             stats.ambientBuckets.joinToString(",") {
                 "[${it.startMs},${it.endMs},${String.format(java.util.Locale.US, "%.1f", it.meanDbfs)}]"
             } + "]"
-    return """{"schema_version":3,"windows_processed":${stats.windowsProcessed},""" +
+    return """{"schema_version":4,"windows_processed":${stats.windowsProcessed},""" +
         """"windows_skipped":${stats.windowsSkipped},""" +
         """"ambient_dbfs_median":${stats.ambientDbfsMedian ?: "null"},""" +
         """"ambient_dbfs_p95":${stats.ambientDbfsP95 ?: "null"},""" +
         """"clip_count":$clipCount,""" +
         """"thermal_throttle_events":${stats.thermalThrottleEvents},""" +
-        """"level_gate_skipped":${stats.levelGateSkipped}""" +
+        """"level_gate_skipped":${stats.levelGateSkipped},""" +
+        """"spectral_skipped":${stats.spectralSkipped}""" +
         savedAtJson + captureStartJson + spansJson + bucketsJson + "}"
 }

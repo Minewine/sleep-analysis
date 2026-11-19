@@ -21,7 +21,7 @@ Related: [Product vision](PRODUCT_VISION.md) · [MVP scope](MVP_SCOPE.md) (Phase
 **Goal:** a reliable nightly recorder and an honest morning report, with the clinical baseline stored immutably.
 
 - Foreground-service audio capture, ring buffer, event clips only (no full-night audio)
-- Swappable snore detector *(shipped: `energy-heuristic-v2-burst` — energy/band heuristic + spectral flatness/harmonicity and breath-rhythm gates; the YAMNet-mapped model is Phase 2)*, snore + loud-noise events (cough/speech classification arrives with the model)
+- Swappable snore detector *(shipped: `energy-heuristic-v3-peakgate` — energy/band heuristic + spectral flatness/harmonicity and breath-rhythm gates, plus a quiet-room peak gate; the YAMNet-mapped model is Phase 2)*, snore + loud-noise events (cough/speech classification arrives with the model)
 - Night timeline + clip playback + user labels
 - Morning report: time in bed, snoring summary (time, share, tiers, score), acoustic event counts, integrity notes, baseline context
 - Clinical baseline structured read-only entry (HUG numbers)
@@ -96,6 +96,10 @@ Related: [Product vision](PRODUCT_VISION.md) · [MVP scope](MVP_SCOPE.md) (Phase
 **Effort:** open-ended, research-paced.
 
 **Success criteria:** every feature entering this phase has a written validation plan *before* implementation; promotions/demotions follow the change control in [MEASUREMENT_RELIABILITY.md](MEASUREMENT_RELIABILITY.md) §7; rejected ideas are documented, not silently dropped.
+
+## The pain-point analysis line (decided 2026-11-19, sequenced in NEXT_STEPS)
+
+The current dogfood goal — **analyse sleep and highlight pain points** — has an approved five-item line cutting across phases: morning rating + night tags (DailyFactor extensions — deliberately user-logged context, never Measurement rows), the rolling-baseline pain-point layer (extends Phase 4's baseline-excursion direction once a multi-week baseline exists), formalized N-of-1 experiments over the shipped Playbook/`sleep_experiment` machinery, and the breathing-irregularity indicator inside the already-reserved Tier-2 slot (Phase 2's M7, behind the experimental toggle; promotion stays Phase 5). Ordering and the concrete first candidates: [NEXT_STEPS.md](NEXT_STEPS.md).
 
 ## Cross-phase gates (every release)
 

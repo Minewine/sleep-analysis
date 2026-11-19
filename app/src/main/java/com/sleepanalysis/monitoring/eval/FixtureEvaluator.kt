@@ -1,5 +1,6 @@
 package com.sleepanalysis.monitoring.eval
 
+import com.sleepanalysis.data.db.entity.EventType
 import com.sleepanalysis.monitoring.audio.WavReader
 import com.sleepanalysis.monitoring.detection.DetectorConfig
 import com.sleepanalysis.monitoring.detection.SnoreDetector
@@ -43,6 +44,12 @@ class FixtureEvaluator {
         val snorePositive: Boolean,
         /** Events the detector finalized on this clip (after hysteresis/min-duration/merging). */
         val eventCount: Int,
+        /**
+         * Events still typed SNORE after the finalization gate ([eventCount] minus everything
+         * the level gate downgraded to OTHER_NOISE) — the event-level snore verdict, which the
+         * window ratio alone cannot show.
+         */
+        val snoreEventCount: Int,
         /** Mean event duration in ms; 0 when the clip produced no events. */
         val meanEventDurationMs: Long,
     )
@@ -88,8 +95,9 @@ class FixtureEvaluator {
         entries: List<FixtureEntry>,
         detector: SnoreDetector,
         clipPositiveThreshold: Double = 0.5,
+        initialFloorDbfs: Double? = null,
     ): EvalReport {
-        val replay = ReplayEngine(detector)
+        val replay = ReplayEngine(detector, ReplayEngine.Config(initialFloorDbfs = initialFloorDbfs))
         val scores = mutableListOf<ClipScore>()
         var unlabeled = 0
         var missingFiles = 0
@@ -130,6 +138,7 @@ class FixtureEvaluator {
                     snoreRatio = ratio,
                     snorePositive = ratio >= clipPositiveThreshold,
                     eventCount = events.size,
+                    snoreEventCount = events.count { it.type == EventType.SNORE },
                     meanEventDurationMs = meanEventDurationMs,
                 )
             )
@@ -185,6 +194,7 @@ class FixtureEvaluator {
                             put("snore_ratio", s.snoreRatio)
                             put("snore_positive", s.snorePositive)
                             put("event_count", s.eventCount)
+                            put("snore_event_count", s.snoreEventCount)
                             put("mean_event_duration_ms", s.meanEventDurationMs)
                         }
                     )
@@ -246,6 +256,6 @@ class FixtureEvaluator {
          * `SessionRepository.MODEL_VERSION` (data layer — not importable from pure-JVM eval
          * code); update both together when the detector model id changes.
          */
-        const val DETECTOR_VERSION = "energy-heuristic-v2-burst"
+        const val DETECTOR_VERSION = "energy-heuristic-v3-peakgate"
     }
 }

@@ -40,6 +40,8 @@ data class CaptureStats(
     val clipCount: Int?,
     val thermalThrottleEvents: Int?,
     val levelGateSkipped: Int? = null,
+    /** Analyzed windows whose spectral compute the pre-spectral level gate skipped (schema v4). */
+    val spectralSkipped: Long? = null,
     val skippedHopSpans: List<SkippedHopSpan> = emptyList(),
     /** When this stats object was written — heartbeat progress carries a live timestamp. */
     val savedAtMs: Long? = null,
@@ -75,6 +77,7 @@ data class CaptureStats(
                 clipCount = o.optIntOrNull("clip_count"),
                 thermalThrottleEvents = o.optIntOrNull("thermal_throttle_events"),
                 levelGateSkipped = o.optIntOrNull("level_gate_skipped"),
+                spectralSkipped = o.optLongOrNull("spectral_skipped"),
                 skippedHopSpans = o.optJSONArrayOrNull("thermal_skipped_hops")?.toSpans() ?: emptyList(),
                 savedAtMs = o.optLongOrNull("saved_at_ms"),
                 captureStartMs = o.optLongOrNull("capture_started_at"),

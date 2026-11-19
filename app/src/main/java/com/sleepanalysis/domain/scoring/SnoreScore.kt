@@ -18,13 +18,22 @@ package com.sleepanalysis.domain.scoring
  * seconds), so a night whose loud stretches persist earns more than one with many quiet
  * spells. The five recalculation anchors: 13%→25, 16%→29, 27%→47, 29%→53, 30%→53 (v1: all 66–67).
  *
+ * v3 ("snore-score-v3", 2026-11-08) keeps the v2 arithmetic EXACTLY — the formula's input
+ * definition changed: the snore event set is label-aware (SnoreMath.eventsCountingAsSnore), so
+ * a user label (COUGH / SPEECH / MOVEMENT / OTHER_NOT_SNORE) excludes the event from every
+ * snore aggregate, SNORE includes it, and no label keeps the detector's class. Stored v2 rows
+ * are not comparable with v3 rows (they may include events the user rejected), so the bump
+ * hides cross-version score comparisons per docs/MEASUREMENT_RELIABILITY.md §7.1; rows
+ * rewritten by a label save carry v3 and the `label_corrected=true` notes flag
+ * (docs/DATA_MODEL.md §3.5).
+ *
  * The breakdown ([Result]) is explainable and reproducible: share points + intensity points,
- * each capped, stored verbatim in the SNORE_SCORE row's notes.
+ * each capped, stored verbatim in the SNORE_SCORE row's notes ([breakdownNotes]).
  */
 object SnoreScore {
 
     /** Formula identity stored on SNORE_SCORE rows; bump on ANY recalibration (docs/NIGHT_REPORT.md). */
-    const val FORMULA_VERSION = "snore-score-v2"
+    const val FORMULA_VERSION = "snore-score-v3"
 
     /** Share of the night at which the share component saturates. */
     private const val SHARE_SATURATION = 0.40
@@ -57,10 +66,11 @@ object SnoreScore {
     )
 
     /**
-     * [snoreSeconds] is the night's union snoring time (SnoreMath) and [nightSeconds] the same
-     * denominator the share measurement uses (captured analysis time). [tierSeconds] maps each
-     * tier to its union snoring seconds — the per-tier unions partition [snoreSeconds], so the
-     * weights describe where the snoring TIME sat, not how many spells fired.
+     * [snoreSeconds] is the night's union snoring time (SnoreMath, over the label-aware event
+     * set) and [nightSeconds] the same denominator the share measurement uses (captured
+     * analysis time). [tierSeconds] maps each tier to its union snoring seconds — the per-tier
+     * unions partition [snoreSeconds], so the weights describe where the snoring TIME sat, not
+     * how many spells fired.
      */
     fun compute(snoreSeconds: Long, nightSeconds: Long, tierSeconds: Map<String, Long>): Result {
         if (nightSeconds <= 0) return Result(0, 0.0, 0.0, 0.0)
@@ -82,4 +92,18 @@ object SnoreScore {
             meanTierWeight = meanWeight,
         )
     }
+
+    /**
+     * The reproducible breakdown stored verbatim in the SNORE_SCORE row's notes
+     * (docs/NIGHT_REPORT.md §Score) — one format for the finalize write and the
+     * label-corrected rewrite so neither drifts.
+     */
+    fun breakdownNotes(result: Result): String = String.format(
+        java.util.Locale.US,
+        "%s: share %.1f/60 + intensity %.1f/40 (tier weight %.3f)",
+        FORMULA_VERSION,
+        result.sharePoints,
+        result.intensityPoints,
+        result.meanTierWeight,
+    )
 }

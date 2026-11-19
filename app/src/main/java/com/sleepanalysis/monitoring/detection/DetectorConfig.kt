@@ -4,18 +4,30 @@ import com.sleepanalysis.domain.scoring.SnoreScore
 
 /**
  * Tuning constants for the Phase 1 acoustic pipeline. The shipped detector is the
- * shipped energy-heuristic-v2-burst (v1-spectral classification + burst-level event shaping); a
- * learned model remains a Phase 2 concern — the interface (SnoreDetector) is the swap point
- * (docs/MVP_SCOPE.md F4, docs/ARCHITECTURE.md §8).
+ * energy-heuristic-v3-peakgate (v1-spectral classification + burst-level event shaping + the
+ * ultra-quiet-room peak gate); a learned model remains a Phase 2 concern — the interface
+ * (SnoreDetector) is the swap point (docs/MVP_SCOPE.md F4, docs/ARCHITECTURE.md §8).
  */
 object DetectorConfig {
     const val SAMPLE_RATE = 16_000
     const val WINDOW_MS = 1_000L
     const val HOP_MS = 500L
 
-    /** Clip length retained per detected event. */
+    /**
+     * Clip length retained per detected event. 8 s: with [MERGE_GAP_MS] = 0 the busy-hold
+     * bound (maxHoldMs = mergeGapMs + hold slack = 5 s at defaults) still emits with the
+     * event's tail inside the clip ring (≤ 5.5 s after the tail) — see the EventDetector KDoc.
+     */
     const val CLIP_MS = 8_000L
-    const val MAX_CLIPS_PER_NIGHT = 50
+
+    /**
+     * Nightly clip backstop. Raised 50 → 150 after the session-6..11 review: only ~3.4 % of
+     * detected snores got audio (50 caps bound every night, `clip_budget_skipped` entries from
+     * ~05:00) while real cost is ~256 KB/clip ≈ 13 MB per ~50 — a 150-clip night is ~38 MB and
+     * the 7-day retention window keeps steady state in the low hundreds of MB. Labels feed the
+     * Phase 2 eval gate; starving them starves the model work.
+     */
+    const val MAX_CLIPS_PER_NIGHT = 150
 
     /**
      * Relative level gate (backlog #2, self-calibrating). An absolute −55 dBFS cutoff ate real
@@ -25,9 +37,30 @@ object DetectorConfig {
      * noise floor by [GATE_MARGIN_DB]; [MIN_GATE_DBFS] caps how low that threshold may fall so
      * a dead-quiet room (floor ≈ mic self-noise, −92 dBFS) still never gates open — and never
      * persists a clip for — near-silent junk (see EventDetector/ClipPolicy).
+     *
+     * Ultra-quiet-room peak tier (v3, session-13 dogfood 2026-11-11): the mean gate above is
+     * still MEAN-based, and in a room whose floor sits at mic self-noise (floor ≤
+     * [QUIET_ROOM_FLOOR_DBFS]) steady breathing clears it easily — the night's ambient median
+     * was −83 dBFS and 21 breathing trains (peaks −39.6…−54.3 dBFS) passed the −60 mean gate
+     * and shipped as SNORE (47% of the night's snore minutes from 2.6% of events). When the
+     * event's mean floor is that low, [quietRoomPeakGateDbfs] additionally requires the event's
+     * PEAK to clear an absolute audibility line, [QUIET_ROOM_PEAK_DBFS]: real snores burst above
+     * their floor (−16.3…−34.9 dBFS that night), steady breathing never does. The tier only
+     * arms in ultra-quiet rooms — in a −70 dBFS room real snoring can peak −58 dBFS (night 1)
+     * and an absolute cutoff there would eat it, exactly the −55 lesson above.
      */
     const val GATE_MARGIN_DB = 10.0
     const val MIN_GATE_DBFS = -60.0
+
+    /** Mean floor at or below which a room is "mic self-noise" quiet and the peak tier arms. */
+    const val QUIET_ROOM_FLOOR_DBFS = -80.0
+
+    /**
+     * Absolute peak a SNORE event must stay above in an ultra-quiet room (peak AT OR BELOW
+     * this downgrades — the calibration's false side peaks −39.6…−54.3, the real side
+     * −16.3…−34.9, so −38.0 sits inside the 5.3 dB gray zone, nearest the false side).
+     */
+    const val QUIET_ROOM_PEAK_DBFS = -38.0
 
     /**
      * Gate threshold for an event over [noiseFloorDbfs]: floor + margin, never below
@@ -38,6 +71,16 @@ object DetectorConfig {
         marginDb: Double = GATE_MARGIN_DB,
         hardFloorDbfs: Double = MIN_GATE_DBFS,
     ): Double = maxOf(noiseFloorDbfs + marginDb, hardFloorDbfs)
+
+    /**
+     * Absolute peak gate for ultra-quiet rooms (see [QUIET_ROOM_PEAK_DBFS]): the peak floor an
+     * event must stay above when its mean noise floor is at or below [QUIET_ROOM_FLOOR_DBFS],
+     * or null when the room is loud enough that the relative mean gate alone is trusted — an
+     * absolute peak cutoff in a normal room would eat real, clearly-audible snoring. Pure —
+     * shared by the event label downgrade and the clip policy.
+     */
+    fun quietRoomPeakGateDbfs(noiseFloorDbfs: Double): Double? =
+        if (noiseFloorDbfs <= QUIET_ROOM_FLOOR_DBFS) QUIET_ROOM_PEAK_DBFS else null
 
     /**
      * Bedtime/settling protection: for the first [SETTLING_MINUTES] after capture begins, the
@@ -53,8 +96,10 @@ object DetectorConfig {
      * Clip budget per wall-clock hour. Night 1 spent all 50 clips on the first 42 minutes of
      * bedtime noise, leaving nothing for the actual sleep window; this spreads the budget so
      * any burst can only claim a bounded share (MAX_CLIPS_PER_NIGHT stays as the backstop).
+     * Raised 8 → 15 alongside the nightly cap so a 150-clip night is reachable across a
+     * ~7.5 h window rather than choked at 8/hour.
      */
-    const val MAX_CLIPS_PER_HOUR = 8
+    const val MAX_CLIPS_PER_HOUR = 15
 
     /**
      * Loudness reserve (night 3 dogfood): a first-come-first-served budget starves exactly the

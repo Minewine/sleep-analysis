@@ -21,6 +21,9 @@
     <!-- Lets the app show the system "allow battery optimization exemption?" dialog directly
          (sideloaded personal app; docs/PRIVACY_AND_REGULATORY.md — no data implications). -->
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <!-- Health Connect read access (Phase 3, docs/PRIVACY_AND_REGULATORY.md §3): on-device IPC
+         to read the wearable stage timeline when the user taps Import. No network, no audio. -->
+    <uses-permission android:name="android.permission.health.READ_SLEEP" />
 
     <application
         android:name=".SleepAnalysisApp"
@@ -39,7 +42,27 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- Health Connect permissions rationale (developer.android.com/health-and-fitness/
+                 guides/health-connect): the HC screen opens this when the user taps the app's
+                 permissions entry — the app itself shows the actionable import gates. -->
+            <intent-filter>
+                <action android:name="androidx.health.ACTION_SHOW_PERMISSIONS_RATIONALE" />
+            </intent-filter>
         </activity>
+
+        <!-- Health Connect permissions-usage alias (Android 14+): launched by the system from
+             the HC privacy screen, gated by START_VIEW_PERMISSION_USAGE so only the platform
+             can start it (docs/PRIVACY_AND_REGULATORY.md §3). -->
+        <activity-alias
+            android:name="ViewPermissionUsageActivity"
+            android:exported="true"
+            android:permission="android.permission.START_VIEW_PERMISSION_USAGE"
+            android:targetActivity=".MainActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW_PERMISSION_USAGE" />
+                <category android:name="android.intent.category.HEALTH_PERMISSIONS" />
+            </intent-filter>
+        </activity-alias>
 
         <service
             android:name=".monitoring.service.MonitorService"

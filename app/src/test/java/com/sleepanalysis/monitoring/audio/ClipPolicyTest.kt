@@ -64,6 +64,42 @@ class ClipPolicyTest {
         assertTrue(policy.loud(meanDbfs = -34.0, floor = -45.0))  // threshold −35
     }
 
+    // --- Ultra-quiet-room peak tier (DetectorConfig.QUIET_ROOM_*, v3) -------------------
+    // Mirrors the event label gate so a downgraded breathing train neither stays SNORE nor
+    // persists a clip (session 13: −83 dBFS room, breathing trains peaking −39.6…−54.3).
+
+    @Test
+    fun `quiet-room rumble never gets a clip even when its mean clears the gate`() {
+        val policy = ClipPolicy()
+        // Mean −47 clears threshold max(−73, −60) = −60, but the peak (−45) sits at or below
+        // the −38 absolute line — the same SKIP_LEVEL the label downgrade produces.
+        assertFalse(policy.loud(meanDbfs = -47.0, peakDbfs = -45.0, floor = -83.0))
+    }
+
+    @Test
+    fun `quiet-room loud event still writes`() {
+        val policy = ClipPolicy()
+        // Peak −20 bursts above the absolute line: real snoring in a dead-quiet room.
+        assertTrue(policy.loud(meanDbfs = -25.0, peakDbfs = -20.0, floor = -83.0))
+    }
+
+    @Test
+    fun `quiet-room peak gate is inclusive at the boundary`() {
+        val policy = ClipPolicy()
+        // Peak exactly at −38.0: at-or-below downgrades (calibration: false side −39.6…−54.3,
+        // real side −16.3…−34.9).
+        assertFalse(policy.loud(meanDbfs = -25.0, peakDbfs = -38.0, floor = -83.0))
+        assertTrue(policy.loud(meanDbfs = -25.0, peakDbfs = -37.9, floor = -83.0))
+    }
+
+    @Test
+    fun `quiet-room peak gate never arms in normal rooms`() {
+        val policy = ClipPolicy()
+        // A −45 peak over a −40 floor with a passing mean (−30, exactly at the threshold) is
+        // judged by the mean gate alone — no absolute peak cutoff in normal rooms.
+        assertTrue(policy.loud(meanDbfs = -30.0, peakDbfs = -45.0, floor = -40.0))
+    }
+
     @Test
     fun `settling window is stricter for the first 30 minutes of capture`() {
         val policy = ClipPolicy()
