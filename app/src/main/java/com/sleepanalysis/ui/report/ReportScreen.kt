@@ -174,6 +174,8 @@ fun ReportScreen(
             item {
                 MorningNotesCard(
                     saved = r.morningNotes,
+                    factors = morningFactorsUiState(r.dailyFactors),
+                    onSaveFactors = viewModel::saveMorningFactors,
                     onSave = viewModel::saveMorningNotes,
                 )
             }
@@ -746,14 +748,23 @@ private fun DisclaimerCard() {
 
 /** Observability for the night (docs/NEXT_STEPS.md P0): why a night looks the way it does. */
 
-/** Morning notes: short user context typed (or dictated via the keyboard) after the night. */
+/** Morning notes: short user context typed (or dictated via the keyboard) after the night, plus
+ *  the night's 1–5 rating and quick tags — self-logged factors on the session's factor day. */
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 private fun MorningNotesCard(
     saved: String?,
+    factors: MorningFactorsUiState,
+    onSaveFactors: (Int?, Set<com.sleepanalysis.domain.factors.DailyFactor>) -> Unit,
     onSave: (String) -> Unit,
 ) {
     var editing by remember { mutableStateOf(saved.isNullOrBlank()) }
     var draft by remember(saved) { mutableStateOf(saved.orEmpty()) }
+    // Chip drafts re-seed whenever the saved factors change (Save → reload() re-derives the
+    // state from the rows), so the chips always reflect what is stored; tapping the selected
+    // chip clears it again.
+    var ratingDraft by remember(factors) { mutableStateOf(factors.rating) }
+    var tagsDraft by remember(factors) { mutableStateOf(factors.tags) }
 
     Card {
         Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -762,6 +773,44 @@ private fun MorningNotesCard(
                 style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.SemiBold,
             )
+            Text(
+                stringResource(R.string.report_morning_rating),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                (1..5).forEach { level ->
+                    FilterChip(
+                        selected = ratingDraft == level,
+                        onClick = { ratingDraft = if (ratingDraft == level) null else level },
+                        label = { Text("$level") },
+                    )
+                }
+                Text(
+                    ratingDraft?.let { "$it / 5" } ?: "—",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Text(
+                stringResource(R.string.report_morning_tags),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                MORNING_TAGS.forEach { tag ->
+                    FilterChip(
+                        selected = tag in tagsDraft,
+                        onClick = {
+                            tagsDraft = if (tag in tagsDraft) tagsDraft - tag else tagsDraft + tag
+                        },
+                        label = { Text(tag.label) },
+                    )
+                }
+            }
+            Button(onClick = { onSaveFactors(ratingDraft, tagsDraft) }) {
+                Text(stringResource(R.string.report_morning_save))
+            }
             if (editing) {
                 OutlinedTextField(
                     value = draft,
@@ -1619,6 +1668,9 @@ private fun DailyFactorsCard(factors: List<com.sleepanalysis.domain.report.Facto
                         )
                     }
                     factor.factorKey == com.sleepanalysis.domain.factors.DailyFactor.STRESS.key -> {
+                        Text("$label: ${factor.valueNum?.toInt()} / 5", style = MaterialTheme.typography.bodyMedium)
+                    }
+                    factor.factorKey == com.sleepanalysis.domain.factors.DailyFactor.MORNING_RATING.key -> {
                         Text("$label: ${factor.valueNum?.toInt()} / 5", style = MaterialTheme.typography.bodyMedium)
                     }
                     else -> Text(label, style = MaterialTheme.typography.bodyMedium)

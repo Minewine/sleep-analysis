@@ -5,12 +5,16 @@ import android.media.MediaPlayer
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.sleepanalysis.data.db.entity.UserFactorEntity
 import com.sleepanalysis.data.files.ClipStore
 import com.sleepanalysis.data.garmin.GarminImportManager
 import com.sleepanalysis.data.healthconnect.HealthConnectImportManager
+import com.sleepanalysis.data.repo.FactorLogRepository
 import com.sleepanalysis.data.repo.SessionRepository
+import com.sleepanalysis.domain.factors.DailyFactor
 import com.sleepanalysis.domain.labels.EventUserLabel
 import com.sleepanalysis.domain.report.ClipRef
+import com.sleepanalysis.domain.report.FactorEntry
 import com.sleepanalysis.domain.report.GarminLinkStatus
 import com.sleepanalysis.domain.report.MorningReport
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -112,11 +116,68 @@ internal fun refreshStatusLine(
     else -> RefreshStatusLine.INCLUDED
 }
 
+/** Quick night tags the report's morning card edits — the DailyFactor subset it toggles. */
+internal val MORNING_TAGS: List<DailyFactor> = listOf(
+    DailyFactor.ALCOHOL,
+    DailyFactor.LATE_MEAL,
+    DailyFactor.STRESS,
+    DailyFactor.SICK,
+    DailyFactor.SLEPT_ON_BACK,
+)
+
+/** Chip state for the morning card (rating + quick tags), read from the report's factor rows —
+ *  the same rows DailyFactorsCard renders, so the chips and the card can never disagree. */
+data class MorningFactorsUiState(
+    val rating: Int? = null,
+    val tags: Set<DailyFactor> = emptySet(),
+)
+
+/** Derives the chips' initial state from the report's factor rows: a tag chip is selected when
+ *  its factor row exists (any value — the Daily log may have refined it), the rating chip when
+ *  the MORNING_RATING row holds an in-range 1..5 level. */
+internal fun morningFactorsUiState(factors: List<FactorEntry>): MorningFactorsUiState = MorningFactorsUiState(
+    rating = factors.firstOrNull { it.factorKey == DailyFactor.MORNING_RATING.key }?.valueNum
+        ?.toInt()?.takeIf { it in 1..5 },
+    tags = MORNING_TAGS.filter { tag -> factors.any { it.factorKey == tag.key } }.toSet(),
+)
+
+/** Value written for a selected quick tag. Booleans follow the Daily log's 1.0 convention;
+ *  STRESS is a 1–5 scale and the quick tag means "stressful day", so it pins the worst level
+ *  (5) — the only value that can never read the flag back as "calm". Refine the exact level
+ *  in the Daily log. */
+internal fun morningTagValue(tag: DailyFactor): Double = if (tag == DailyFactor.STRESS) 5.0 else 1.0
+
+/** The per-key writes the morning card's Save performs (pure): the rating row — or its removal
+ *  when null — then one row (or removal) per quick tag, in [MORNING_TAGS] order. Only these
+ *  keys are touched; whatever else the day holds (NOTES, caffeine, …) stays as the Daily log
+ *  saved it. */
+internal fun morningFactorWrites(
+    day: String,
+    rating: Int?,
+    tags: Set<DailyFactor>,
+): List<Pair<String, UserFactorEntity?>> = buildList {
+    add(
+        DailyFactor.MORNING_RATING.key to rating?.let {
+            UserFactorEntity(date = day, factorKey = DailyFactor.MORNING_RATING.key, valueNum = it.toDouble())
+        },
+    )
+    MORNING_TAGS.forEach { tag ->
+        add(
+            tag.key to if (tag in tags) {
+                UserFactorEntity(date = day, factorKey = tag.key, valueNum = morningTagValue(tag))
+            } else {
+                null
+            },
+        )
+    }
+}
+
 @HiltViewModel
 class ReportViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
     @ApplicationContext private val appContext: Context,
     private val sessionRepository: SessionRepository,
+    private val factorLogRepository: FactorLogRepository,
     private val clipStore: ClipStore,
     private val userPreferences: com.sleepanalysis.data.prefs.UserPreferences,
     internal val garminImportManager: GarminImportManager,
@@ -379,6 +440,29 @@ class ReportViewModel @Inject constructor(
     fun saveMorningNotes(text: String) {
         viewModelScope.launch {
             sessionRepository.setMorningNotes(sessionId, text)
+            reload()
+        }
+    }
+
+    /**
+     * Saves the morning card's rating + quick tags for this night's FACTOR DAY — the session's
+     * START date ([NightDates.factorDay], the same key SessionRepository.factorsForSessionDay
+     * and DailyFactorsCard read), so the card and the Daily log always show what was saved
+     * here. One merge upsert/removal per key ([morningFactorWrites]) — never a whole-day
+     * replace, which would clobber factors logged earlier for that day. reload() only: user
+     * factors never feed scores, so there is no recompute cascade.
+     */
+    fun saveMorningFactors(rating: Int?, tags: Set<DailyFactor>) {
+        val r = report.value ?: return
+        viewModelScope.launch {
+            val day = com.sleepanalysis.domain.report.NightDates.factorDay(r.startedAt, r.timeZone)
+            morningFactorWrites(day.toString(), rating, tags).forEach { (key, entity) ->
+                if (entity == null) {
+                    factorLogRepository.removeFactorForDate(day, key)
+                } else {
+                    factorLogRepository.saveFactorForDate(day, entity)
+                }
+            }
             reload()
         }
     }

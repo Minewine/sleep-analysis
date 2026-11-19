@@ -12,7 +12,10 @@ enum class DailyFactor(val key: String, val label: String, val kind: Kind) {
     CAFFEINE_AFTER_14("CAFFEINE_AFTER_14", "Caffeine after 14:00", Kind.BOOLEAN),
     EXERCISE("EXERCISE", "Exercise", Kind.BOOLEAN),
     MEDICATION_OR_DEVICE("MEDICATION_OR_DEVICE", "Medication / breathing device used", Kind.BOOLEAN),
+    SICK("SICK", "Sick", Kind.BOOLEAN),
+    SLEPT_ON_BACK("SLEPT_ON_BACK", "Slept on back", Kind.BOOLEAN),
     STRESS("STRESS", "Stress level", Kind.SCALE_1_5),
+    MORNING_RATING("MORNING_RATING", "Morning rating", Kind.SCALE_1_5),
     NOTES("NOTES", "Notes", Kind.FREE_TEXT);
 
     enum class Kind { BOOLEAN, BOOLEAN_WITH_UNITS, SCALE_1_5, FREE_TEXT }

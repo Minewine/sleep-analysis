@@ -379,6 +379,11 @@
     <string name="report_notes_save">Save</string>
     <string name="report_notes_cancel">Cancel</string>
 
+    <!-- Report: morning rating + quick night tags (self-logged factors, never measurements) -->
+    <string name="report_morning_rating">Rate this night (1 = worst, 5 = best)</string>
+    <string name="report_morning_tags">Night tags</string>
+    <string name="report_morning_save">Save rating &amp; tags</string>
+
     <!-- Report: daily factors -->
     <string name="report_factors_section">Daily factors (self-logged)</string>
     <string name="report_factors_note">You logged these for the day of this recording. User-entered context, not measurements.</string>

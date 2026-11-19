@@ -55,7 +55,10 @@ data class FactorLogUiState(
     val caffeineAfter14: Boolean = false,
     val exercise: Boolean = false,
     val medicationOrDevice: Boolean = false,
+    val sick: Boolean = false,
+    val sleptOnBack: Boolean = false,
     val stress: Int? = null,
+    val morningRating: Int? = null,
     val notes: String = "",
 )
 
@@ -85,7 +88,10 @@ class FactorLogViewModel @Inject constructor(
                 caffeineAfter14 = factors.any { it.factorKey == DailyFactor.CAFFEINE_AFTER_14.key },
                 exercise = factors.any { it.factorKey == DailyFactor.EXERCISE.key },
                 medicationOrDevice = factors.any { it.factorKey == DailyFactor.MEDICATION_OR_DEVICE.key },
+                sick = factors.any { it.factorKey == DailyFactor.SICK.key },
+                sleptOnBack = factors.any { it.factorKey == DailyFactor.SLEPT_ON_BACK.key },
                 stress = num(DailyFactor.STRESS)?.toInt(),
+                morningRating = num(DailyFactor.MORNING_RATING)?.toInt(),
                 notes = factors.firstOrNull { it.factorKey == DailyFactor.NOTES.key }?.valueText ?: "",
             )
             _saved.value = false
@@ -115,7 +121,10 @@ class FactorLogViewModel @Inject constructor(
             if (state.caffeineAfter14) add(UserFactorEntity(date = d, factorKey = DailyFactor.CAFFEINE_AFTER_14.key, valueNum = 1.0))
             if (state.exercise) add(UserFactorEntity(date = d, factorKey = DailyFactor.EXERCISE.key, valueNum = 1.0))
             if (state.medicationOrDevice) add(UserFactorEntity(date = d, factorKey = DailyFactor.MEDICATION_OR_DEVICE.key, valueNum = 1.0))
+            if (state.sick) add(UserFactorEntity(date = d, factorKey = DailyFactor.SICK.key, valueNum = 1.0))
+            if (state.sleptOnBack) add(UserFactorEntity(date = d, factorKey = DailyFactor.SLEPT_ON_BACK.key, valueNum = 1.0))
             state.stress?.let { add(UserFactorEntity(date = d, factorKey = DailyFactor.STRESS.key, valueNum = it.toDouble())) }
+            state.morningRating?.let { add(UserFactorEntity(date = d, factorKey = DailyFactor.MORNING_RATING.key, valueNum = it.toDouble())) }
             if (state.notes.isNotBlank()) add(UserFactorEntity(date = d, factorKey = DailyFactor.NOTES.key, valueText = state.notes.trim()))
         }
         viewModelScope.launch {
@@ -199,6 +208,12 @@ fun FactorLogScreen(
                     SwitchRow(DailyFactor.MEDICATION_OR_DEVICE.label, ui.medicationOrDevice) { on ->
                         viewModel.update { it.copy(medicationOrDevice = on) }
                     }
+                    SwitchRow(DailyFactor.SICK.label, ui.sick) { on ->
+                        viewModel.update { it.copy(sick = on) }
+                    }
+                    SwitchRow(DailyFactor.SLEPT_ON_BACK.label, ui.sleptOnBack) { on ->
+                        viewModel.update { it.copy(sleptOnBack = on) }
+                    }
                 }
             }
 
@@ -221,6 +236,32 @@ fun FactorLogScreen(
                         }
                         Text(
                             ui.stress?.let { "$it / 5" } ?: "—",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+
+            Card {
+                Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(DailyFactor.MORNING_RATING.label, style = MaterialTheme.typography.bodyLarge)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        (1..5).forEach { level ->
+                            FilterChip(
+                                selected = ui.morningRating == level,
+                                onClick = {
+                                    viewModel.update { s -> s.copy(morningRating = if (s.morningRating == level) null else level) }
+                                },
+                                label = { Text("$level") },
+                            )
+                        }
+                        Text(
+                            ui.morningRating?.let { "$it / 5" } ?: "—",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
