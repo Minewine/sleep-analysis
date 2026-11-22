@@ -571,6 +571,8 @@ class SessionRepository @Inject constructor(
         val capture = com.sleepanalysis.domain.report.CaptureStats.parse(session.captureStats)
         val garminSleep = garminSleepSummaryForSession(session, capture)
         val previousNight = previousNightSummaryFor(session)
+        // Every stage row regardless of source — the source-scoped replaces mean GARMIN and
+        // WEARABLE timelines can coexist for one session; the assembler picks one source.
         val garminStages = db.sleepStageDao().bySession(sessionId).map {
             com.sleepanalysis.domain.report.StageSpan(it.startMs, it.endMs, it.stage, it.source)
         }

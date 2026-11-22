@@ -549,6 +549,34 @@ class ReportAssemblerTest {
     }
 
     @Test
+    fun `overlapping garmin and wearable timelines report one source only`() {
+        // Source-scoped replaces (schema v14) mean both timelines can coexist for one session;
+        // summing overlaps across both double-counts every stage minute and mislabels
+        // provenance. The report builds from ONE source — WEARABLE when present, else GARMIN.
+        val garmin = listOf(
+            StageSpan(t0 + 3_600_000, t0 + 3_900_000, "REM", ReportAssembler.STAGE_SOURCE_GARMIN),
+            StageSpan(t0 + 3_900_000, t0 + 4_200_000, "LIGHT", ReportAssembler.STAGE_SOURCE_GARMIN),
+        )
+        val wearable = listOf(
+            StageSpan(t0 + 3_600_000, t0 + 3_900_000, "DEEP", ReportAssembler.STAGE_SOURCE_WEARABLE),
+            StageSpan(t0 + 3_900_000, t0 + 4_200_000, "LIGHT", ReportAssembler.STAGE_SOURCE_WEARABLE),
+        )
+        val burst = snoreEvent(80, offsetMs = 3_600_000, durationMs = 60_000, tier = "LIGHT")
+
+        assertEquals(wearable, ReportAssembler.singleSourceStages(garmin + wearable))
+        assertEquals(garmin, ReportAssembler.singleSourceStages(garmin))
+
+        val report = ReportAssembler.assemble(
+            session(), listOf(burst), emptyList(), emptyList(), garminStages = garmin + wearable,
+        )!!
+        assertEquals(ReportAssembler.STAGE_SOURCE_WEARABLE, report.stageSource)
+        // The burst sits in REM per Garmin, DEEP per Health Connect — the HC label wins.
+        val byStage = report.snoreMinutesByStage
+        assertEquals(1, byStage.size)
+        assertEquals("DEEP", byStage[0].stage)
+    }
+
+    @Test
     fun `snore minutes per stage omit silent stages and sort by volume`() {
         val burst1 = snoreEvent(71, offsetMs = 60_000, durationMs = 120_000, tier = "LIGHT")
         val stages = listOf(

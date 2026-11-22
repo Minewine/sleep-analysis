@@ -1,6 +1,7 @@
 package com.sleepanalysis.data.healthconnect
 
 import androidx.health.connect.client.records.SleepSessionRecord
+import androidx.health.connect.client.records.metadata.DataOrigin
 // Alias: the simple name collides with kotlin's @Metadata annotation in K2 resolution.
 import androidx.health.connect.client.records.metadata.Metadata as HcMetadata
 import com.sleepanalysis.data.db.entity.SessionStatus
@@ -44,6 +45,23 @@ class HealthConnectSessionLinkTest {
         osVersion = "30",
         appVersion = "0.1.0",
     )
+
+    @Test
+    fun `the import reads only Garmin Connect records`() {
+        // Health Connect aggregates every sleep app on the device; without the origin filter
+        // a second writer's sessions would merge into the WEARABLE timeline as overlapping
+        // spans. connect-client 1.1.0 cannot build a Metadata with a custom DataOrigin on the
+        // JVM, so the filter set is pinned here and applied at the thin ReadRecordsRequest
+        // call site (instrumented-only).
+        assertEquals(
+            setOf(DataOrigin("com.garmin.android.apps.connectmobile")),
+            HealthConnectImportManager.garminConnectDataOrigins(),
+        )
+        assertEquals(
+            "com.garmin.android.apps.connectmobile",
+            HealthConnectImportManager.GARMIN_CONNECT_PACKAGE,
+        )
+    }
 
     @Test
     fun `a record links by its own span not the import date's day window`() {

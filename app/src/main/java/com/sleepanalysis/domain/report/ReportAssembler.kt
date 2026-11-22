@@ -450,6 +450,10 @@ object ReportAssembler {
             else -> GarminLinkStatus.MISSING
         }
 
+        // One source per report (see singleSourceStages) — the timeline, the bout attribution
+        // and the provenance label all describe the same chosen set.
+        val stageTimeline = singleSourceStages(garminStages)
+
         return MorningReport(
             sessionId = session.id,
             startedAt = session.startedAt,
@@ -494,12 +498,12 @@ object ReportAssembler {
             clipCoverage = clipCoverage,
             previousNight = previousNight,
             longestBoutStage = bouts.maxByOrNull { it.endMs - it.startMs }
-                ?.let { longest -> stageForSpan(longest.startMs, longest.endMs, garminStages) },
-            snoreMinutesByStage = snoreMinutesPerStage(snoreEvents, garminStages),
+                ?.let { longest -> stageForSpan(longest.startMs, longest.endMs, stageTimeline) },
+            snoreMinutesByStage = snoreMinutesPerStage(snoreEvents, stageTimeline),
             worstBoutClip = worstBoutClip(bouts, clipRefsById),
             garminStageMinutes = garminStageMinutes(garmin),
             garminSleepScore = garminSleepScore(garmin),
-            stageSource = stageSource(garminStages),
+            stageSource = stageSource(stageTimeline),
         )
     }
 
@@ -524,6 +528,20 @@ object ReportAssembler {
         if (best.value <= 0) return null
         return BoutStage(best.key, best.value.toDouble() / spanMs)
     }
+
+    /**
+     * One stage source per report: the per-source replaces ([STAGE_SOURCE_WEARABLE] via the
+     * Health Connect import, [STAGE_SOURCE_GARMIN] via the Garmin import) can leave BOTH
+     * timelines coexisting for one session, and summing overlaps across both double-counts
+     * every stage minute and mislabels provenance. WEARABLE wins when present — the fresher,
+     * span-labeled import — else the whole (Garmin or legacy null-source) set passes through.
+     */
+    internal fun singleSourceStages(stages: List<StageSpan>): List<StageSpan> =
+        if (stages.any { it.source == STAGE_SOURCE_WEARABLE }) {
+            stages.filter { it.source == STAGE_SOURCE_WEARABLE }
+        } else {
+            stages
+        }
 
     /**
      * Provenance of the stage timeline rows: "WEARABLE" when any row came from the Health

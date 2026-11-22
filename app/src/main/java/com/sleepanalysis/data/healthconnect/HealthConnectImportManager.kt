@@ -5,6 +5,7 @@ import android.util.Log
 import androidx.health.connect.client.HealthConnectClient
 import androidx.health.connect.client.permission.HealthPermission
 import androidx.health.connect.client.records.SleepSessionRecord
+import androidx.health.connect.client.records.metadata.DataOrigin
 import androidx.health.connect.client.request.ReadRecordsRequest
 import androidx.health.connect.client.time.TimeRangeFilter
 import androidx.room.withTransaction
@@ -149,6 +150,11 @@ class HealthConnectImportManager @Inject constructor(
                         Instant.ofEpochMilli(window.first),
                         Instant.ofEpochMilli(window.second),
                     ),
+                    // Only Garmin Connect: Health Connect aggregates every sleep app on the
+                    // device, and an unfiltered read would merge a second app's sessions
+                    // into the WEARABLE timeline as overlapping spans (the docs describe
+                    // this import as "written by Garmin Connect").
+                    dataOriginFilter = garminConnectDataOrigins(),
                 )
             )
             Log.d(
@@ -258,6 +264,17 @@ class HealthConnectImportManager @Inject constructor(
         private const val EVENING_READ_LEAD_MS = 6L * 60 * 60 * 1000
         /** sleep_stage.source value of the HC-imported timeline (schema v14 vocabulary). */
         const val STAGE_SOURCE = "WEARABLE"
+        /**
+         * The only data origin the sleep-session read accepts — the wearable timeline the
+         * docs describe is "written by Garmin Connect". Pinned by
+         * HealthConnectSessionLinkTest (connect-client 1.1.0 cannot build a Metadata with a
+         * custom DataOrigin on the JVM, so the request-level wiring stays the thin,
+         * instrumented-only call site).
+         */
+        const val GARMIN_CONNECT_PACKAGE = "com.garmin.android.apps.connectmobile"
+
+        /** The [ReadRecordsRequest.dataOriginFilter] for the sleep-session read. */
+        fun garminConnectDataOrigins(): Set<DataOrigin> = setOf(DataOrigin(GARMIN_CONNECT_PACKAGE))
         /** raw_payload.source value of the import summary row (mirrors Garmin's SOURCE). */
         const val RAW_PAYLOAD_SOURCE = "HEALTHCONNECT"
         /** raw_payload.endpoint value of the import summary row. */
