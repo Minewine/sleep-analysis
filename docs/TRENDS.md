@@ -20,9 +20,14 @@ cross-surface consistency rules live in
 
 ## Eligibility
 
-Finalized sessions only (COMPLETED or RECOVERED) **with actual capture** — a session whose
-capture stats show 0 processed windows is excluded (junk/failed starts); sessions predating
-capture stats count as real nights. Oldest first, last 7.
+Finalized sessions only (COMPLETED, RECOVERED or — since the P2-6 fix — INTERRUPTED nights
+that actually captured windows) **with actual capture**: a night needs ≥ 1 processed analysis
+window (`windowsProcessed > 0`, P2-7). The stats-less stub (`{"schema_version":1}`, what a
+stop during the start delay writes) and zero-window sessions are excluded — an hour of
+nothing must not become a "0% snore, score 0" row — and stats-less legacy nights no longer
+count either (unverifiable capture is not a verifiable night). Oldest first, last 7. Rows use
+the label-aware snore set for the structure numbers (P2-9: a relabeled cough never counts
+toward longest bout, mean peak, clip coverage or the detector version).
 
 From schema v12 the analysis surfaces apply a second, stricter gate for anything that
 compares nights: **validity grade ≥ B + same detector/score versions (registry-gated,
@@ -39,12 +44,14 @@ and was not skipped on purpose (`TrendAssembler.injectMissedNights`; `NightTrend
 sentinel session id −1) — absence made visible, the same rule as the Home banner
 (`MissedNightPolicy`).
 
-- **Suppression rules.** Real rows win — a short night keeps its real row (the Home banner
-  explains it); an open session suppresses its in-progress night (provisional wake date =
-  start + 12 h, the `NightDates` open-session fallback); a **skipped** night renders no row at
-  all — the skip set holds START-evening epoch days, so a night waking on day D is suppressed
-  when D−1 is in the set (a deliberate absence, not a capture failure); with no finalized
-  night in the window nothing is injected and the empty state speaks.
+- **Suppression rules.** Real rows win — a short or INTERRUPTED night keeps its real row (the
+  Home banner explains it); an open session suppresses its in-progress night (provisional wake
+  date = start + 12 h, the `NightDates` open-session fallback); a **skipped** night renders no
+  row at all — the skip set holds the night's INTENDED-WAKE-DATE epoch days (P2-6: the wake
+  date a post-midnight start shares with its occurrence day, the day after an evening start's),
+  so a night waking on day D is suppressed when D is in the set (a deliberate absence, not a
+  capture failure); with no finalized night in the window nothing is injected and the empty
+  state speaks.
 - **A missed row carries no metrics and is never compared.** No minutes, no share, no score,
   no grade — and therefore no version markers; the comparison-validity rules on this page
   simply do not apply to it. It renders the "missed" label, and its sentinel id is guarded at

@@ -260,11 +260,11 @@ planned_nights usable nights.
 
 Written at session finalize and at every heartbeat (progress persistence for START_STICKY carry) by `SessionRepository` from `AudioEngine.NightStats`. For sessions finalized as RECOVERED the final write is skipped — heartbeat-saved stats (if any) are kept as-is, so the row carries the last live counters plus `saved_at_ms`; only when the engine died before any heartbeat does the row fall back to `{"schema_version":1}`. Parsed tolerantly by `domain/report/CaptureStats` — missing/malformed fields become null — and rendered in the report's "Session health" section, where `ReportAssembler` derives plain-language health warnings (suspected capture gaps when **accounted** windows — classified plus thermally skipped — fall > 10 % below the 0.5 s-hop expectation, thermal throttling).
 
-Snore share and score (measurements and report) use **captured analysis time** — `(windows_processed + windows_skipped) × 0.5 s`, cumulative across engine restarts — as their denominator, not tap-to-end time in bed: the latter counts the start delay, process-death gaps and pre-capture wall time as "night". Since schema **v5** the counters are disjoint: `windows_processed` counts only windows the detector classified, and a thermally skipped hop increments `windows_skipped` exactly once (pre-v5 writers counted a skipped hop in both, inflating the denominator ~1.5× under sustained throttling) — the sum counts every captured hop once. A RECOVERED session with no events records no time-in-bed, share or score at all.
+Snore share and score (measurements and report) use **captured analysis time** — `(windows_processed + windows_skipped) × 0.5 s`, cumulative across engine restarts — as their denominator, not tap-to-end time in bed: the latter counts the start delay, process-death gaps and pre-capture wall time as "night". Since schema **v5** the counters are disjoint: `windows_processed` counts only windows the detector classified, and a thermally skipped hop increments `windows_skipped` exactly once (pre-v5 writers counted a skipped hop in both, inflating the denominator ~1.5× under sustained throttling) — the sum counts every captured hop once. A RECOVERED session with no events records no time-in-bed, share or score at all. Since the zero-window gate (P2-7), a night with **no capture stats or zero processed windows** (e.g. a stop during the start delay) records no snore-time, share or score rows at all — zeros would be fabricated data.
 
 ```json
 {
-  "schema_version": 5,
+  "schema_version": 6,
   "windows_processed": 56340,
   "windows_skipped": 12,
   "ambient_dbfs_median": -31.5,
@@ -272,13 +272,16 @@ Snore share and score (measurements and report) use **captured analysis time** �
   "clip_count": 47,
   "thermal_throttle_events": 1,
   "level_gate_skipped": 231,
+  "spectral_skipped": 5120,
   "saved_at_ms": 1793564621686,
   "capture_started_at": 1793747285656,
-  "thermal_skipped_hops": [[1793564621686, 1793564624686, 3], [1793564629686, 1793564630686, 1]]
+  "thermal_skipped_hops": [[1793564621686, 1793564624686, 3], [1793564629686, 1793564630686, 1]],
+  "client_silenced_spans": [[1793749800000, 1793750400000]],
+  "ambient_level_buckets": [[1793747400000, 1793747700000, -84.5, 299500, 2.4137]]
 }
 ```
 
-`saved_at_ms` stamps heartbeat writes (a RECOVERED finalize bounds the night by the last heartbeat) and `capture_started_at` records when audio capture actually began after the start delay — the health-warning gap check compares accounted windows (classified + thermally skipped) against that capture window, not tap-to-stop wall time. v2 adds `level_gate_skipped` (events the relative level gate rejected — kept for diagnostics, the events are still stored without clips) and `thermal_skipped_hops`: merged spans of `[start_epoch_ms, end_epoch_ms, hops]` recording which analysis hops thermal throttling skipped (within a span, every odd hop of the 0.5 s grid was unanalyzed), so per-hour detection coverage can be corrected in analysis. Spans are epoch-anchored and concatenated across START_STICKY restarts via the stats carry.
+`saved_at_ms` stamps heartbeat writes (a RECOVERED finalize bounds the night by the last heartbeat) and `capture_started_at` records when audio capture actually began after the start delay — the health-warning gap check compares accounted windows (classified + thermally skipped) against that capture window, not tap-to-stop wall time. v2 adds `level_gate_skipped` (events the relative level gate rejected — kept for diagnostics, the events are still stored without clips) and `thermal_skipped_hops`: merged spans of `[start_epoch_ms, end_epoch_ms, hops]` recording which analysis hops thermal throttling skipped (within a span, every odd hop of the 0.5 s grid was unanalyzed), so per-hour detection coverage can be corrected in analysis. Spans are epoch-anchored and concatenated across START_STICKY restarts via the stats carry. **v6** adds `client_silenced_spans` — epoch spans where Android silenced this capture client (mic privacy toggle, a call, another app holding the mic: the OS delivers zeros without any error, P2-4) — and extends each `ambient_level_buckets` entry from `[startMs, endMs, meanDbfs]` to `[startMs, endMs, meanDbfs, coveredMs, varianceDb2]`: `coveredMs` is the sum of the windows actually folded into the bucket (a partly filled bucket no longer claims its whole 5-minute span as evidence — P3-16) and `varianceDb2` is the per-window dBFS variance (≈0 + a floor-level mean = digital silence from a silenced or dead mic, classified UNCAPTURED — never quiet). Pre-v6 rows parse with the legacy full-bucket coverage and no variance.
 
 ### 5.2 Report `payload` (v1 — target shape for the deferred §3.7 snapshot)
 

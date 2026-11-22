@@ -67,14 +67,22 @@ including display-filtered ones (see §4). Leading/trailing quiet is included.
 
 - **Stored** (schema v10, `quiet_gap` table): computed at finalize from the night's events +
   the capture's level buckets and written per session (replace-per-refinalize, FK CASCADE).
-- **Classified** via the capture's per-window level summary (`ambient_level_buckets`, schema v3
-  capture_stats: mean window dBFS per 5-minute epoch bucket, accumulated by the engine):
-  - `QUIET` — level buckets cover ≥50% of the gap: real quiet sleep, shown with the
-    overlap-weighted mean level ("quiet (−84.2 dBFS)");
-  - `UNCAPTURED` — no bucket evidence in the gap: process death, shown as "no capture";
-  - unclassified — partial evidence (a death inside a quiet stretch) or pre-v3 nights.
+- **Classified** via the capture's per-window level summary (`ambient_level_buckets`, stats
+  v6: per 5-minute epoch bucket the mean window dBFS, the bucket's real covered time and its
+  dBFS variance) plus the OS-silenced spans (`client_silenced_spans`, stats v6):
+  - `QUIET` — usable (non-silent) bucket evidence covers ≥50% of the gap: real quiet sleep,
+    shown with the overlap-weighted mean level ("quiet (−84.2 dBFS)"); a bucket counts toward
+    coverage only in proportion to the windows it actually holds (P3-16);
+  - `UNCAPTURED` — no usable evidence: process death, or the mic delivered **digital
+    silence** (bucket mean ≤ −95 dBFS or ~zero variance — an Android-silenced or dead client
+    delivers exact zeros, P2-4), or a `client_silenced_span` covers the gap (mic privacy
+    toggle, a call, another app holding the mic — the OS flag outranks derived levels);
+  - unclassified — partial evidence (a death inside a quiet stretch), a partly silenced gap,
+    or pre-v3 nights.
 - Legacy nights without stored rows fall back to the same computation at report time
   (`classifyQuietGaps`), classified when their capture stats carry buckets.
+- **TL;DR and the shared text count only `kind == QUIET` as quiet stretches** (P2-5); hours
+  the mic never heard get their own "not captured" line — never measured quiet.
 
 **Session health card.** Records: recording time; capture window + start delay (when
 `capture_started_at` exists); which share denominator was used; ambient level (median/p95);

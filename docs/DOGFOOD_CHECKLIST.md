@@ -61,6 +61,31 @@ the time this list was written (2026-11-08).
       "Still up?" dialog; "Keep recording" continues; "Stop recording" finalizes. After the
       scheduled end (or schedule off): no dialog.
 
+## New in the 2026-11-22 data-honesty wave (device-only paths)
+
+### 10. Silenced mic is never "quiet" (P2-4)
+- [ ] Start a recording, then toggle the mic privacy switch (or take a call / let another app
+      hold the mic) for a few minutes. The report's session log should show the silenced span
+      and the TL;DR should report "stretches not captured ≥ 10 min" — never quiet stretches.
+- [ ] JVM tests cover the span accounting; this check verifies the real
+      `AudioRecordingCallback` fires and the zeros classify as UNCAPTURED.
+
+### 11. Stall watchdog (P2-4)
+- [ ] Hard to trigger naturally: only if capture hangs (no ring progress for 60 s) should the
+      session log show `audio_read_stalled`/`capture_stalled` and the night finalize
+      INTERRUPTED with the interrupted notification. Don't engineer it.
+
+### 12. Start refusal while a night is interrupted (P2-1)
+- [ ] Kill the process mid-recording; open the app (interrupted banner). The Start button must
+      be disabled; the bedtime notification must not appear at bedtime while the night is
+      still interrupted; only Resume/Finalize resolves it.
+
+### 13. Missed-night banner edge cases (P2-6)
+- [ ] With a post-midnight start time: tap Skip at bedtime → next morning the banner must say
+      the night was skipped, not missed; Trends show no synthetic missed row.
+- [ ] An INTERRUPTED night with hours of capture must show as recorded/short (its real report
+      opens), not missed, and must appear in Trends as its own row.
+
 ## Optional / hard to trigger
 
 ### 9. Thermal throttle path
