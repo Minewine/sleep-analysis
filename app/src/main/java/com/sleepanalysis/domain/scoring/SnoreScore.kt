@@ -27,13 +27,20 @@ package com.sleepanalysis.domain.scoring
  * rewritten by a label save carry v3 and the `label_corrected=true` notes flag
  * (docs/DATA_MODEL.md §3.5).
  *
+ * v4 ("snore-score-v4", 2026-11-22) also keeps the v3 arithmetic EXACTLY — the captured-
+ * analysis-time denominator changed: windows_processed now counts classified windows only
+ * and a thermally skipped hop is counted once in windows_skipped (capture_stats schema v5),
+ * so a throttled night's denominator no longer double-counts skipped hops (~1.5× under
+ * sustained throttling). Unthrottled nights compute byte-identically; throttled v3 rows are
+ * not comparable with v4 rows.
+ *
  * The breakdown ([Result]) is explainable and reproducible: share points + intensity points,
  * each capped, stored verbatim in the SNORE_SCORE row's notes ([breakdownNotes]).
  */
 object SnoreScore {
 
     /** Formula identity stored on SNORE_SCORE rows; bump on ANY recalibration (docs/NIGHT_REPORT.md). */
-    const val FORMULA_VERSION = "snore-score-v3"
+    const val FORMULA_VERSION = "snore-score-v4"
 
     /** Share of the night at which the share component saturates. */
     private const val SHARE_SATURATION = 0.40

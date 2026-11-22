@@ -137,9 +137,9 @@ class NightStatsMergeTest {
         assertNull(parsed.windowsProcessed)
     }
     @Test
-    fun `capture stats writes schema v4 and round-trips spectral_skipped`() {
+    fun `capture stats writes schema v5 and round-trips spectral_skipped`() {
         val json = captureStatsJson(stats(spectralSkipped = 12_345), clipCountOverride = 3)
-        assertTrue(json.contains("\"schema_version\":4"))
+        assertTrue(json.contains("\"schema_version\":5"))
         assertTrue(json.contains("\"spectral_skipped\":12345"))
         assertEquals(12_345L, CaptureStats.parse(json)!!.spectralSkipped)
         // v3-era JSON (no spectral_skipped) parses with a null — readers tolerate its absence.
@@ -170,7 +170,7 @@ class NightStatsMergeTest {
             ),
         )
         val json = captureStatsJson(stats, clipCountOverride = 3)
-        assertTrue(json.contains("\"schema_version\":4"))
+        assertTrue(json.contains("\"schema_version\":5"))
         assertTrue(json.contains("ambient_level_buckets"))
         val parsed = com.sleepanalysis.domain.report.CaptureStats.parse(json)!!
         assertEquals(2, parsed.ambientBuckets.size)

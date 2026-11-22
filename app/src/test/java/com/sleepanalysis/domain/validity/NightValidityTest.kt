@@ -124,6 +124,32 @@ class NightValidityTest {
     }
 
     @Test
+    fun `a fully throttled night is not a capture failure`() {
+        // capture_stats v5: every one of the 7_200 expected hops was thermally skipped —
+        // capture kept running, so this is the thermal warning's job, never capture_failed.
+        val r = NightValidity.compute(
+            NightValidity.Input(
+                capture = capture(windowsProcessed = 0, windowSeconds = 3600, thermalThrottleEvents = 1, skippedHops = 7_200),
+            ),
+        )
+        assertFalse(reasonIds(r).contains("capture_failed"))
+        assertTrue(ReasonIdsOf.contains(r.reasons, "thermal_throttle", NightValidity.Severity.WARNING))
+    }
+
+    @Test
+    fun `thermal skips do not read as capture gaps`() {
+        // 50% throttled: 10_800 classified + 10_800 skipped accounts for every one of the
+        // 21_600 expected hops — no gap reason at any severity.
+        val r = NightValidity.compute(
+            NightValidity.Input(
+                capture = capture(windowsProcessed = 10_800, windowSeconds = 10_800, skippedHops = 10_800),
+            ),
+        )
+        assertFalse(reasonIds(r).contains("capture_gaps"))
+        assertFalse(reasonIds(r).contains("capture_gaps_severe"))
+    }
+
+    @Test
     fun `processed above expected never goes negative`() {
         val r = NightValidity.compute(
             NightValidity.Input(capture = capture(windowsProcessed = 10_000, windowSeconds = 3600)),

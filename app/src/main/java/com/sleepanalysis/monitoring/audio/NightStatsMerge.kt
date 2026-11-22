@@ -76,7 +76,11 @@ fun AudioEngine.NightStats.withCarry(carry: StatsCarry?): AudioEngine.NightStats
  * [startEpochMs, endEpochMs, hops]); v3 adds ambient_level_buckets ([startMs, endMs, meanDbfs]
  * — the per-window level summary that lets event-free gaps be classified quiet vs uncaptured);
  * v4 adds spectral_skipped (analyzed windows whose spectral compute the pre-spectral level
- * gate skipped — SpectralGatePolicy); the parser tolerates the absence of all three.
+ * gate skipped — SpectralGatePolicy); v5 redefines windows_processed as classified windows
+ * only — a thermally skipped hop increments windows_skipped exactly once, so
+ * (windows_processed + windows_skipped) × 0.5 s counts every captured hop once (pre-v5
+ * writers counted a skipped hop in both counters); the parser tolerates the absence of all
+ * four additions.
  */
 fun captureStatsJson(
     stats: AudioEngine.NightStats?,
@@ -98,7 +102,7 @@ fun captureStatsJson(
             stats.ambientBuckets.joinToString(",") {
                 "[${it.startMs},${it.endMs},${String.format(java.util.Locale.US, "%.1f", it.meanDbfs)}]"
             } + "]"
-    return """{"schema_version":4,"windows_processed":${stats.windowsProcessed},""" +
+    return """{"schema_version":5,"windows_processed":${stats.windowsProcessed},""" +
         """"windows_skipped":${stats.windowsSkipped},""" +
         """"ambient_dbfs_median":${stats.ambientDbfsMedian ?: "null"},""" +
         """"ambient_dbfs_p95":${stats.ambientDbfsP95 ?: "null"},""" +

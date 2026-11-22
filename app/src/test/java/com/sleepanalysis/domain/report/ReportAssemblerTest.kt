@@ -215,6 +215,18 @@ class ReportAssemblerTest {
             .healthWarnings
         assertTrue(hopWarnings.any { it.contains("4 analysis hops") && it.contains("coverage") })
 
+        // capture_stats v5 semantics: a throttled night accounts every one of the 57_600
+        // expected hops once (28_800 classified + 28_800 thermally skipped) — reduced analysis
+        // coverage is the thermal warning's job, never a capture-gap warning.
+        val throttledHalf = healthy.copy(windowsProcessed = 28_800, windowsSkipped = 28_800)
+        val throttledHalfWarnings =
+            ReportAssembler.assemble(session(), emptyList(), emptyList(), emptyList(), capture = throttledHalf)!!
+                .healthWarnings
+        assertTrue(
+            "throttled coverage must not read as capture gaps: $throttledHalfWarnings",
+            throttledHalfWarnings.none { it.contains("Capture gaps suspected") },
+        )
+
         val dead = healthy.copy(windowsProcessed = 0)
         assertTrue(
             ReportAssembler.assemble(session(), emptyList(), emptyList(), emptyList(), capture = dead)!!

@@ -546,6 +546,11 @@ object ReportAssembler {
         val self = this ?: return listOf("Capture statistics unavailable for this session (recorded before health tracking or stats write failed).")
         return buildList {
             val processed = self.windowsProcessed
+            val skipped = self.windowsSkipped ?: 0L
+            // Accounted = processed + skipped: each captured hop increments exactly one
+            // counter (capture_stats schema v5), so thermal throttling reduces analysis
+            // coverage — reported separately below — without reading as a capture gap.
+            val accounted = processed?.plus(skipped)
             val windowSeconds = self.captureStartMs
                 ?.takeIf { endedAtMs > it }
                 ?.let { (endedAtMs - it) / 1000 }
@@ -553,13 +558,13 @@ object ReportAssembler {
             when {
                 // Recovered/interrupted sessions finalize without engine stats: unknown ≠ failed.
                 processed == null -> { /* stats unknown — no capture-quality warnings */ }
-                processed == 0L && windowSeconds > 30 -> {
+                processed == 0L && skipped == 0L && windowSeconds > 30 -> {
                     add("No analysis windows were processed — capture likely failed for most of the session.")
                 }
                 else -> {
                     val expected = windowSeconds * 2 // 0.5 s hop
-                    if (expected > 0 && processed < expected * 0.9) {
-                        add("Capture gaps suspected: $processed of ~$expected expected analysis windows were processed.")
+                    if (expected > 0 && accounted != null && accounted < expected * 0.9) {
+                        add("Capture gaps suspected: $accounted of ~$expected expected capture windows accounted for.")
                     }
                 }
             }

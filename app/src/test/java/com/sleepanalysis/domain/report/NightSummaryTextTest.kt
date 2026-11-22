@@ -59,7 +59,7 @@ class NightSummaryTextTest {
         assertTrue(text, text.contains("Snored 1h 45m — 29% of the 6h 1m captured"))
         assertTrue(text, text.contains("Worst stretch: 21m (03:05–03:26)"))
         assertTrue(text, text.contains("Longest burst: 5m from 01:43"))
-        assertTrue(text, text.contains("Score 53/100 (share 44 + intensity 10; snore-score-v3)"))
+        assertTrue(text, text.contains("Score 53/100 (share 44 + intensity 10; snore-score-v4)"))
         assertFalse(text, text.contains("vs previous night")) // no previous night supplied
     }
 

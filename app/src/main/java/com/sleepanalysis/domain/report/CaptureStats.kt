@@ -51,12 +51,13 @@ data class CaptureStats(
     val ambientBuckets: List<AmbientLevelBucket> = emptyList(),
 ) {
     /**
-     * Mic-live capture time in ms: every 0.5 s analysis hop the engine processed or
-     * thermally skipped, summed across all engines of the session (the heartbeat carry makes
-     * the counters cumulative). Excludes the start delay, process-death gaps and
-     * pre/post-capture wall time — the denominator snore share and score are meant to use
-     * (docs/DATA_MODEL.md §5.1). Null when the session has no capture stats; 0 when stats
-     * exist but nothing was processed.
+     * Mic-live capture time in ms: every 0.5 s analysis hop the engine classified
+     * ([windowsProcessed]) or thermally skipped ([windowsSkipped]) — the counters are
+     * disjoint since stats schema v5, so each captured hop counts exactly once — summed
+     * across all engines of the session (the heartbeat carry makes the counters cumulative).
+     * Excludes the start delay, process-death gaps and pre/post-capture wall time — the
+     * denominator snore share and score are meant to use (docs/DATA_MODEL.md §5.1). Null
+     * when the session has no capture stats; 0 when stats exist but nothing was captured.
      */
     fun capturedAnalysisMs(hopMs: Long = HOP_MS): Long? =
         windowsProcessed?.let { processed -> (processed + (windowsSkipped ?: 0L)) * hopMs }

@@ -136,31 +136,36 @@ object NightValidity {
         } else {
             val processed = capture.windowsProcessed
             val windowSeconds = capture.windowSeconds ?: 0L
+            // Accounted hops = classified + thermally skipped: each captured hop increments
+            // exactly one of the two counters (capture_stats schema v5), so thermal throttling
+            // is coverage the capture kept — reported as THERMAL_THROTTLE below, never as a
+            // capture gap. skippedHops mirrors windowsSkipped (HopSkipLedger).
+            val accounted = processed?.plus(capture.skippedHops.toLong())
             when {
                 processed == null -> { /* stats unknown — never invent a capture failure */ }
-                processed == 0L && windowSeconds > CAPTURE_FAILED_MIN_WINDOW_S ->
+                processed == 0L && capture.skippedHops == 0 && windowSeconds > CAPTURE_FAILED_MIN_WINDOW_S ->
                     reasons += Reason(
                         ReasonIds.CAPTURE_FAILED, Severity.CRITICAL,
                         "no analysis windows processed in a ${windowSeconds}s capture window",
                     )
                 else -> {
                     val expected = windowSeconds * 2 // 0.5 s hop
-                    if (expected > 0 && processed != null && processed < expected) {
-                        val shortfall = 1.0 - processed.toDouble() / expected
+                    if (expected > 0 && accounted != null && accounted < expected) {
+                        val shortfall = 1.0 - accounted.toDouble() / expected
                         if (shortfall > SHORTFALL_CRITICAL) {
                             reasons += Reason(
                                 ReasonIds.CAPTURE_GAPS_SEVERE, Severity.CRITICAL,
                                 String.format(
-                                    java.util.Locale.US, "processed %d of ~%d expected windows (%.0f%% short)",
-                                    processed, expected, shortfall * 100,
+                                    java.util.Locale.US, "accounted %d of ~%d expected windows (%.0f%% short)",
+                                    accounted, expected, shortfall * 100,
                                 ),
                             )
                         } else if (shortfall > SHORTFALL_WARN) {
                             reasons += Reason(
                                 ReasonIds.CAPTURE_GAPS, Severity.WARNING,
                                 String.format(
-                                    java.util.Locale.US, "processed %d of ~%d expected windows (%.0f%% short)",
-                                    processed, expected, shortfall * 100,
+                                    java.util.Locale.US, "accounted %d of ~%d expected windows (%.0f%% short)",
+                                    accounted, expected, shortfall * 100,
                                 ),
                             )
                         }

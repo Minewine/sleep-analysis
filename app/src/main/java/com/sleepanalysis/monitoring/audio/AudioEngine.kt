@@ -194,6 +194,9 @@ class AudioEngine(
     private var agc: AutomaticGainControl? = null
 
     // Capture-thread-only counters. @Volatile because stats() reads them from other threads.
+    // Disjoint since capture_stats schema v5: each captured hop increments exactly one —
+    // windowsProcessed counts classified windows, windowsSkipped thermally skipped hops
+    // (docs/DATA_MODEL.md §5.1); their sum × hop is the captured analysis time.
     @Volatile private var windowsProcessed = 0L
     @Volatile private var windowsSkipped = 0L
     @Volatile private var thermalThrottleEvents = 0
@@ -357,8 +360,12 @@ class AudioEngine(
         }
     }
 
-    /** Features + detection for the window currently held in [windowBuf] (ends "now"). */
-    private fun analyzeWindow(windowBuf: ShortArray, hopCounter: Long) {
+    /**
+     * Features + detection for the window currently held in [windowBuf] (ends "now"). internal
+     * for AudioEngineThrottleAccountingTest — the unit-test JVM has no audio hardware, so the
+     * hop accounting is driven through this path directly.
+     */
+    internal fun analyzeWindow(windowBuf: ShortArray, hopCounter: Long) {
         var sum = 0.0
         var lp = 0.0
         var lpSum = 0.0
@@ -389,8 +396,6 @@ class AudioEngine(
         if (bucketBase > 0L) {
             ambientBuckets.add(bucketBase + clipRing.totalWritten * 1000 / config.sampleRate, dbfs)
         }
-        windowsProcessed++
-
         // Thermal throttle: skip classification, keep the ring buffer advancing. Record the
         // skipped hop (epoch-anchored span) so analysis can correct for the reduced rate.
         // Sits BEFORE any spectral work: a skipped window must do no FFT (allocation-free path).
@@ -402,6 +407,11 @@ class AudioEngine(
             }
             return
         }
+        // Classified window. Counts AFTER the throttle return so a throttled hop increments
+        // exactly one of the two counters (capture_stats schema v5): pre-v5 the skipped hop
+        // was counted in both, inflating the captured-analysis-time denominator ~1.5× under
+        // sustained throttling (docs/DATA_MODEL.md §5.1).
+        windowsProcessed++
 
         // Stage 2 spectral features, once per ANALYZED window that needs them (31 frames x
         // 1024-pt FFT + one full-window autocorrelation, ~3.2M multiply-adds — fine within the
