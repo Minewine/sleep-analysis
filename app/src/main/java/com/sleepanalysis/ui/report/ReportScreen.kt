@@ -421,12 +421,26 @@ private fun TldrCard(report: com.sleepanalysis.domain.report.MorningReport) {
                     style = MaterialTheme.typography.bodyLarge,
                 )
             }
-            if (report.quietGaps.isNotEmpty()) {
+            // Only verifiable quiet counts as "quiet stretches" (P2-5); hours the mic never
+            // heard get their own line, so an unheard night never reads as a quiet one.
+            val gapTotals = com.sleepanalysis.domain.report.QuietStretchTotals.of(report.quietGaps)
+            if (gapTotals.quietCount > 0) {
                 Text(
                     stringResource(
                         R.string.report_tldr_quiet,
-                        report.quietGaps.size,
-                        formatDuration(report.quietGaps.sumOf { it.durationMs }),
+                        gapTotals.quietCount,
+                        formatDuration(gapTotals.quietTotalMs),
+                    ),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            if (gapTotals.uncapturedCount > 0) {
+                Text(
+                    stringResource(
+                        R.string.report_tldr_not_captured,
+                        gapTotals.uncapturedCount,
+                        formatDuration(gapTotals.uncapturedTotalMs),
                     ),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,

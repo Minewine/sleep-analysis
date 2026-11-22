@@ -119,6 +119,36 @@ fun classifyQuietGaps(
 const val QUIET_GAP_MIN_MS: Long = 10 * 60_000L
 
 /**
+ * Aggregated quiet/not-captured totals for the TL;DR surfaces (P2-5). Only `kind == QUIET`
+ * counts as a quiet stretch; UNCAPTURED gaps are reported separately — hours the mic never
+ * heard must not present themselves as measured quiet. Unclassified gaps (null kind: partial
+ * or pre-v3 evidence) count as neither.
+ */
+data class QuietStretchTotals(
+    val quietCount: Int,
+    val quietTotalMs: Long,
+    val quietLongestMs: Long?,
+    val uncapturedCount: Int,
+    val uncapturedTotalMs: Long,
+    val uncapturedLongestMs: Long?,
+) {
+    companion object {
+        fun of(gaps: List<QuietGap>): QuietStretchTotals {
+            val quiet = gaps.filter { it.kind == QuietGapKind.QUIET }
+            val uncaptured = gaps.filter { it.kind == QuietGapKind.UNCAPTURED }
+            return QuietStretchTotals(
+                quietCount = quiet.size,
+                quietTotalMs = quiet.sumOf { it.durationMs },
+                quietLongestMs = quiet.maxOfOrNull { it.durationMs },
+                uncapturedCount = uncaptured.size,
+                uncapturedTotalMs = uncaptured.sumOf { it.durationMs },
+                uncapturedLongestMs = uncaptured.maxOfOrNull { it.durationMs },
+            )
+        }
+    }
+}
+
+/**
  * Quiet stretches ≥ [minGapMs] within [windowStartMs, windowEndMs], chronological. Events
  * outside the window are ignored; overlapping/degenerate spans contribute nothing.
  */

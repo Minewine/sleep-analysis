@@ -75,6 +75,7 @@
     <string name="report_tldr_prev">vs previous night: %1$s snoring (%2$s) · score %3$s</string>
     <string name="report_tldr_prev_score_nc">score %1$s (previous night not comparable)</string>
     <string name="report_tldr_quiet">%1$d quiet stretches ≥ 10 min · total %2$s</string>
+    <string name="report_tldr_not_captured">%1$d stretches not captured ≥ 10 min · total %2$s</string>
     <string name="report_tldr_prev_hidden">Previous night not compared (missing data or different version)</string>
     <string name="report_tldr_garmin_normalized">Snored %1$s%% of the captured part of Garmin\'s sleep window</string>
     <string name="report_disclaimer">Estimates from on-device microphone analysis. Not a diagnostic device. For sleep-health questions, talk to a clinician.</string>

@@ -52,10 +52,17 @@ object NightSummaryText {
             val startMs = report.startedAt + clip.offsetMs
             lines += "Loudest clip: ${time(startMs)} at ${String.format(java.util.Locale.US, "%.1f", clip.peakDbfs)} dBFS."
         }
-        if (report.quietGaps.isNotEmpty()) {
-            val longest = report.quietGaps.maxBy { it.durationMs }
-            lines += "Quiet stretches ≥10 min: ${report.quietGaps.size} (longest " +
-                "${hms(longest.durationMs / 1000)})."
+        // Only verifiable quiet counts as "quiet stretches" (P2-5); hours the mic never
+        // heard get their own line — a shared summary must not claim measured quiet for
+        // spans that were never captured.
+        val gapTotals = QuietStretchTotals.of(report.quietGaps)
+        if (gapTotals.quietCount > 0) {
+            lines += "Quiet stretches ≥10 min: ${gapTotals.quietCount} (longest " +
+                "${hms(gapTotals.quietLongestMs!! / 1000)})."
+        }
+        if (gapTotals.uncapturedCount > 0) {
+            lines += "Not captured ≥10 min: ${gapTotals.uncapturedCount} (longest " +
+                "${hms(gapTotals.uncapturedLongestMs!! / 1000)})."
         }
 
         report.previousNight?.let { prev ->

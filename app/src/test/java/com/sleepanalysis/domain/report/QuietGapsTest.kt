@@ -216,4 +216,32 @@ class QuietGapsTest {
         val classified = classifyQuietGaps(listOf(gap), buckets).single()
         assertEquals(QuietGapKind.QUIET, classified.kind)
     }
+
+    // ---- TL;DR totals (P2-5): only kind == QUIET is a quiet stretch ----
+
+    @Test
+    fun `totals split quiet from not-captured and ignore unclassified gaps`() {
+        val totals = QuietStretchTotals.of(
+            listOf(
+                QuietGap(t0, t0 + 11 * 60_000, 11 * 60_000, kind = QuietGapKind.QUIET),
+                QuietGap(t0, t0 + 27 * 60_000, 27 * 60_000, kind = QuietGapKind.UNCAPTURED),
+                QuietGap(t0, t0 + 15 * 60_000, 15 * 60_000, kind = null),
+            ),
+        )
+        assertEquals(1, totals.quietCount)
+        assertEquals(11 * 60_000L, totals.quietTotalMs)
+        assertEquals(11 * 60_000L, totals.quietLongestMs)
+        assertEquals(1, totals.uncapturedCount)
+        assertEquals(27 * 60_000L, totals.uncapturedTotalMs)
+        assertEquals(27 * 60_000L, totals.uncapturedLongestMs)
+    }
+
+    @Test
+    fun `empty gaps give empty totals`() {
+        val totals = QuietStretchTotals.of(emptyList())
+        assertEquals(0, totals.quietCount)
+        assertEquals(0, totals.uncapturedCount)
+        assertNull(totals.quietLongestMs)
+        assertNull(totals.uncapturedLongestMs)
+    }
 }
