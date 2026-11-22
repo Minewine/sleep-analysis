@@ -67,14 +67,15 @@ object TrendAssembler {
 
     /**
      * A night eligible for trending: finalized, COMPLETED or RECOVERED, and — per the trend's
-     * "actual capture" contract — not a zero-window session. Sessions without capture stats at
-     * all predate observability and count as real nights.
+     * "actual capture" contract (P2-7) — with at least one PROCESSED analysis window. The
+     * stats-less stub (`{"schema_version":1}`, what a stop during the start delay writes) and
+     * stats-less legacy nights alike measured nothing: an hour of nothing must not become a
+     * "0% snore, score 0" trend row.
      */
     fun isTrendNight(session: SleepSessionEntity): Boolean {
         if (session.endedAt == null) return false
         if (session.status != SessionStatus.COMPLETED && session.status != SessionStatus.RECOVERED) return false
-        val stats = CaptureStats.parse(session.captureStats)
-        return stats?.windowsProcessed != 0L
+        return CaptureStats.parse(session.captureStats)?.anyProcessedWindows() == true
     }
 
     /**

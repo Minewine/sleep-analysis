@@ -159,15 +159,33 @@ class TrendAssemblerTest {
     }
 
     @Test
-    fun `zero-capture sessions are excluded but old nights without stats count as real`() {
-        val junk = session(0, captureStats = """{"schema_version":1}""") // windows_processed absent → counts
-        val empty = session(dayMs, captureStats = """{"schema_version":2,"windows_processed":0}""") // excluded
+    fun `zero-capture sessions and stats-less nights are excluded from trends`() {
+        // P2-7: a trend night must have processed at least one analysis window. The stats-less
+        // stub ({"schema_version":1}) is exactly what a stop during the start delay writes —
+        // it measured nothing and must not become a "0% snore, score 0" row. Pre-observability
+        // nights (no stats at all) no longer count either: unverifiable capture is not a
+        // verifiable night.
+        val junk = session(0, captureStats = """{"schema_version":1}""")
+        val empty = session(dayMs, captureStats = """{"schema_version":2,"windows_processed":0}""")
         val real = session(2 * dayMs)
         startedAts[junk.id] = 0; startedAts[empty.id] = dayMs; startedAts[real.id] = 2 * dayMs
         val rows = TrendAssembler.assemble(listOf(junk, empty, real), emptyMap(), emptyMap(), emptyMap())
-        assertEquals(2, rows.size)
-        assertEquals(0L, rows[0].startedAt)
-        assertEquals(2 * dayMs, rows[1].startedAt)
+        assertEquals(1, rows.size)
+        assertEquals(2 * dayMs, rows.single().startedAt)
+    }
+
+    @Test
+    fun `zero processed windows is not a trend night even with skipped windows`() {
+        val s = session(1_000L, captureStats = """{"schema_version":6,"windows_processed":0,"windows_skipped":40}""")
+        startedAts[s.id] = 1_000L
+        assertFalse(TrendAssembler.isTrendNight(s))
+    }
+
+    @Test
+    fun `one processed window still counts as a trend night`() {
+        val s = session(1_000L, captureStats = """{"schema_version":5,"windows_processed":1,"windows_skipped":0}""")
+        startedAts[s.id] = 1_000L
+        assertTrue(TrendAssembler.isTrendNight(s))
     }
 
     @Test
@@ -348,6 +366,7 @@ class TrendAssemblerTest {
             endedAt = today.minusDays(1).atTime(23, 30).atZone(utc).toInstant().toEpochMilli(),
             status = SessionStatus.COMPLETED, timeZone = utc.id, deviceModel = "Test",
             osVersion = "30", appVersion = "0.1.0",
+            captureStats = """{"schema_version":2,"windows_processed":40000}""",
         )
         val rows = TrendAssembler.assemble(listOf(utcNight), emptyMap(), emptyMap(), emptyMap())
         val merged = TrendAssembler.injectMissedNights(rows, emptyList(), emptySet(), today, zone)

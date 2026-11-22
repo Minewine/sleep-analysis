@@ -26,7 +26,7 @@ class LabelCorrectedSnoreEstimatesTest {
     private fun session(
         status: String = SessionStatus.COMPLETED,
         endedAt: Long? = end,
-        captureStats: String? = null,
+        captureStats: String? = DEFAULT_CAPTURE_STATS,
     ) = SleepSessionEntity(
         id = 5,
         startedAt = start,
@@ -38,6 +38,15 @@ class LabelCorrectedSnoreEstimatesTest {
         appVersion = "test",
         captureStats = captureStats,
     )
+
+    /**
+     * A real captured night's stats: 46,772 processed windows × 0.5 s ≈ 6.5 h — the captured
+     * night the recompute must mirror. Since the zero-window gate (P2-7), finalize writes no
+     * snore-time/share/score rows without processed windows, so the mirror tests run against
+     * a session that actually captured.
+     */
+    private val DEFAULT_CAPTURE_STATS =
+        """{"schema_version":5,"windows_processed":46772,"windows_skipped":0}"""
 
     private fun event(
         type: String = EventType.SNORE,
@@ -153,5 +162,34 @@ class LabelCorrectedSnoreEstimatesTest {
         val estimates = labelCorrectedSnoreEstimates(session(endedAt = null), listOf(event()))
 
         assertTrue(estimates.isEmpty())
+    }
+
+    @Test
+    fun `a zero-window night writes no snore-time share or score rows on recompute`() {
+        // Stop during the start delay: the stats stub exists but the engine never processed a
+        // window — finalize wrote no share/score/snore-time (P2-7), so the recompute mirrors
+        // exactly that even if events somehow exist.
+        val zeroWindow = """{"schema_version":1}"""
+        val estimates = labelCorrectedSnoreEstimates(session(captureStats = zeroWindow), listOf(event()))
+
+        assertTrue(has(estimates, "SNORE_EVENT_COUNT"))
+        assertFalse(has(estimates, "SNORE_TIME"))
+        assertFalse(has(estimates, "SNORE_SHARE_OF_NIGHT"))
+        assertFalse(has(estimates, "SNORE_SCORE"))
+        // Intensity rows stay event-derived in both finalize and the recompute: stored events
+        // are evidence even when the stats blob was lost. The gate covers only the
+        // denominator-relative aggregates (share, score) and snore time.
+    }
+
+    @Test
+    fun `zero processed windows with skipped windows still writes no snore rows`() {
+        // windows_skipped > 0 means capture ran but classified nothing — no detection
+        // evidence, no snore aggregates (P2-7).
+        val skippedOnly = """{"schema_version":6,"windows_processed":0,"windows_skipped":40}"""
+        val estimates = labelCorrectedSnoreEstimates(session(captureStats = skippedOnly), listOf(event()))
+
+        assertFalse(has(estimates, "SNORE_TIME"))
+        assertFalse(has(estimates, "SNORE_SHARE_OF_NIGHT"))
+        assertFalse(has(estimates, "SNORE_SCORE"))
     }
 }

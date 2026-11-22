@@ -99,4 +99,30 @@ class ReportSnapshotRefreshTest {
         assertEquals(0.0, headline.snoreSharePercent!!, 1e-9)
         assertEquals(0, headline.snoreScore)
     }
+
+    @Test
+    fun `a stop during the start delay stores no share or score in the snapshot`() {
+        // The engine never ran: capture stats exist as the empty {"schema_version":1} stub
+        // with zero processed windows — the night measured nothing (P2-7), so the snapshot
+        // must not carry a fabricated "0% snore, score 0" headline.
+        val headline = reportSnapshotHeadline(
+            session(capture = """{"schema_version":1}"""),
+            emptyList(),
+            validityGrade = "D",
+        )
+        assertNull(headline.snoreScore)
+        assertNull(headline.snoreSharePercent)
+        assertEquals(0L, headline.snoreSeconds)
+    }
+
+    @Test
+    fun `zero processed windows stores no share or score even with windows_skipped`() {
+        val headline = reportSnapshotHeadline(
+            session(capture = """{"schema_version":6,"windows_processed":0,"windows_skipped":40}"""),
+            emptyList(),
+            validityGrade = "D",
+        )
+        assertNull(headline.snoreScore)
+        assertNull(headline.snoreSharePercent)
+    }
 }

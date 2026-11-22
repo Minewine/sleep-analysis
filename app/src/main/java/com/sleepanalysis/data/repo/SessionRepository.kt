@@ -202,6 +202,10 @@ class SessionRepository @Inject constructor(
                     ?: capture?.capturedAnalysisMs()?.div(1000)
                 )?.takeIf { it > 0 }
             val capturedSeconds = capturedAnalysisSeconds ?: timeInBedSeconds
+            // P2-7: a night with no capture stats or zero processed windows measured nothing
+            // (a stop during the start delay) — no snore-time, share or score rows; zeros
+            // would be fabricated Tier-1 data in Trends and baselines.
+            val hasCaptureEvidence = (nightStats?.windowsProcessed ?: capture?.windowsProcessed ?: 0L) > 0L
 
             // Label-aware snore set (SnoreMath): a non-SNORE user label excludes the event
             // from every aggregate, SNORE includes it, no label keeps the detector's type.
@@ -228,11 +232,13 @@ class SessionRepository @Inject constructor(
                 recorder.recordPhoneEstimate(sessionId, MeasurementType.TIME_IN_BED, timeInBedSeconds.toDouble())
             }
             recorder.recordPhoneEstimate(sessionId, MeasurementType.SNORE_EVENT_COUNT, snoreEvents.size.toDouble())
-            recorder.recordPhoneEstimate(sessionId, MeasurementType.SNORE_TIME, snoreSeconds.toDouble())
-            if (!recoveredWithNoEvents && capturedSeconds > 0) {
+            if (hasCaptureEvidence) {
+                recorder.recordPhoneEstimate(sessionId, MeasurementType.SNORE_TIME, snoreSeconds.toDouble())
+            }
+            if (!recoveredWithNoEvents && capturedSeconds > 0 && hasCaptureEvidence) {
                 recorder.recordPhoneEstimate(sessionId, MeasurementType.SNORE_SHARE_OF_NIGHT, sharePercent)
             }
-            if (!recoveredWithNoEvents) {
+            if (!recoveredWithNoEvents && hasCaptureEvidence) {
                 // The score row carries the SCORE FORMULA version, never the detector's model
                 // version: the two change independently and trend comparability keys on this
                 // field (docs/NIGHT_REPORT.md §Score). The notes hold the reproducible breakdown.
@@ -1026,10 +1032,13 @@ internal fun reportSnapshotHeadline(
         }
     val score = SnoreScore.compute(snoreSeconds, capturedSeconds, tierSeconds)
     val recoveredWithNoEvents = session.status == SessionStatus.RECOVERED && events.isEmpty()
+    // Same row conditions as finalize (P2-7): zero processed windows measured nothing —
+    // no score/share headline, and never a fabricated "0% snore, score 0".
+    val hasCaptureEvidence = capture?.anyProcessedWindows() == true
     return com.sleepanalysis.domain.report.ReportSnapshot.Headline(
         validityGrade = validityGrade,
-        snoreScore = if (recoveredWithNoEvents) null else score.score,
-        snoreSharePercent = if (!recoveredWithNoEvents && capturedSeconds > 0) sharePercent else null,
+        snoreScore = if (!hasCaptureEvidence || recoveredWithNoEvents) null else score.score,
+        snoreSharePercent = if (hasCaptureEvidence && !recoveredWithNoEvents && capturedSeconds > 0) sharePercent else null,
         snoreSeconds = snoreSeconds,
         longestBoutMs = com.sleepanalysis.domain.report.boutStats(
             com.sleepanalysis.domain.report.groupBouts(snoreEvents),
@@ -1068,8 +1077,11 @@ internal fun labelCorrectedSnoreEstimates(
                 .unionDurationMs(tierEvents.map { it.startMs to it.endMs })
         }
     val score = SnoreScore.compute(snoreSeconds, capturedSeconds, tierSeconds)
-    // Same row conditions as finalizeSession: intensity rows exist only while snoring does.
+    // Same row conditions as finalizeSession: intensity rows exist only while snoring does,
+    // and a zero-window night writes no snore-time/share/score at all (P2-7).
     val recoveredWithNoEvents = session.status == SessionStatus.RECOVERED && events.isEmpty()
+    val hasCaptureEvidence = com.sleepanalysis.domain.report.CaptureStats
+        .parse(session.captureStats)?.anyProcessedWindows() == true
     val formulaVersion = SnoreScore.FORMULA_VERSION
     return buildList {
         add(
@@ -1077,19 +1089,21 @@ internal fun labelCorrectedSnoreEstimates(
                 MeasurementType.SNORE_EVENT_COUNT, snoreEvents.size.toDouble(),
             ),
         )
-        add(
-            MeasurementRecorder.PhoneEstimate(
-                MeasurementType.SNORE_TIME, snoreSeconds.toDouble(),
-            ),
-        )
-        if (!recoveredWithNoEvents && capturedSeconds > 0) {
+        if (hasCaptureEvidence) {
+            add(
+                MeasurementRecorder.PhoneEstimate(
+                    MeasurementType.SNORE_TIME, snoreSeconds.toDouble(),
+                ),
+            )
+        }
+        if (!recoveredWithNoEvents && capturedSeconds > 0 && hasCaptureEvidence) {
             add(
                 MeasurementRecorder.PhoneEstimate(
                     MeasurementType.SNORE_SHARE_OF_NIGHT, sharePercent,
                 ),
             )
         }
-        if (!recoveredWithNoEvents) {
+        if (!recoveredWithNoEvents && hasCaptureEvidence) {
             add(
                 MeasurementRecorder.PhoneEstimate(
                     MeasurementType.SNORE_SCORE, score.score.toDouble(),

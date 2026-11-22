@@ -84,6 +84,14 @@ data class CaptureStats(
     fun capturedAnalysisMs(hopMs: Long = HOP_MS): Long? =
         windowsProcessed?.let { processed -> (processed + (windowsSkipped ?: 0L)) * hopMs }
 
+    /**
+     * True when at least one analysis window was processed — the minimum evidence a
+     * share/score/snore-time row requires (P2-7). A stop during the start delay leaves the
+     * empty stats stub (no windows field): nothing was measured, and zeros would be
+     * fabricated data.
+     */
+    fun anyProcessedWindows(): Boolean = (windowsProcessed ?: 0L) > 0L
+
     companion object {
         /** The analysis hop grid (DetectorConfig.HOP_MS); duplicated here to keep domain pure. */
         const val HOP_MS = 500L
