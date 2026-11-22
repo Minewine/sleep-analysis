@@ -142,4 +142,78 @@ class QuietGapsTest {
         val gap = QuietGap(t0, t0 + 12 * 60_000, 12 * 60_000)
         assertEquals(gap, classifyQuietGaps(listOf(gap), emptyList()).single())
     }
+
+    // ---- digital silence: a silenced/dead mic delivers zeros, not a quiet bedroom (P2-4) ----
+
+    @Test
+    fun `digital-silence buckets classify the gap UNCAPTURED not QUIET`() {
+        val gap = QuietGap(t0, t0 + 12 * 60_000, 12 * 60_000)
+        val buckets = listOf(
+            bucket(t0, t0 + 5 * 60_000, -100.0),
+            bucket(t0 + 5 * 60_000, t0 + 10 * 60_000, -100.0),
+            bucket(t0 + 10 * 60_000, t0 + 15 * 60_000, -100.0),
+        )
+        val classified = classifyQuietGaps(listOf(gap), buckets).single()
+        assertEquals(QuietGapKind.UNCAPTURED, classified.kind)
+        // The zeros ARE level evidence — of silence, not of a quiet bedroom.
+        assertEquals(-100.0, classified.meanDbfs!!, 0.0001)
+    }
+
+    @Test
+    fun `near-zero variance marks a bucket digital silence even above the level cutoff`() {
+        val gap = QuietGap(t0, t0 + 12 * 60_000, 12 * 60_000)
+        val buckets = listOf(
+            AmbientLevelBucket(t0, t0 + 5 * 60_000, -80.0, coveredMs = 5 * 60_000, dbfsVariance = 0.0),
+            AmbientLevelBucket(t0 + 5 * 60_000, t0 + 10 * 60_000, -80.0, coveredMs = 5 * 60_000, dbfsVariance = 0.0),
+            AmbientLevelBucket(t0 + 10 * 60_000, t0 + 15 * 60_000, -80.0, coveredMs = 5 * 60_000, dbfsVariance = 0.0),
+        )
+        assertEquals(QuietGapKind.UNCAPTURED, classifyQuietGaps(listOf(gap), buckets).single().kind)
+    }
+
+    @Test
+    fun `a client-silenced span forces UNCAPTURED even when buckets look healthy`() {
+        val gap = QuietGap(t0, t0 + 12 * 60_000, 12 * 60_000)
+        val buckets = listOf(
+            bucket(t0, t0 + 5 * 60_000, -85.0),
+            bucket(t0 + 5 * 60_000, t0 + 10 * 60_000, -84.0),
+            bucket(t0 + 10 * 60_000, t0 + 15 * 60_000, -86.0),
+        )
+        val classified = classifyQuietGaps(
+            listOf(gap),
+            buckets,
+            clientSilencedSpans = listOf(ClientSilencedSpan(t0, t0 + 12 * 60_000)),
+        ).single()
+        assertEquals(QuietGapKind.UNCAPTURED, classified.kind)
+        assertNull(classified.meanDbfs)
+    }
+
+    @Test
+    fun `partly silenced gap stays unclassified rather than being called quiet`() {
+        // First 2 min silenced (Android delivered zeros), the rest verifiably quiet: neither
+        // "quiet" (part was never heard) nor a clean "not captured" (most was).
+        val gap = QuietGap(t0, t0 + 12 * 60_000, 12 * 60_000)
+        val buckets = listOf(
+            AmbientLevelBucket(t0 + 2 * 60_000, t0 + 7 * 60_000, -85.0, coveredMs = 5 * 60_000),
+            AmbientLevelBucket(t0 + 7 * 60_000, t0 + 12 * 60_000, -85.0, coveredMs = 5 * 60_000),
+        )
+        val classified = classifyQuietGaps(
+            listOf(gap),
+            buckets,
+            clientSilencedSpans = listOf(ClientSilencedSpan(t0, t0 + 2 * 60_000)),
+        ).single()
+        assertNull(classified.kind)
+    }
+
+    @Test
+    fun `healthy buckets still classify QUIET when nothing was silenced`() {
+        // Digital-silence logic must not eat a real quiet bedroom: −85 dBFS with real variance.
+        val gap = QuietGap(t0, t0 + 12 * 60_000, 12 * 60_000)
+        val buckets = listOf(
+            AmbientLevelBucket(t0, t0 + 5 * 60_000, -85.0, coveredMs = 5 * 60_000, dbfsVariance = 2.0),
+            AmbientLevelBucket(t0 + 5 * 60_000, t0 + 10 * 60_000, -84.0, coveredMs = 5 * 60_000, dbfsVariance = 1.5),
+            AmbientLevelBucket(t0 + 10 * 60_000, t0 + 15 * 60_000, -86.0, coveredMs = 5 * 60_000, dbfsVariance = 3.0),
+        )
+        val classified = classifyQuietGaps(listOf(gap), buckets).single()
+        assertEquals(QuietGapKind.QUIET, classified.kind)
+    }
 }

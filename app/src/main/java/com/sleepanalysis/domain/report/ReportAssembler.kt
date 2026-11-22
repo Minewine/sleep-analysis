@@ -421,6 +421,7 @@ object ReportAssembler {
                 windowEndMs = endedAt,
             ),
             capture?.ambientBuckets.orEmpty(),
+            clientSilencedSpans = capture?.clientSilencedSpans.orEmpty(),
         )
 
         // "Hear the worst moments": the longest single spell and the top retained clips

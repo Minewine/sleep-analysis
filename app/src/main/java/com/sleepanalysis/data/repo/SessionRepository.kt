@@ -265,10 +265,12 @@ class SessionRepository @Inject constructor(
             // the merged night stats (all engines' buckets, carried across restarts), falling
             // back to the heartbeat-persisted capture stats.
             val levelBuckets = nightStats?.ambientBuckets ?: capture?.ambientBuckets.orEmpty()
+            val silencedSpans = nightStats?.clientSilencedSpans ?: capture?.clientSilencedSpans.orEmpty()
             val gapWindowStart = capture?.captureStartMs ?: session.startedAt
             val classifiedGaps = com.sleepanalysis.domain.report.classifyQuietGaps(
                 com.sleepanalysis.domain.report.quietGaps(events, gapWindowStart, endedAt),
                 levelBuckets,
+                clientSilencedSpans = silencedSpans,
             )
             db.quietGapDao().replaceForSession(
                 sessionId,

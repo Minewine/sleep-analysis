@@ -8,6 +8,7 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.media.AudioManager
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
@@ -379,6 +380,10 @@ class MonitorService : Service() {
                 enterWindows = if (debugEnter1) 1 else com.sleepanalysis.monitoring.detection.DetectorConfig.ENTER_WINDOWS,
                 initialClipCount = initialClipCount,
             ),
+            // Silenced-client detection (P2-4): the callback records spans where the OS
+            // silenced the mic (privacy toggle, call, another app) — delivered as zeros,
+            // which must never read as a quiet night.
+            audioManager = getSystemService(AudioManager::class.java),
         )
         // Visible to the capture thread before the first samples arrive (see field docs).
         engine = newEngine
