@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.util.Log
 import com.sleepanalysis.data.prefs.UserPreferences
+import com.sleepanalysis.data.repo.SessionRepository
 import com.sleepanalysis.monitoring.service.MonitorState
 import com.sleepanalysis.monitoring.service.MonitorStateHolder
 import dagger.hilt.android.AndroidEntryPoint
@@ -21,7 +22,8 @@ import kotlinx.coroutines.launch
  * NEVER starts MonitorService directly: on Android 11+ a background-started microphone
  * foreground service gets no while-in-use mic access. Instead the high-priority bedtime
  * notification is posted — the user tap is the user-interaction exemption (see
- * [BedtimeNotification]). Always re-arms the schedule at the end of the run.
+ * [BedtimeNotification]). The notification is suppressed while an interrupted night is open
+ * (P2-1). Always re-arms the schedule at the end of the run.
  */
 @AndroidEntryPoint
 class ScheduledStartReceiver : BroadcastReceiver() {
@@ -29,6 +31,7 @@ class ScheduledStartReceiver : BroadcastReceiver() {
     @Inject lateinit var prefs: UserPreferences
     @Inject lateinit var stateHolder: MonitorStateHolder
     @Inject lateinit var scheduler: RecordingScheduler
+    @Inject lateinit var sessionRepository: SessionRepository
 
     override fun onReceive(context: Context, intent: Intent) {
         val pendingResult = goAsync()
@@ -50,6 +53,10 @@ class ScheduledStartReceiver : BroadcastReceiver() {
                         alreadyRecording = state is MonitorState.Recording ||
                             state is MonitorState.Starting ||
                             state is MonitorState.Delayed,
+                        // P2-1: an open night means the Resume/Finalize decision is pending —
+                        // its interrupted notification stays the re-entry point, and a bedtime
+                        // Start must never silently finalize it behind a new session.
+                        hasOpenSession = sessionRepository.openSession() != null,
                     )
                     if (post) BedtimeNotification.show(context, occurrenceDay)
                 }

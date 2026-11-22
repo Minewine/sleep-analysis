@@ -73,4 +73,15 @@ class StartIntentPolicyTest {
         assertFalse(canSkipStartDelay(MonitorState.Finished(7L)))
         assertFalse(canSkipStartDelay(MonitorState.Interrupted(7L, startedAt = 0L)))
     }
+
+    @Test
+    fun `a new start is refused while an interrupted night awaits its decision (P2-1)`() {
+        // Home Start and the bedtime-notification Start action must not silently finalize the
+        // interrupted night RECOVERED behind the user's back: the banner stays the re-entry
+        // point until Resume/Finalize is chosen.
+        assertFalse(canStartNewSession(MonitorState.Interrupted(7L, startedAt = 0L)))
+        assertTrue(canStartNewSession(MonitorState.Idle))
+        assertTrue(canStartNewSession(MonitorState.Finished(7L)))
+        assertTrue(canStartNewSession(MonitorState.StartError("storage")))
+    }
 }

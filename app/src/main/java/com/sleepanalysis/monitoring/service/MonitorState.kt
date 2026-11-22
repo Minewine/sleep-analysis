@@ -56,6 +56,16 @@ fun canBeginCaptureAfterDelay(
  */
 fun canSkipStartDelay(current: MonitorState): Boolean = current is MonitorState.Delayed
 
+/**
+ * Pure guard for a NEW-session start (Home Start button, bedtime-notification Start action)
+ * given the visible state (P2-1): while an interrupted night awaits the user's explicit
+ * Resume/Finalize decision, Start is disabled — the interrupted banner and notification stay
+ * the re-entry point, never a silent finalize-as-RECOVERED behind a new night. The service
+ * additionally refuses on the DB's open session: a fresh process (alarm-fired bedtime
+ * notification) starts with [MonitorState.Idle] even when a night is open.
+ */
+fun canStartNewSession(current: MonitorState): Boolean = current !is MonitorState.Interrupted
+
 @Singleton
 class MonitorStateHolder @Inject constructor() {
     private val _state = MutableStateFlow<MonitorState>(MonitorState.Idle)

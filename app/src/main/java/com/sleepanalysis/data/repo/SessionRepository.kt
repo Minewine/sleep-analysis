@@ -551,6 +551,13 @@ class SessionRepository @Inject constructor(
         count
     }
 
+    /**
+     * The open session, if any — the authoritative "a night awaits the user's Resume/Finalize
+     * decision" signal (P2-1). Starts refuse while this is non-null: a fresh process (alarm-
+     * fired bedtime notification) has no in-memory Interrupted state, only this row.
+     */
+    suspend fun openSession(): SleepSessionEntity? = withContext(Dispatchers.IO) { sessionDao.findOpen() }
+
     /** How much of an interrupted night was actually saved, for the Home banner. */
     suspend fun savedEventCountForSession(sessionId: Long): Int = withContext(Dispatchers.IO) {
         eventDao.countForSession(sessionId)

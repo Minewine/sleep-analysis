@@ -58,6 +58,7 @@ import com.sleepanalysis.data.db.entity.SleepSessionEntity
 import com.sleepanalysis.domain.policy.MissedNightResult
 import com.sleepanalysis.domain.report.CaptureStats
 import com.sleepanalysis.monitoring.service.MonitorState
+import com.sleepanalysis.monitoring.service.canStartNewSession
 import com.sleepanalysis.ui.components.Formatting
 import com.sleepanalysis.ui.components.formatDateTime
 import com.sleepanalysis.ui.components.formatDuration
@@ -176,7 +177,11 @@ fun HomeScreen(
                 shouldConfirmStop = viewModel::shouldConfirmStopNow,
                 // Start also gates on the storage pre-flight: below ~500 MB MonitorService bails
                 // out before capture. Stop stays enabled for an active session (StatusCard).
-                startEnabled = recordingEnabled && (preFlight?.storageOk ?: true),
+                // P2-1: Start is disabled while an interrupted night awaits its Resume/Finalize
+                // decision — starting a new night must never silently finalize it RECOVERED.
+                startEnabled = recordingEnabled &&
+                    (preFlight?.storageOk ?: true) &&
+                    canStartNewSession(state),
             )
             val nextStart = nextScheduledStart
             if (scheduleEnabled && recordingEnabled && nextStart != null) {

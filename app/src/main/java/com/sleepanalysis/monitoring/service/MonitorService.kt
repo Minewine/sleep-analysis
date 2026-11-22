@@ -235,10 +235,19 @@ class MonitorService : Service() {
                         stopSelf()
                         return@withLock
                     }
-                    if (existingSessionId == null) {
-                        // Never allow two open sessions: finalize anything stale from a killed process.
-                        val stale = sessionRepository.finalizeOpenAsRecovered()
-                        if (stale > 0) logger.log(-1L, "stale_session_finalized", "count=$stale")
+                    if (existingSessionId == null && sessionRepository.openSession() != null) {
+                        // P2-1: an open session means the Resume/Finalize decision is pending —
+                        // possibly in a fresh process whose in-memory state is Idle (an
+                        // alarm-fired bedtime notification Start after process death). A new
+                        // Start must never silently finalize the open night RECOVERED; refuse,
+                        // surface the interruption, and leave the banner/notification as the
+                        // re-entry point. (The UI disables Start via canStartNewSession.)
+                        val open = sessionRepository.openSession()!!
+                        logger.log(open.id, "start_blocked_interrupted", "openSession=${open.id}")
+                        stateHolder.set(MonitorState.Interrupted(open.id, open.startedAt))
+                        stopForegroundStop()
+                        stopSelf()
+                        return@withLock
                     }
                     val sessionId = existingSessionId ?: sessionRepository.startSession()
                     val session = sessionRepository.session(sessionId)
