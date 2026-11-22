@@ -2,7 +2,6 @@ package com.sleepanalysis.domain.report
 
 import com.sleepanalysis.data.db.entity.AcousticEventEntity
 import com.sleepanalysis.data.db.entity.AudioClipEntity
-import com.sleepanalysis.data.db.entity.EventType
 import com.sleepanalysis.data.db.entity.MeasurementEntity
 import com.sleepanalysis.data.db.entity.QuietGapEntity
 import com.sleepanalysis.data.db.entity.SessionStatus
@@ -110,7 +109,11 @@ object TrendAssembler {
                 garminRows.firstOrNull { it.measurementType == type }?.valueNum
 
             val events = eventsBySession[session.id].orEmpty()
-            val snoreEvents = events.filter { it.type == EventType.SNORE }
+            // Label-aware snore set (P2-9): the same rule the stored share/score rows follow
+            // (SnoreMath.eventsCountingAsSnore) — a non-SNORE user label excludes the event
+            // here too, so longest bout, mean peak, clip coverage and the detector version
+            // all agree with the night's own report instead of counting relabeled events.
+            val snoreEvents = SnoreMath.eventsCountingAsSnore(events)
             val boutStats = boutStats(groupBouts(snoreEvents))
             val clipBacked = snoreEvents.filter { it.clipId != null }
             val totalSnoreSeconds = SnoreMath.unionDurationMs(

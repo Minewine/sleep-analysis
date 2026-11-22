@@ -7,6 +7,7 @@ import com.sleepanalysis.data.db.entity.MeasurementEntity
 import com.sleepanalysis.data.db.entity.QuietGapEntity
 import com.sleepanalysis.data.db.entity.SessionStatus
 import com.sleepanalysis.data.db.entity.SleepSessionEntity
+import com.sleepanalysis.data.db.entity.UserLabel
 import com.sleepanalysis.domain.policy.MeasurementType
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -186,6 +187,37 @@ class TrendAssemblerTest {
         val s = session(1_000L, captureStats = """{"schema_version":5,"windows_processed":1,"windows_skipped":0}""")
         startedAts[s.id] = 1_000L
         assertTrue(TrendAssembler.isTrendNight(s))
+    }
+
+    @Test
+    fun `trend rows follow user relabels for bout mean peak coverage and detector version`() {
+        // P2-9: the trend's structure numbers must use the same label-aware snore set as the
+        // stored share/score rows (SnoreMath.eventsCountingAsSnore). A relabeled cough never
+        // counted toward snore minutes; it must not count toward the bout, mean peak, clip
+        // coverage or detector version either — one row, one truth.
+        val s = session(1_000L)
+        startedAts[s.id] = 1_000L
+        val bridging = snore(s.id, 145_000, 10_000, -12.0, version = "v-relabeled")
+            .copy(userLabel = UserLabel.COUGH) // loudest event, really a cough
+        val boutStart = snore(s.id, 100_000, 40_000, -30.0)
+        val boutEnd = snore(s.id, 160_000, 40_000, -31.0)
+        val clipped = snore(s.id, 400_000, 30_000, -25.0, clipId = 1)
+        val rows = TrendAssembler.assemble(
+            listOf(s),
+            emptyMap(),
+            mapOf(s.id to listOf(bridging, boutStart, boutEnd, clipped)),
+            mapOf(s.id to listOf(clip(1, s.id, clipped.id))),
+        )
+        val row = rows.single()
+        // Without the bridging cough the two 40 s bursts stay separate bouts (5 s gaps ≤ 10 s
+        // would chain them into one 100 s bout if the cough still counted).
+        assertEquals(40_000L, row.longestBoutMs)
+        // Mean peak over the counted set only (−30, −31, −25) — the −12 cough is out.
+        assertEquals((-30.0 + -31.0 + -25.0) / 3, row.meanPeakDbfs!!, 0.0001)
+        // Clip coverage: 30 s covered / 110 s of counted snoring, not /120 s.
+        assertEquals(30_000 * 100.0 / 110_000, row.clipCoveragePercent!!, 0.0001)
+        // Version provenance comes from the counted set, not a relabeled event.
+        assertEquals("energy-heuristic-v1-spectral", row.detectorVersion)
     }
 
     @Test
