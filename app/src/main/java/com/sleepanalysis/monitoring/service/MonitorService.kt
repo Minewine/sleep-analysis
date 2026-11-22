@@ -552,18 +552,33 @@ class MonitorService : Service() {
      *
      * The sticky restart of a previously-foreground service is delivered with
      * startForegroundService() semantics, so the service MUST call startForeground() before it
-     * stops ("did not then call startForeground" crash on API 26+): [startInForeground] runs
-     * first, and [stopForegroundStop] removes the FGS notification again before [stopSelf] —
-     * the high-priority interrupted notification (id 1043) survives as the user-facing signal.
+     * stops ("did not then call startForeground" crash on API 26+). The promotion is therefore
+     * KEPT — but best-effort: a background restart can also be REFUSED the promotion
+     * (ForegroundServiceStartNotAllowedException on API 31+, the Android 14+ microphone
+     * while-in-use check), and the old order — promote first — let that throw swallow the
+     * interrupted notification and the stop via the coroutine crash handler.
+     * [InterruptionStopSequence] runs the contract: notification (id 1043) first, promotion
+     * in runCatching, stop in finally — the high-priority interrupted notification survives
+     * as the user-facing signal either way.
      */
     private suspend fun surfaceInterruptionOrStop() {
-        startInForeground(System.currentTimeMillis())
         val open = sessionRepository.findOpenSession()
-        if (open != null && activeSessionId < 0) {
-            InterruptedNotification.show(this)
-        }
-        stopForegroundStop()
-        stopSelf()
+        InterruptionStopSequence.run(
+            showInterruptedNotification = {
+                if (open != null && activeSessionId < 0) {
+                    InterruptedNotification.show(this)
+                }
+            },
+            promoteToForeground = { startInForeground(System.currentTimeMillis()) },
+            onPromotionFailure = { t ->
+                logger.log(activeSessionId, "interrupted_fg_promotion_failed", "${t.javaClass.simpleName}: ${t.message}")
+                Log.e(TAG, "interrupted-night foreground promotion failed; notification 1043 already posted", t)
+            },
+            stop = {
+                stopForegroundStop()
+                stopSelf()
+            },
+        )
     }
 
     /**
