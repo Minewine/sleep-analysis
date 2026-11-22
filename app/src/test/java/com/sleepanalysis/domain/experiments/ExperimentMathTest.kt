@@ -169,6 +169,19 @@ class ExperimentMathTest {
     }
 
     @Test
+    fun `MORNING_RATING never counts as a confound`() {
+        // The morning rating is an OUTCOME (1-5 self-report), not a manipulation: every
+        // morning gets rated, so treating it as confoundable would silently exclude every
+        // rated night and stall all N-of-1 experiments at zero usable nights.
+        val (usable, excluded, _) = ExperimentMath.partitionNights(
+            nights = listOf(night(1, 0.30, "MORNING_RATING")),
+            ownFactorKeys = emptySet(),
+        )
+        assertTrue(excluded.isEmpty())
+        assertEquals(1, usable.size)
+    }
+
+    @Test
     fun `nights missing the metric value are not usable but not confounds`() {
         val result = ExperimentMath.evaluatePhase(
             nights = listOf(

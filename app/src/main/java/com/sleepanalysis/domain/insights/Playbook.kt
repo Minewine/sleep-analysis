@@ -211,11 +211,13 @@ object Playbook {
      * confoundable factor are excluded from the phase verdict (confound exclusion,
      * docs/INSIGHTS.md §Playbook, ExperimentTracker). The manipulation's own flag does not
      * confound its own experiment (no_evening_alcohol → ALCOHOL-logged nights stay in);
-     * a device test keeps MEDICATION_OR_DEVICE nights in.
+     * a device test keeps MEDICATION_OR_DEVICE nights in, and the positional experiment
+     * keeps SLEPT_ON_BACK nights in (adherence-relevant state, not an outside confounder).
      */
     fun ownFactorKeys(actionId: String): Set<String> = when (actionId) {
         "no_evening_alcohol" -> setOf(DailyFactor.ALCOHOL.key)
         "nasal_dilator" -> setOf(DailyFactor.MEDICATION_OR_DEVICE.key)
+        "side_sleeping" -> setOf(DailyFactor.SLEPT_ON_BACK.key)
         else -> emptySet()
     }
 

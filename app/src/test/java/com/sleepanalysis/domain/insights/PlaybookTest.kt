@@ -119,6 +119,9 @@ class PlaybookTest {
     fun `own factor keys - the manipulation's flag never confounds itself`() {
         assertEquals(setOf("ALCOHOL"), Playbook.ownFactorKeys("no_evening_alcohol"))
         assertEquals(setOf("MEDICATION_OR_DEVICE"), Playbook.ownFactorKeys("nasal_dilator"))
+        // The positional manipulation's own flag: a back-sleeping night is adherence-relevant
+        // state for a side_sleeping experiment, not an outside confounder.
+        assertEquals(setOf("SLEPT_ON_BACK"), Playbook.ownFactorKeys("side_sleeping"))
         assertEquals(emptySet<String>(), Playbook.ownFactorKeys("fixed_wake"))
     }
 

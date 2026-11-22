@@ -47,11 +47,16 @@ object ExperimentMath {
 
     /**
      * Factor keys that can confound a phase — every [DailyFactor] except NOTES (free text is
-     * context, not a manipulation). A phase night carrying any of these outside the
-     * experiment's own keys ([Playbook.ownFactorKeys]) is confound-excluded.
+     * context, not a manipulation) and MORNING_RATING (an OUTCOME, not a manipulation: every
+     * morning gets rated, so counting it confoundable would silently exclude every rated
+     * night and stall all N-of-1 experiments at zero usable nights). A phase night carrying
+     * any of these outside the experiment's own keys ([Playbook.ownFactorKeys]) is
+     * confound-excluded.
      */
     val CONFOUNDABLE_FACTOR_KEYS: Set<String> =
-        DailyFactor.entries.filter { it != DailyFactor.NOTES }.map { it.key }.toSet()
+        DailyFactor.entries
+            .filter { it != DailyFactor.NOTES && it != DailyFactor.MORNING_RATING }
+            .map { it.key }.toSet()
 
     /** The baseline band captured at experiment start (from PersonalBaseline.MetricBand JSON). */
     data class Band(val median: Double, val mad: Double, val low: Double, val high: Double)
