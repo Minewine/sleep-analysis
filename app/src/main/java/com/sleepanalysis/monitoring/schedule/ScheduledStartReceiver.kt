@@ -38,18 +38,31 @@ class ScheduledStartReceiver : BroadcastReceiver() {
         CoroutineScope(SupervisorJob() + Dispatchers.Default).launch {
             try {
                 if (intent.action == ACTION_SKIP) {
-                    val day = intent.getLongExtra(EXTRA_OCCURRENCE_EPOCH_DAY, -1L).takeIf { it >= 0 }
+                    val occurrenceDay = intent.getLongExtra(EXTRA_OCCURRENCE_EPOCH_DAY, -1L).takeIf { it >= 0 }
                         ?: fallbackOccurrenceDay()
-                    prefs.setScheduleSkipEpochDay(day)
+                    // P2-6: store the skip as the night's INTENDED WAKE date (the wake date a
+                    // post-midnight start shares with its occurrence day) — the banner, trends
+                    // and the scheduler's own filter all key that date.
+                    val startOccurrence = java.time.LocalDate.ofEpochDay(occurrenceDay)
+                        .atTime(java.time.LocalTime.ofSecondOfDay(prefs.scheduleStartMinutesNow() * 60L))
+                        .atZone(java.time.ZoneId.systemDefault())
+                    prefs.setScheduleSkipEpochDay(
+                        ScheduleTimes.intendedWakeDay(startOccurrence, prefs.scheduleEndMinutesNow()),
+                    )
                     BedtimeNotification.cancel(context)
                 } else {
                     val occurrenceDay = intent.getLongExtra(EXTRA_OCCURRENCE_EPOCH_DAY, -1L).takeIf { it >= 0 }
                         ?: fallbackOccurrenceDay()
                     val state = stateHolder.state.value
+                    // P2-6: the skip marker keys the intended WAKE date of tonight's start.
+                    val startOccurrence = java.time.LocalDate.ofEpochDay(occurrenceDay)
+                        .atTime(java.time.LocalTime.ofSecondOfDay(prefs.scheduleStartMinutesNow() * 60L))
+                        .atZone(java.time.ZoneId.systemDefault())
                     val post = SchedulePolicy.shouldPostBedtimeNotification(
                         recordingEnabled = prefs.recordingEnabledNow(),
                         scheduleEnabled = prefs.scheduleEnabledNow(),
-                        skipSet = occurrenceDay == prefs.scheduleSkipEpochDayNow(),
+                        skipSet = ScheduleTimes.intendedWakeDay(startOccurrence, prefs.scheduleEndMinutesNow()) ==
+                            prefs.scheduleSkipEpochDayNow(),
                         alreadyRecording = state is MonitorState.Recording ||
                             state is MonitorState.Starting ||
                             state is MonitorState.Delayed,

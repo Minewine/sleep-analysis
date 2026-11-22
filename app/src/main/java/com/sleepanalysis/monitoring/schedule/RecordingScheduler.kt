@@ -33,7 +33,9 @@ class RecordingScheduler @Inject constructor(
             return
         }
         val now = ZonedDateTime.now()
-        val start = ScheduleTimes.nextStart(now, prefs.scheduleStartMinutesNow(), prefs.scheduleSkipEpochDayNow())
+        val start = ScheduleTimes.nextStart(
+            now, prefs.scheduleStartMinutesNow(), prefs.scheduleEndMinutesNow(), prefs.scheduleSkipEpochDayNow(),
+        )
         val end = ScheduleTimes.nextOccurrence(now, prefs.scheduleEndMinutesNow())
         val startPi = PendingIntent.getBroadcast(
             context, START_REQUEST_CODE,
@@ -72,13 +74,20 @@ class RecordingScheduler @Inject constructor(
     /** Null when the master switch or the schedule is off — for UI notes. */
     suspend fun nextStartOrNull(now: ZonedDateTime): ZonedDateTime? {
         if (!prefs.recordingEnabledNow() || !prefs.scheduleEnabledNow()) return null
-        return ScheduleTimes.nextStart(now, prefs.scheduleStartMinutesNow(), prefs.scheduleSkipEpochDayNow())
+        return ScheduleTimes.nextStart(
+            now, prefs.scheduleStartMinutesNow(), prefs.scheduleEndMinutesNow(), prefs.scheduleSkipEpochDayNow(),
+        )
     }
 
-    /** Marks the next scheduled start as skipped for one night and re-arms. */
+    /**
+     * Marks the next scheduled start as skipped for one night and re-arms. The marker keys
+     * the night's INTENDED WAKE date (P2-6) — the wake date the skipped night would have had
+     * — so every reader (banner, trends, this scheduler's own filter) agrees even when the
+     * schedule starts after midnight.
+     */
     suspend fun skipNextStart(): ZonedDateTime? {
         val next = nextStartOrNull(ZonedDateTime.now()) ?: return null
-        prefs.setScheduleSkipEpochDay(next.toLocalDate().toEpochDay())
+        prefs.setScheduleSkipEpochDay(ScheduleTimes.intendedWakeDay(next, prefs.scheduleEndMinutesNow()))
         arm()
         return next
     }

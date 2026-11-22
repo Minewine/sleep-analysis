@@ -29,11 +29,58 @@ class ScheduleTimesTest {
 
     @Test
     fun `skip marker advances the start by one day then expires`() {
+        // The marker keys the night's intended WAKE date: a Nov 2 marker suppresses the
+        // Nov 1 evening start (it would wake Nov 2); a marker for any other wake date is
+        // ignored.
         val now = at("2026-11-01", "10:00")
-        val today = now.toLocalDate().toEpochDay()
-        assertEquals(at("2026-11-02", "22:30"), ScheduleTimes.nextStart(now, 22 * 60 + 30, today))
+        val tomorrow = now.toLocalDate().plusDays(1).toEpochDay()
+        assertEquals(at("2026-11-02", "22:30"), ScheduleTimes.nextStart(now, 22 * 60 + 30, 6 * 60 + 30, tomorrow))
         // A marker for any other day is ignored.
-        assertEquals(at("2026-11-01", "22:30"), ScheduleTimes.nextStart(now, 22 * 60 + 30, today - 1))
+        assertEquals(at("2026-11-01", "22:30"), ScheduleTimes.nextStart(now, 22 * 60 + 30, 6 * 60 + 30, tomorrow - 1))
+    }
+
+    @Test
+    fun `the skip marker keys on the intended wake date, not the start date`() {
+        // P2-6: a skip is stored as the WAKE date the skipped night would have had — for a
+        // 22:30 → 06:30 schedule that is the day AFTER the start's occurrence day. The marker
+        // for Nov 2 must suppress the Nov 1 evening start (it would have woken Nov 2).
+        val now = at("2026-11-01", "10:00")
+        assertEquals(
+            at("2026-11-02", "22:30"),
+            ScheduleTimes.nextStart(now, 22 * 60 + 30, 6 * 60 + 30, now.toLocalDate().plusDays(1).toEpochDay()),
+        )
+        // ...and it expires: Nov 2's own start (waking Nov 3) still fires with the same marker.
+        val afterSkip = at("2026-11-02", "10:00")
+        assertEquals(
+            at("2026-11-02", "22:30"),
+            ScheduleTimes.nextStart(afterSkip, 22 * 60 + 30, 6 * 60 + 30, now.toLocalDate().plusDays(1).toEpochDay()),
+        )
+    }
+
+    @Test
+    fun `a post-midnight start wakes the same day and its skip keys that day`() {
+        // P2-6's driver: a 00:30 start (end 07:00) wakes the SAME calendar day, so the skip
+        // marker is that day itself — and the banner reads the deliberate skip as Skipped,
+        // not Missed.
+        val now = at("2026-11-01", "00:00")
+        assertEquals(
+            at("2026-11-02", "00:30"),
+            ScheduleTimes.nextStart(now, 30, 7 * 60, now.toLocalDate().toEpochDay()),
+        )
+    }
+
+    @Test
+    fun `intendedWakeDay crosses midnight for an evening start and stays put for a night start`() {
+        val eveningStart = at("2026-11-01", "22:30")
+        assertEquals(
+            LocalDate.of(2026, 11, 2).toEpochDay(),
+            ScheduleTimes.intendedWakeDay(eveningStart, 6 * 60 + 30),
+        )
+        val nightStart = at("2026-11-01", "00:30")
+        assertEquals(
+            LocalDate.of(2026, 11, 1).toEpochDay(),
+            ScheduleTimes.intendedWakeDay(nightStart, 7 * 60),
+        )
     }
 
     @Test
@@ -125,39 +172,44 @@ class ScheduleTimesTest {
     // --- skip marker edge cases ---
 
     @Test
-    fun `skip marker for tomorrow does not affect tonight`() {
+    fun `a marker for the night waking tomorrow skips tonight's start`() {
+        // P2-6: the marker keys the intended WAKE date — tonight's 22:30 start would wake
+        // tomorrow 06:30, so a tomorrow marker suppresses tonight (it used to key the start
+        // occurrence and only suppress tomorrow's start).
         val now = at("2026-11-01", "10:00")
         val tomorrow = now.toLocalDate().plusDays(1).toEpochDay()
-        assertEquals(at("2026-11-01", "22:30"), ScheduleTimes.nextStart(now, 22 * 60 + 30, tomorrow))
+        assertEquals(at("2026-11-02", "22:30"), ScheduleTimes.nextStart(now, 22 * 60 + 30, 6 * 60 + 30, tomorrow))
     }
 
     @Test
-    fun `skip marker applies to tomorrow's occurrence once tonight is past`() {
-        val now = at("2026-11-01", "23:00") // tonight's 22:30 already gone
-        val tomorrow = now.toLocalDate().plusDays(1).toEpochDay()
-        assertEquals(at("2026-11-03", "22:30"), ScheduleTimes.nextStart(now, 22 * 60 + 30, tomorrow))
+    fun `a marker for the night waking tomorrow expires once that wake date is past`() {
+        // The marker named the Nov1→Nov2 night; after its wake date the next candidate
+        // (Nov 2 22:30, waking Nov 3) no longer matches.
+        val now = at("2026-11-02", "10:00")
+        val marker = now.toLocalDate().minusDays(1).plusDays(1).toEpochDay() // = Nov 2
+        assertEquals(at("2026-11-02", "22:30"), ScheduleTimes.nextStart(now, 22 * 60 + 30, 6 * 60 + 30, marker))
     }
 
     @Test
     fun `sentinel zero and far-past skip markers are ignored`() {
         val now = at("2026-11-01", "10:00")
         // 0 is the "no skip" default and can never be a real epoch day (1970-01-01).
-        assertEquals(at("2026-11-01", "22:30"), ScheduleTimes.nextStart(now, 22 * 60 + 30, 0L))
+        assertEquals(at("2026-11-01", "22:30"), ScheduleTimes.nextStart(now, 22 * 60 + 30, 6 * 60 + 30, 0L))
         val farPast = now.toLocalDate().toEpochDay() - 400
-        assertEquals(at("2026-11-01", "22:30"), ScheduleTimes.nextStart(now, 22 * 60 + 30, farPast))
+        assertEquals(at("2026-11-01", "22:30"), ScheduleTimes.nextStart(now, 22 * 60 + 30, 6 * 60 + 30, farPast))
     }
 
     @Test
     fun `far-future skip marker is ignored`() {
         val now = at("2026-11-01", "10:00")
         val farFuture = now.toLocalDate().toEpochDay() + 30
-        assertEquals(at("2026-11-01", "22:30"), ScheduleTimes.nextStart(now, 22 * 60 + 30, farFuture))
+        assertEquals(at("2026-11-01", "22:30"), ScheduleTimes.nextStart(now, 22 * 60 + 30, 6 * 60 + 30, farFuture))
     }
 
     @Test
     fun `huge skip marker terminates the day-by-day advance immediately`() {
         // Guards the while loop: a marker that never matches must not loop forever.
         val now = at("2026-11-01", "10:00")
-        assertEquals(at("2026-11-01", "22:30"), ScheduleTimes.nextStart(now, 22 * 60 + 30, Long.MAX_VALUE))
+        assertEquals(at("2026-11-01", "22:30"), ScheduleTimes.nextStart(now, 22 * 60 + 30, 6 * 60 + 30, Long.MAX_VALUE))
     }
 }

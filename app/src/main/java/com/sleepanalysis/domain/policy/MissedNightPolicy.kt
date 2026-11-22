@@ -30,10 +30,13 @@ sealed interface MissedNightResult {
  *
  * A night is identified by its WAKE date: the local calendar day its session(s) ended on (the
  * same anchor Garmin keys nights by), so a recording started after midnight still belongs to
- * the night before. The skip set holds START-evening epoch days (the scheduled alarm's
- * occurrence day), so the night waking on [todayEpochDay] was skipped iff the day before is
- * in the set. Eligibility and night-likeness reuse the previous-night comparison semantics:
- * COMPLETED/RECOVERED with an end time, night-like = ≥ [NIGHT_LIKE_MIN_IN_BED_MS] in bed.
+ * the night before. The skip set holds INTENDED-WAKE-DATE epoch days (P2-6: the wake date the
+ * skipped night would have had — for a start after midnight that is the occurrence day
+ * itself), so the night waking on [todayEpochDay] was skipped iff that day is in the set.
+ * Eligibility and night-likeness reuse the previous-night comparison semantics: COMPLETED or
+ * RECOVERED with an end time, plus — since P2-6 — INTERRUPTED sessions that actually captured
+ * windows ([hasCaptureEvidence]; the caller parses capture stats, keeping this package free
+ * of the report package). Night-like = ≥ [NIGHT_LIKE_MIN_IN_BED_MS] in bed.
  */
 object MissedNightPolicy {
 
@@ -48,18 +51,25 @@ object MissedNightPolicy {
      * The verdict for the night that woke on [todayEpochDay]: SKIPPED wins over everything (a
      * deliberate absence must not read as a failure), then RECORDED when any eligible session
      * of that night is night-like, SHORT when eligible sessions exist but none is, MISSED
-     * otherwise. Sessions from other nights and ineligible ones (open, INTERRUPTED, RECORDING)
-     * never silence the banner.
+     * otherwise. Sessions from other nights and ineligible ones (open, INTERRUPTED without
+     * captured windows, RECORDING) never silence the banner.
      */
     fun evaluate(
         sessions: List<SleepSessionEntity>,
         todayEpochDay: Long,
         skippedDays: Set<Long>,
+        hasCaptureEvidence: (SleepSessionEntity) -> Boolean = { false },
     ): MissedNightResult {
-        if (todayEpochDay - 1 in skippedDays) return MissedNightResult.Skipped
+        // P2-6: the skip key is the intended WAKE date — a post-midnight schedule's skip
+        // shares that day with its occurrence, and an evening start's skip is the day after.
+        if (todayEpochDay in skippedDays) return MissedNightResult.Skipped
         val eligible = sessions.filter {
             it.endedAt != null && wakeDay(it) == todayEpochDay &&
-                (it.status == SessionStatus.COMPLETED || it.status == SessionStatus.RECOVERED)
+                (
+                    it.status == SessionStatus.COMPLETED ||
+                        it.status == SessionStatus.RECOVERED ||
+                        (it.status == SessionStatus.INTERRUPTED && hasCaptureEvidence(it))
+                    )
         }
         return when {
             eligible.any { it.endedAt!! - it.startedAt >= NIGHT_LIKE_MIN_IN_BED_MS } -> MissedNightResult.Recorded
@@ -67,6 +77,14 @@ object MissedNightPolicy {
             else -> MissedNightResult.Missed
         }
     }
+
+    /**
+     * The zone "today" anchors in for the banner: the most recent session's own zone — the
+     * same zone its wake date is anchored in (P2-6). Falls back to [deviceZone] with no
+     * history or an unparseable stored zone.
+     */
+    fun todayZone(sessions: List<SleepSessionEntity>, deviceZone: ZoneId = ZoneId.systemDefault()): ZoneId =
+        sessions.firstOrNull()?.timeZone?.let { runCatching { ZoneId.of(it) }.getOrNull() } ?: deviceZone
 
     /** The night's wake epoch day — the local date the session ended on, in its own zone. */
     private fun wakeDay(session: SleepSessionEntity): Long =

@@ -26,13 +26,22 @@ class MissedNightPolicyTest {
         startedAt: Long,
         endedAt: Long?,
         status: String = SessionStatus.COMPLETED,
+        captureStats: String? = """{"schema_version":5,"windows_processed":40000}""",
     ) = SleepSessionEntity(
         id = 1, startedAt = startedAt, endedAt = endedAt, status = status,
         timeZone = zone.id, deviceModel = "Test", osVersion = "30", appVersion = "0.1.0",
+        captureStats = captureStats,
     )
 
-    private fun evaluate(sessions: List<SleepSessionEntity>, skippedDays: Set<Long> = emptySet()) =
-        MissedNightPolicy.evaluate(sessions, today.toEpochDay(), skippedDays)
+    /** The real capture-evidence predicate the Home banner passes (domain/report.CaptureStats). */
+    private val capturedWindows: (SleepSessionEntity) -> Boolean =
+        { com.sleepanalysis.domain.report.CaptureStats.parse(it.captureStats)?.anyProcessedWindows() == true }
+
+    private fun evaluate(
+        sessions: List<SleepSessionEntity>,
+        skippedDays: Set<Long> = emptySet(),
+        hasCaptureEvidence: (SleepSessionEntity) -> Boolean = capturedWindows,
+    ) = MissedNightPolicy.evaluate(sessions, today.toEpochDay(), skippedDays, hasCaptureEvidence)
 
     private fun evaluateOn(
         date: LocalDate,
@@ -80,11 +89,30 @@ class MissedNightPolicyTest {
 
     @Test
     fun `non-night-like statuses never silence the banner`() {
-        // STARTED (RECORDING) and INTERRUPTED sessions are not eligible: an open or aborted
-        // night cannot stand in for the missing one.
+        // RECORDING (still open) sessions are not eligible: an open night cannot stand in
+        // for the missing one.
         val recording = session(ms(today.minusDays(1), 23, 0), null, SessionStatus.RECORDING)
-        val interrupted = session(ms(today.minusDays(1), 23, 0), ms(today, 2, 0), SessionStatus.INTERRUPTED)
-        assertEquals(MissedNightResult.Missed, evaluate(listOf(recording, interrupted)))
+        assertEquals(MissedNightResult.Missed, evaluate(listOf(recording)))
+    }
+
+    @Test
+    fun `an INTERRUPTED night with captured windows counts as recorded or short, not missed`() {
+        // P2-6: a 5 h night that ended in a capture error was RECORDED — the banner must not
+        // call it missed. Short in-bed versions stay Short.
+        val recorded = session(ms(today.minusDays(1), 23, 0), ms(today, 4, 0), SessionStatus.INTERRUPTED)
+        assertEquals(MissedNightResult.Recorded, evaluate(listOf(recorded)))
+        val short = session(ms(today.minusDays(1), 23, 0), ms(today, 1, 0), SessionStatus.INTERRUPTED)
+        assertEquals(MissedNightResult.Short(2 * 3_600_000L), evaluate(listOf(short)))
+    }
+
+    @Test
+    fun `an INTERRUPTED night with zero captured windows still renders missed`() {
+        // Nothing was captured — the interruption produced no data, the absence stays visible.
+        val empty = session(
+            ms(today.minusDays(1), 23, 0), ms(today, 4, 0), SessionStatus.INTERRUPTED,
+            captureStats = """{"schema_version":1}""",
+        )
+        assertEquals(MissedNightResult.Missed, evaluate(listOf(empty)))
     }
 
     @Test
@@ -95,17 +123,18 @@ class MissedNightPolicyTest {
     }
 
     @Test
-    fun `skipped wins — the start evening before the wake date decides`() {
-        // Skipped on purpose must stay quiet even though a short session exists for the night.
+    fun `skipped wins — the skip key is the night's intended WAKE date`() {
+        // P2-6: skips are stored by intended wake date (the wake date a post-midnight start
+        // shares with its occurrence day), so the banner checks exactly that day.
         val short = session(ms(today.minusDays(1), 23, 30), ms(today, 1, 30), SessionStatus.RECOVERED)
-        assertEquals(MissedNightResult.Skipped, evaluate(listOf(short), skippedDays = setOf(today.minusDays(1).toEpochDay())))
-        // The skip key is the START evening: today's own epoch day does not skip last night.
-        assertEquals(MissedNightResult.Short(2 * 3_600_000L), evaluate(listOf(short), skippedDays = setOf(today.toEpochDay())))
+        assertEquals(MissedNightResult.Skipped, evaluate(listOf(short), skippedDays = setOf(today.toEpochDay())))
+        // A marker for a different wake date (last night's start was not skipped) never skips.
+        assertEquals(MissedNightResult.Short(2 * 3_600_000L), evaluate(listOf(short), skippedDays = setOf(today.minusDays(1).toEpochDay())))
     }
 
     @Test
     fun `a skipped night with nothing recorded is still skipped, not missed`() {
-        assertEquals(MissedNightResult.Skipped, evaluate(emptyList(), skippedDays = setOf(today.minusDays(1).toEpochDay())))
+        assertEquals(MissedNightResult.Skipped, evaluate(emptyList(), skippedDays = setOf(today.toEpochDay())))
     }
 
     @Test
@@ -128,9 +157,9 @@ class MissedNightPolicyTest {
         val result = evaluateOn(springWake, listOf(s))
         assertEquals(MissedNightResult.Short(3 * 3_600_000L), result)
         // The wake-date anchor is pure calendar arithmetic — the shift cannot push the
-        // session onto the wrong day (only Mar 28's skip key silences this night).
-        assertEquals(MissedNightResult.Skipped, evaluateOn(springWake, listOf(s), setOf(springWake.minusDays(1).toEpochDay())))
-        assertEquals(MissedNightResult.Short(3 * 3_600_000L), evaluateOn(springWake, listOf(s), setOf(springWake.toEpochDay())))
+        // session onto the wrong day (only the wake date's skip key silences this night).
+        assertEquals(MissedNightResult.Skipped, evaluateOn(springWake, listOf(s), setOf(springWake.toEpochDay())))
+        assertEquals(MissedNightResult.Short(3 * 3_600_000L), evaluateOn(springWake, listOf(s), setOf(springWake.plusDays(1).toEpochDay())))
     }
 
     @Test
@@ -166,9 +195,39 @@ class MissedNightPolicyTest {
     }
 
     @Test
-    fun `today in the skip set cannot skip last night when nothing was recorded`() {
-        // Off-by-one probe, the empty variant: the skip key is the START evening, so today's
-        // own epoch day leaves a nothing-recorded night MISSED, not Skipped.
-        assertEquals(MissedNightResult.Missed, evaluate(emptyList(), skippedDays = setOf(today.toEpochDay())))
+    fun `a marker for another wake date cannot skip this night when nothing was recorded`() {
+        // Off-by-one probe, the empty variant: only the wake date's own key silences the
+        // banner; yesterday's key (a different night's wake) leaves it MISSED.
+        assertEquals(MissedNightResult.Missed, evaluate(emptyList(), skippedDays = setOf(today.minusDays(1).toEpochDay())))
+    }
+
+    // ---- the banner's "today" anchor (P2-6: session zone consistency) ----
+
+    @Test
+    fun `today anchors on the most recent session's zone`() {
+        // Travel probe: the last night is stored with UTC (device tz at recording time) —
+        // the banner's "today" must be UTC's today, the same zone the wake dates use.
+        val utcSession = SleepSessionEntity(
+            id = 2, startedAt = ms(today.minusDays(1), 22, 0), endedAt = ms(today, 6, 0),
+            status = SessionStatus.COMPLETED, timeZone = "UTC", deviceModel = "Test",
+            osVersion = "30", appVersion = "0.1.0",
+        )
+        val deviceZone = ZoneId.of("Europe/Zurich")
+        assertEquals(ZoneId.of("UTC"), MissedNightPolicy.todayZone(listOf(utcSession), deviceZone))
+    }
+
+    @Test
+    fun `no sessions fall back to the device zone`() {
+        assertEquals(ZoneId.of("Europe/Zurich"), MissedNightPolicy.todayZone(emptyList(), ZoneId.of("Europe/Zurich")))
+    }
+
+    @Test
+    fun `an unparseable session zone falls back to the device zone`() {
+        val broken = SleepSessionEntity(
+            id = 3, startedAt = ms(today.minusDays(1), 22, 0), endedAt = ms(today, 6, 0),
+            status = SessionStatus.COMPLETED, timeZone = "Not/AZone", deviceModel = "Test",
+            osVersion = "30", appVersion = "0.1.0",
+        )
+        assertEquals(ZoneId.of("Europe/Zurich"), MissedNightPolicy.todayZone(listOf(broken), ZoneId.of("Europe/Zurich")))
     }
 }

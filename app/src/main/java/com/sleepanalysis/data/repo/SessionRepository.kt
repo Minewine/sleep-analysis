@@ -781,7 +781,9 @@ class SessionRepository @Inject constructor(
                 rows = rows,
                 openSessions = all.filter { it.endedAt == null },
                 skippedDays = skippedDays,
-                today = java.time.LocalDate.now(),
+                // P2-6: "today" anchors in the same zone as the wake-date coverage — the most
+                // recent night's zone — never the device zone (travel consistency).
+                today = java.time.LocalDate.now(zone),
                 zone = zone,
                 maxNights = maxNights,
             )

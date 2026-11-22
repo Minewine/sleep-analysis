@@ -65,16 +65,19 @@ data class NightTrend(
 object TrendAssembler {
 
     /**
-     * A night eligible for trending: finalized, COMPLETED or RECOVERED, and — per the trend's
-     * "actual capture" contract (P2-7) — with at least one PROCESSED analysis window. The
-     * stats-less stub (`{"schema_version":1}`, what a stop during the start delay writes) and
-     * stats-less legacy nights alike measured nothing: an hour of nothing must not become a
-     * "0% snore, score 0" trend row.
+     * A night eligible for trending: finalized, COMPLETED, RECOVERED or — since P2-6 —
+     * INTERRUPTED, and — per the trend's "actual capture" contract (P2-7) — with at least one
+     * PROCESSED analysis window. The stats-less stub (`{"schema_version":1}`, what a stop
+     * during the start delay writes) and stats-less legacy nights alike measured nothing: an
+     * hour of nothing must not become a "0% snore, score 0" trend row. An INTERRUPTED night
+     * with captured windows was RECORDED — a real trend row, never a synthetic missed one.
      */
     fun isTrendNight(session: SleepSessionEntity): Boolean {
         if (session.endedAt == null) return false
-        if (session.status != SessionStatus.COMPLETED && session.status != SessionStatus.RECOVERED) return false
-        return CaptureStats.parse(session.captureStats)?.anyProcessedWindows() == true
+        val statusEligible = session.status == SessionStatus.COMPLETED ||
+            session.status == SessionStatus.RECOVERED ||
+            session.status == SessionStatus.INTERRUPTED
+        return statusEligible && CaptureStats.parse(session.captureStats)?.anyProcessedWindows() == true
     }
 
     /**
@@ -186,12 +189,13 @@ object TrendAssembler {
      * that has neither a real trend row nor an in-progress session and was not skipped on
      * purpose — absence made visible, same rule as the Home banner's MissedNightPolicy. A
      * skip is a deliberate absence, not a capture failure, so it renders no row; the skip key
-     * is the START evening's epoch day (the scheduled alarm's occurrence day), i.e. the day
-     * before the wake date. Real rows win: a short night keeps its real row (the banner
-     * explains it). An open session's in-progress night is never missed (its provisional wake
-     * date = start + [NightDates.OPEN_SESSION_WAKE_OFFSET_MS], the open-session fallback).
-     * With no finalized night at all there is nothing to extend: the empty state speaks.
-     * Returned rows are chronological; synthetic startedAt = the wake date's local midnight.
+     * is the night's INTENDED WAKE date (P2-6: the wake date a post-midnight start shares
+     * with its occurrence day, the day after an evening start's). Real rows win: a short or
+     * INTERRUPTED night keeps its real row (the banner explains it). An open session's
+     * in-progress night is never missed (its provisional wake date = start +
+     * [NightDates.OPEN_SESSION_WAKE_OFFSET_MS], the open-session fallback). With no finalized
+     * night at all there is nothing to extend: the empty state speaks. Returned rows are
+     * chronological; synthetic startedAt = the wake date's local midnight.
      */
     fun injectMissedNights(
         rows: List<NightTrend>,
@@ -208,7 +212,7 @@ object TrendAssembler {
         }
         val synthetic = (0 until maxNights)
             .map { today.minusDays(it.toLong()) }
-            .filter { it.toEpochDay() !in coveredDays && it.toEpochDay() - 1 !in skippedDays }
+            .filter { it.toEpochDay() !in coveredDays && it.toEpochDay() !in skippedDays }
             .map { wakeDate ->
                 val startedAt = wakeDate.atStartOfDay(zone).toInstant().toEpochMilli()
                 NightTrend(

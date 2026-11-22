@@ -105,7 +105,17 @@ class HomeViewModel @Inject constructor(
     ) { allSessions, skippedDays ->
         when {
             allSessions.isEmpty() || allSessions.any { it.endedAt == null } -> null
-            else -> MissedNightPolicy.evaluate(allSessions, LocalDate.now().toEpochDay(), skippedDays)
+            else -> MissedNightPolicy.evaluate(
+                allSessions,
+                // P2-6: "today" anchors in the most recent session's zone — the same zone its
+                // wake date uses — never the device zone (travel consistency).
+                LocalDate.now(MissedNightPolicy.todayZone(allSessions)).toEpochDay(),
+                skippedDays,
+                hasCaptureEvidence = { session ->
+                    com.sleepanalysis.domain.report.CaptureStats.parse(session.captureStats)
+                        ?.anyProcessedWindows() == true
+                },
+            )
         }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 

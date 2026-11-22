@@ -265,8 +265,11 @@ class TrendAssemblerTest {
         startedAts.putAll(sessions.associate { it.id to it.startedAt })
         val rows = TrendAssembler.assemble(sessions, emptyMap(), emptyMap(), emptyMap())
         assertEquals(7, rows.size)
-        assertEquals(4 * dayMs, rows.first().startedAt) // last 7 of the 10 completed
-        assertEquals(11 * dayMs, rows.last().startedAt) // RECOVERED night included
+        assertEquals(5 * dayMs, rows.first().startedAt) // last 7 of the 10 completed
+        // RECOVERED night included; the INTERRUPTED night (with windows) trends too (P2-6)
+        // — a recorded night, not a missed one; the open RECORDING session stays out.
+        assertEquals(11 * dayMs, rows[5].startedAt)
+        assertEquals(13 * dayMs, rows.last().startedAt)
     }
 
     // ---- synthetic missed-night rows (SessionRepository.buildTrends threads the skip set) ----
@@ -307,13 +310,53 @@ class TrendAssemblerTest {
     @Test
     fun `skip set suppresses the synthetic row for its night`() {
         val rows = TrendAssembler.assemble(listOf(wakingOn(today.minusDays(2))), emptyMap(), emptyMap(), emptyMap())
-        // The skip key is the START evening: skipping yesterday evening suppresses the night
-        // that woke today.
+        // P2-6: the skip key is the night's intended WAKE date — skipping tonight suppresses
+        // the synthetic row for the night that wakes today.
         val merged = TrendAssembler.injectMissedNights(
-            rows, emptyList(), setOf(today.minusDays(1).toEpochDay()), today, zone,
+            rows, emptyList(), setOf(today.toEpochDay()), today, zone,
         )
         assertEquals(5, merged.count { it.missed })
         assertEquals(0, merged.count { it.missed && it.startedAt == midnightMs(today) })
+    }
+
+    @Test
+    fun `a post-midnight schedule's skip wakes on the occurrence day and suppresses correctly`() {
+        // P2-6's driver: with a 00:30 start, a deliberate skip's key IS the wake date —
+        // the same day. The old occurrence-day rule rendered that skip as "Missed".
+        val rows = TrendAssembler.assemble(listOf(wakingOn(today.minusDays(2))), emptyMap(), emptyMap(), emptyMap())
+        val merged = TrendAssembler.injectMissedNights(
+            rows, emptyList(), setOf(today.toEpochDay()), today, zone,
+        )
+        assertEquals(0, merged.count { it.missed && it.startedAt == midnightMs(today) })
+    }
+
+    @Test
+    fun `an INTERRUPTED night with windows is a real trend row, never a synthetic missed one`() {
+        // P2-6: a night recorded for hours that ended in a capture error was recorded —
+        // it keeps its real row (status INTERRUPTED) and silences the missed synthetic.
+        val interrupted = session(
+            today.minusDays(1).atTime(23, 0).atZone(zone).toInstant().toEpochMilli(),
+            status = SessionStatus.INTERRUPTED,
+        )
+        startedAts[interrupted.id] = interrupted.startedAt
+        assertTrue(TrendAssembler.isTrendNight(interrupted))
+        val merged = TrendAssembler.injectMissedNights(
+            TrendAssembler.assemble(listOf(interrupted), emptyMap(), emptyMap(), emptyMap()),
+            emptyList(), emptySet(), today, zone,
+        )
+        assertEquals(1, merged.count { !it.missed && it.status == SessionStatus.INTERRUPTED })
+        assertEquals(0, merged.count { it.missed && it.startedAt == midnightMs(today) })
+    }
+
+    @Test
+    fun `an INTERRUPTED night without windows is not a trend night`() {
+        val empty = session(
+            today.minusDays(1).atTime(23, 0).atZone(zone).toInstant().toEpochMilli(),
+            status = SessionStatus.INTERRUPTED,
+            captureStats = """{"schema_version":1}""",
+        )
+        startedAts[empty.id] = empty.startedAt
+        assertFalse(TrendAssembler.isTrendNight(empty))
     }
 
     @Test
