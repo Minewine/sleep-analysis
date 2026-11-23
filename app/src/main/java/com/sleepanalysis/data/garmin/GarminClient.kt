@@ -1,5 +1,6 @@
 package com.sleepanalysis.data.garmin
 
+import android.util.Log
 import com.sleepanalysis.data.secure.GarminKeyStore
 import java.io.IOException
 import java.net.HttpURLConnection
@@ -87,6 +88,8 @@ class GarminClient @Inject constructor(
                     EndpointResult(label, STATUS_NO_HTTP, null)
                 }
             }
+            // Status only — the key, token and bodies are never logged (class doc).
+            Log.d(TAG, "$label -> HTTP ${result.httpStatus}")
             result
         }
         GarminDayResult(results)
@@ -109,6 +112,7 @@ class GarminClient @Inject constructor(
         connection.setRequestProperty("Authorization", "ApiKey $apiKey")
         val (status, body, _) = readResponse(connection)
         if (status != 200) {
+            Log.w(TAG, "token exchange failed: HTTP $status")
             throw GarminException(
                 when (status) {
                     401, 403 -> "Garmin rejected the API key (HTTP $status). Check it in Garmin Connect."
@@ -116,6 +120,7 @@ class GarminClient @Inject constructor(
                 }
             )
         }
+        Log.d(TAG, "token exchange ok")
         val info = GarminJsonParsers.parseToken(body ?: "", now)
         val token = info.token
             ?: throw GarminException("Garmin token response did not contain a token (raw kept for diagnostics).")
@@ -205,6 +210,7 @@ class GarminClient @Inject constructor(
         /** Endpoint status meaning "no HTTP verdict this run" (network failure / failed token re-exchange). */
         const val STATUS_NO_HTTP = -1
         const val DEFAULT_TOKEN_TTL_MS = 5 * 60_000L
+        private const val TAG = "GarminClient"
     }
 }
 

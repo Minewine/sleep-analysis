@@ -30,6 +30,16 @@ class MorningFactorsUiStateTest {
         }
 
     @Test
+    fun `notes cancel keeps the editor open only when a note exists to revert to`() {
+        // null saved note + Cancel must never leave edit mode — rendering the null note
+        // was the NullPointerException crash of the 2026-11-23 morning report.
+        assertEquals(false, notesCancelReturnsToEdit(null))
+        // An empty-but-saved note renders as an empty text — safe to leave edit mode.
+        assertEquals(true, notesCancelReturnsToEdit(""))
+        assertEquals(true, notesCancelReturnsToEdit("slept well"))
+    }
+
+    @Test
     fun `initial chip state comes from the factor rows`() {
         val state = morningFactorsUiState(
             rows(entry("ALCOHOL", 2.0), entry("SICK", 1.0), entry("STRESS", 5.0), entry("MORNING_RATING", 3.0)),

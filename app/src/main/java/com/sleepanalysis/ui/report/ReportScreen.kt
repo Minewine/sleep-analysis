@@ -839,12 +839,15 @@ private fun MorningNotesCard(
                         editing = false
                     }) { Text(stringResource(R.string.report_notes_save)) }
                     OutlinedButton(onClick = {
+                        // Cancel reverts to the saved note — with none saved there is
+                        // nothing to revert to and the editor stays open (rendering a null
+                        // saved note below was the morning crash of the 2026-11-23 report).
                         draft = saved.orEmpty()
-                        editing = false
+                        editing = notesCancelReturnsToEdit(saved)
                     }) { Text(stringResource(R.string.report_notes_cancel)) }
                 }
             } else {
-                Text(saved!!, style = MaterialTheme.typography.bodyMedium)
+                saved?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
                 TextButton(onClick = { editing = true }, contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp)) {
                     Text(stringResource(R.string.report_notes_edit))
                 }
@@ -1328,6 +1331,7 @@ private fun RefreshReportCard(
                 refresh.completedAtMs,
                 hasStageTimeline,
                 garminStageMinutes,
+                refresh.garminBudgetBlocked,
             )
         ) {
             RefreshStatusLine.SYNCING -> Text(
@@ -1342,6 +1346,11 @@ private fun RefreshReportCard(
             )
             RefreshStatusLine.NOT_AVAILABLE -> Text(
                 stringResource(R.string.report_garmin_refresh_not_available),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            RefreshStatusLine.RETRY_BLOCKED -> Text(
+                stringResource(R.string.report_garmin_refresh_retry_blocked),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

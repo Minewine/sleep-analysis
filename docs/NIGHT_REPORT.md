@@ -153,7 +153,11 @@ design — imported outside any session). The join is report-time, by wake date:
   the wake-date import on demand (same budget-marking as the card's button, never a duplicate
   import) and rebuilds the report in place ("Syncing Garmin…" → "Updating report…"); an
   already-LINKED night rebuilds only, and a MISSING outcome after an attempt shows
-  "Garmin data not available yet" under the button.
+  "Garmin data not available yet" under the button — unless the attempt budget closed the
+  gate (a recent failed import for this wake date is cooling down), in which case the line
+  names the unblock path ("an earlier import attempt failed — 'Import from Garmin' below
+  retries immediately"): the card's Import button is deliberately ungated, so a failed
+  stop-time backfill must never read as missing data (2026-11-23 morning incident).
 
 ## 3. Last-N-nights trend
 

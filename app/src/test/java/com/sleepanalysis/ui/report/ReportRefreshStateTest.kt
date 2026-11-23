@@ -57,6 +57,62 @@ class ReportRefreshStateTest {
     }
 
     @Test
+    fun `budget-blocked missing outcome names the retry path instead of plain not available`() {
+        // The silent budget gate after a failed attempt is what made the 2026-11-23 report
+        // read as "no data" while an immediate retry path existed all along.
+        assertEquals(
+            RefreshStatusLine.RETRY_BLOCKED,
+            refreshStatusLine(
+                RefreshPhase.IDLE,
+                GarminLinkStatus.MISSING,
+                completedAtMs = 123L,
+                garminBudgetBlocked = true,
+            ),
+        )
+    }
+
+    @Test
+    fun `budget block is irrelevant once garmin data is linked`() {
+        assertEquals(
+            RefreshStatusLine.INCLUDED,
+            refreshStatusLine(
+                RefreshPhase.IDLE,
+                GarminLinkStatus.LINKED,
+                completedAtMs = 123L,
+                garminBudgetBlocked = true,
+            ),
+        )
+    }
+
+    @Test
+    fun `budget-blocked diagnosis fires only for an importable idle budget-exhausted step`() {
+        // The one true case: a not-yet-linked night, key stored, nothing in flight, budget closed.
+        assertEquals(
+            true,
+            garminStepBudgetBlocked(skipsImport = false, canImport = true, importing = false, budgetAllowed = false),
+        )
+        // Budget open → the step runs; not a block.
+        assertEquals(
+            false,
+            garminStepBudgetBlocked(skipsImport = false, canImport = true, importing = false, budgetAllowed = true),
+        )
+        // LINKED night skips the step by design — nothing to surface.
+        assertEquals(
+            false,
+            garminStepBudgetBlocked(skipsImport = true, canImport = true, importing = false, budgetAllowed = false),
+        )
+        // No key / import in flight: different causes, the plain not-available line stands.
+        assertEquals(
+            false,
+            garminStepBudgetBlocked(skipsImport = false, canImport = false, importing = false, budgetAllowed = false),
+        )
+        assertEquals(
+            false,
+            garminStepBudgetBlocked(skipsImport = false, canImport = true, importing = true, budgetAllowed = false),
+        )
+    }
+
+    @Test
     fun `linked and metrics-only outcomes show included`() {
         assertEquals(
             RefreshStatusLine.INCLUDED,

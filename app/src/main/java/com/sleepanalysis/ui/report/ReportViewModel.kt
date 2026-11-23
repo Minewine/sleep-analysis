@@ -2,6 +2,7 @@ package com.sleepanalysis.ui.report
 
 import android.content.Context
 import android.media.MediaPlayer
+import android.util.Log
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -58,6 +59,20 @@ internal fun refreshGarminGateOpen(
 ): Boolean = canImport && !importing && budgetAllowed
 
 /**
+ * Pure diagnosis for the refresh's Garmin step: it was skipped BECAUSE the wake date's
+ * attempt budget is exhausted (a recent failed attempt is still cooling down) — the case
+ * the status line must name instead of the plain "not available". The Garmin card's
+ * ungated Import button can still retry immediately, so the user is told that path
+ * exists rather than left waiting out a cooldown they were never told about.
+ */
+internal fun garminStepBudgetBlocked(
+    skipsImport: Boolean,
+    canImport: Boolean,
+    importing: Boolean,
+    budgetAllowed: Boolean,
+): Boolean = !skipsImport && canImport && !importing && !budgetAllowed
+
+/**
  * Pure gate for the morning report's Health Connect step: the same three checks the silent
  * [maybeBackfillHealthConnect] runs — provider available, no import already in flight (the
  * singleton state flow is shared with the settings screen), and stage rows still missing
@@ -86,10 +101,21 @@ enum class RefreshPhase { IDLE, SYNCING_GARMIN, SYNCING_HEALTHCONNECT, UPDATING_
 data class RefreshState(
     val phase: RefreshPhase = RefreshPhase.IDLE,
     val completedAtMs: Long? = null,
+    /** The last completed refresh skipped its Garmin step because the wake date's attempt
+     *  budget was exhausted — the status line then names the unblock path (the Garmin
+     *  card's ungated Import button) instead of the plain "not available". */
+    val garminBudgetBlocked: Boolean = false,
 )
 
 /** What the refresh row shows under its button (ReportScreen.RefreshReportCard). */
-enum class RefreshStatusLine { NONE, SYNCING, UPDATING, NOT_AVAILABLE, STAGES_PENDING, INCLUDED }
+enum class RefreshStatusLine { NONE, SYNCING, UPDATING, NOT_AVAILABLE, RETRY_BLOCKED, STAGES_PENDING, INCLUDED }
+
+/**
+ * Pure guard for the morning-notes editor's Cancel (ReportScreen.MorningNotesCard): with no
+ * saved note there is nothing to revert to, so Cancel keeps the editor open — leaving edit
+ * mode would render the null saved note (the morning-crash of the 2026-11-23 report).
+ */
+internal fun notesCancelReturnsToEdit(saved: String?): Boolean = saved != null
 
 /**
  * Pure mapping for the refresh row's status line: the running phases win; the outcome shows
@@ -106,11 +132,13 @@ internal fun refreshStatusLine(
     completedAtMs: Long?,
     hasStageTimeline: Boolean = true,
     garminStageMinutes: Map<String, Long> = emptyMap(),
+    garminBudgetBlocked: Boolean = false,
 ): RefreshStatusLine = when {
     phase == RefreshPhase.SYNCING_GARMIN -> RefreshStatusLine.SYNCING
     phase == RefreshPhase.SYNCING_HEALTHCONNECT -> RefreshStatusLine.SYNCING
     phase == RefreshPhase.UPDATING_REPORT -> RefreshStatusLine.UPDATING
     completedAtMs == null -> RefreshStatusLine.NONE
+    garminStatus == GarminLinkStatus.MISSING && garminBudgetBlocked -> RefreshStatusLine.RETRY_BLOCKED
     garminStatus == GarminLinkStatus.MISSING -> RefreshStatusLine.NOT_AVAILABLE
     stagesStillMissing(hasStageTimeline, garminStageMinutes) -> RefreshStatusLine.STAGES_PENDING
     else -> RefreshStatusLine.INCLUDED
@@ -172,6 +200,8 @@ internal fun morningFactorWrites(
     }
 }
 
+private const val TAG = "ReportViewModel"
+
 @HiltViewModel
 class ReportViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
@@ -228,15 +258,26 @@ class ReportViewModel @Inject constructor(
     private suspend fun maybeBackfillGarmin(report: MorningReport?) {
         if (report == null) return
         if (report.garminStatus == GarminLinkStatus.LINKED) return
-        if (!garminImportManager.canImport()) return
+        if (!garminImportManager.canImport()) {
+            Log.d(TAG, "backfill: skipped — no API key stored")
+            return
+        }
         // An import already in flight must not double-fire: the outcome-based mark below only
         // claims the budget AFTER the network round-trip (it needs the outcome to pick the kind).
-        if (garminImportManager.state.value is GarminImportManager.GarminImportState.Importing) return
+        if (garminImportManager.state.value is GarminImportManager.GarminImportState.Importing) {
+            Log.d(TAG, "backfill: skipped — an import is already in flight")
+            return
+        }
         val date = com.sleepanalysis.domain.report.NightDates
             .garminWakeDate(report.startedAt, report.endedAt, report.timeZone)
-        if (!userPreferences.garminBackfillAllowed(date.toString(), System.currentTimeMillis())) return
+        if (!userPreferences.garminBackfillAllowed(date.toString(), System.currentTimeMillis())) {
+            Log.d(TAG, "backfill: skipped — attempt budget exhausted for wake date $date")
+            return
+        }
+        Log.i(TAG, "backfill: importing Garmin wake date $date")
         garminImportManager.importForDate(date, ZoneId.of(report.timeZone))
         markGarminAttemptBudget(date.toString())
+        Log.i(TAG, "backfill: outcome ${garminImportManager.state.value::class.simpleName}")
         _report.value = sessionRepository.buildReport(sessionId)
     }
 
@@ -247,8 +288,10 @@ class ReportViewModel @Inject constructor(
      */
     private suspend fun markGarminAttemptBudget(date: String) {
         if (drawsNotReadyBudget(garminImportManager.state.value)) {
+            Log.d(TAG, "budget: not-ready attempt marked for $date")
             userPreferences.markGarminNotReadyRetry(date)
         } else {
+            Log.d(TAG, "budget: general attempt marked for $date")
             userPreferences.markGarminAutoRetry(date)
         }
     }
@@ -344,6 +387,7 @@ class ReportViewModel @Inject constructor(
             .garminWakeDate(r.startedAt, r.endedAt, r.timeZone)
         // The session's zone, not the device default: timestamps recorded while travelling
         // or across a DST boundary must land in the wake day's local window.
+        Log.i(TAG, "manual garmin import: wake date $date (session zone ${r.timeZone})")
         garminImportManager.importForDate(date, ZoneId.of(r.timeZone))
         // A manual import also consumes the date's budget — of the kind its outcome drew
         // from — so the backfill must not fire a second network import right behind it.
@@ -371,18 +415,29 @@ class ReportViewModel @Inject constructor(
         if (_refreshState.value.phase != RefreshPhase.IDLE) return
         if (garminImportManager.state.value is GarminImportManager.GarminImportState.Importing) return
         viewModelScope.launch {
+            var garminBudgetBlocked = false
             try {
                 if (!refreshSkipsImport(r.garminStatus)) {
                     val date = com.sleepanalysis.domain.report.NightDates
                         .garminWakeDate(r.startedAt, r.endedAt, r.timeZone)
-                    val gateOpen = refreshGarminGateOpen(
-                        canImport = garminImportManager.canImport(),
-                        importing = garminImportManager.state.value
-                            is GarminImportManager.GarminImportState.Importing,
-                        budgetAllowed = userPreferences.garminBackfillAllowed(
-                            date.toString(),
-                            System.currentTimeMillis(),
-                        ),
+                    val canImport = garminImportManager.canImport()
+                    val importing =
+                        garminImportManager.state.value is GarminImportManager.GarminImportState.Importing
+                    val budgetAllowed = userPreferences.garminBackfillAllowed(
+                        date.toString(),
+                        System.currentTimeMillis(),
+                    )
+                    val gateOpen = refreshGarminGateOpen(canImport, importing, budgetAllowed)
+                    garminBudgetBlocked = garminStepBudgetBlocked(
+                        skipsImport = refreshSkipsImport(r.garminStatus),
+                        canImport = canImport,
+                        importing = importing,
+                        budgetAllowed = budgetAllowed,
+                    )
+                    Log.d(
+                        TAG,
+                        "refresh: garmin gateOpen=$gateOpen budgetBlocked=$garminBudgetBlocked " +
+                            "canImport=$canImport budgetAllowed=$budgetAllowed wakeDate=$date",
                     )
                     if (gateOpen) {
                         _refreshState.value =
@@ -412,12 +467,13 @@ class ReportViewModel @Inject constructor(
                 }
                 _refreshState.value = RefreshState(RefreshPhase.UPDATING_REPORT, _refreshState.value.completedAtMs)
                 reloadSuspend()
-                _refreshState.value = RefreshState(RefreshPhase.IDLE, System.currentTimeMillis())
+                _refreshState.value = RefreshState(RefreshPhase.IDLE, System.currentTimeMillis(), garminBudgetBlocked)
             } finally {
                 // A failed attempt (DataStore/Room hiccup) must still re-enable the button —
                 // a stuck non-IDLE phase freezes it and its status line for the screen's life.
                 if (_refreshState.value.phase != RefreshPhase.IDLE) {
-                    _refreshState.value = RefreshState(RefreshPhase.IDLE, _refreshState.value.completedAtMs)
+                    _refreshState.value =
+                        RefreshState(RefreshPhase.IDLE, _refreshState.value.completedAtMs, garminBudgetBlocked)
                 }
             }
         }

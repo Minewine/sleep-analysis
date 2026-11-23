@@ -1,5 +1,6 @@
 package com.sleepanalysis.data.garmin
 
+import android.util.Log
 import androidx.room.withTransaction
 import com.sleepanalysis.data.db.AppDatabase
 import com.sleepanalysis.data.db.dao.MeasurementDao
@@ -101,9 +102,11 @@ class GarminImportManager @Inject constructor(
 
     private suspend fun importForDateLocked(date: LocalDate, zone: ZoneId) {
         val dateStr = date.toString()
+        Log.i(TAG, "import $dateStr ($zone): start")
         _state.value = GarminImportState.Importing(dateStr)
         try {
             if (!keyStore.hasKey()) {
+                Log.w(TAG, "import $dateStr: failed — no API key stored")
                 _state.value = GarminImportState.Error(dateStr, "No Garmin API key stored — add one in Settings first.")
                 return
             }
@@ -114,6 +117,7 @@ class GarminImportManager @Inject constructor(
             // session and wipe its previously imported stage timeline — and report the distinct
             // NotReady so the backfill re-tries under its own budget once Garmin catches up.
             if (isNotReadyNight(result)) {
+                Log.i(TAG, "import $dateStr: not ready (dailySleep and hrv both 404) — nothing stored")
                 _state.value = GarminImportState.NotReady(
                     date = dateStr,
                     endpointStatuses = result.endpoints.map { it.endpoint to it.httpStatus },
@@ -238,6 +242,11 @@ class GarminImportManager @Inject constructor(
                 imported = validity.keptMetrics.size
             }
 
+            Log.i(
+                TAG,
+                "import $dateStr: ok metrics=$imported endpoints=$endpointsStored " +
+                    "linked=${linkedSessionId ?: "none"} warnings=${importWarnings.size}",
+            )
             _state.value = GarminImportState.Success(
                 date = dateStr,
                 metricsImported = imported,
@@ -247,6 +256,7 @@ class GarminImportManager @Inject constructor(
                 warnings = importWarnings,
             )
         } catch (e: GarminClient.GarminException) {
+            Log.w(TAG, "import $dateStr: failed — ${e.message}")
             _state.value = GarminImportState.Error(dateStr, e.message ?: "Garmin import failed.")
         } catch (e: kotlinx.coroutines.CancellationException) {
             // Scope cancelled mid-import — propagate so structured concurrency holds;
@@ -254,10 +264,12 @@ class GarminImportManager @Inject constructor(
             // The singleton must not stay stuck at Importing, though: [state] is shared by
             // the backfill gate, the report's refresh/import buttons and Settings — a stale
             // Importing blocks all of them until app restart.
+            Log.d(TAG, "import $dateStr: cancelled")
             _state.value = GarminImportState.Error(dateStr, "Garmin import cancelled.")
             throw e
         } catch (e: Exception) {
             client.invalidateToken()
+            Log.w(TAG, "import $dateStr: failed — ${e.message ?: e.javaClass.simpleName} (token invalidated)")
             _state.value = GarminImportState.Error(dateStr, "Garmin import failed: ${e.message ?: e.javaClass.simpleName}")
         }
     }
@@ -266,6 +278,7 @@ class GarminImportManager @Inject constructor(
     suspend fun garminMetricsBetween(from: Long, to: Long) = measurementDao.garminBetween(from, to)
 
     companion object {
+        private const val TAG = "GarminImport"
         const val SOURCE = "GARMIN"
         const val EP_DAILY_SLEEP = "/sleep-service/sleep/dailySleep"
         /** Stage-timeline endpoint (path-style date); 404/empty tolerated — totals remain the fallback. */

@@ -332,8 +332,11 @@ fun SettingsScreen(
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
     var keyInput by remember { mutableStateOf("") }
-    var importDate by remember { mutableStateOf(LocalDate.now().minusDays(1).toString()) }
-    var hcImportDate by remember { mutableStateOf(LocalDate.now().minusDays(1).toString()) }
+    // Default to TODAY: the morning import targets last night, whose WAKE date (Garmin's
+    // calendarDate) is today. Yesterday's default silently imported the night before the
+    // one wanted (2026-11-23 morning incident).
+    var importDate by remember { mutableStateOf(LocalDate.now().toString()) }
+    var hcImportDate by remember { mutableStateOf(LocalDate.now().toString()) }
     var showStartPicker by remember { mutableStateOf(false) }
     var showEndPicker by remember { mutableStateOf(false) }
 
