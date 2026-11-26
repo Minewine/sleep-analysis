@@ -73,7 +73,8 @@ class HomeViewModel @Inject constructor(
     val monitorState: StateFlow<MonitorState> = stateHolder.state
 
     // Recording controls (design: recording controls): the start button gates on the master
-    // switch; the schedule row shows the next armed bedtime start.
+    // switch; the schedule row shows the next armed bedtime start, or an explicit off-state
+    // while the schedule is off.
     val recordingEnabled: StateFlow<Boolean> = prefs.recordingEnabled
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
 
@@ -85,6 +86,10 @@ class HomeViewModel @Inject constructor(
 
     private val _nextScheduledStart = MutableStateFlow<ZonedDateTime?>(null)
     val nextScheduledStart: StateFlow<ZonedDateTime?> = _nextScheduledStart.asStateFlow()
+
+    /** Flips true on the first schedule read: until then the Home schedule row stays hidden. */
+    private val _scheduleResolved = MutableStateFlow(false)
+    val scheduleResolved: StateFlow<Boolean> = _scheduleResolved.asStateFlow()
 
     val sessions: StateFlow<List<SleepSessionEntity>> = sessionRepository.observeSessions()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
@@ -225,6 +230,7 @@ class HomeViewModel @Inject constructor(
     fun refreshSchedule() {
         viewModelScope.launch {
             _nextScheduledStart.value = scheduler.nextStartOrNull(ZonedDateTime.now())
+            _scheduleResolved.value = true
         }
     }
 

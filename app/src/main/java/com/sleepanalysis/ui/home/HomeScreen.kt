@@ -82,8 +82,11 @@ fun HomeScreen(
     val interrupted by viewModel.interrupted.collectAsStateWithLifecycle()
     val experimentChip by viewModel.experimentChip.collectAsStateWithLifecycle()
     val recordingEnabled by viewModel.recordingEnabled.collectAsStateWithLifecycle()
+    // scheduleEnabled is not rendered here, but this subscription is what keeps the ViewModel's
+    // WhileSubscribed flow reading preferences — shouldConfirmStopNow() reads its value.
     val scheduleEnabled by viewModel.scheduleEnabled.collectAsStateWithLifecycle()
     val nextScheduledStart by viewModel.nextScheduledStart.collectAsStateWithLifecycle()
+    val scheduleResolved by viewModel.scheduleResolved.collectAsStateWithLifecycle()
     val missedNight by viewModel.missedNight.collectAsStateWithLifecycle()
     val context = LocalContext.current
 
@@ -183,9 +186,15 @@ fun HomeScreen(
                     (preFlight?.storageOk ?: true) &&
                     canStartNewSession(state),
             )
-            val nextStart = nextScheduledStart
-            if (scheduleEnabled && recordingEnabled && nextStart != null) {
-                ScheduleRow(nextStart = nextStart, onSkip = viewModel::skipTonight)
+            val rowState = scheduleRowState(
+                scheduleResolved = scheduleResolved,
+                recordingEnabled = recordingEnabled,
+                armedStart = nextScheduledStart,
+            )
+            when (rowState) {
+                ScheduleRowState.Hidden -> Unit
+                ScheduleRowState.Off -> ScheduleOffRow(onOpenSettings = onOpenSettings)
+                is ScheduleRowState.Armed -> ScheduleRow(nextStart = rowState.nextStart, onSkip = viewModel::skipTonight)
             }
             (state as? MonitorState.StartError)?.let {
                 Text(
@@ -364,6 +373,23 @@ private fun ScheduleRow(nextStart: ZonedDateTime, onSkip: () -> Unit) {
     }
 }
 
+/** Schedule row's off-state: says so, and offers the shortcut to Settings (design: recording controls). */
+@Composable
+private fun ScheduleOffRow(onOpenSettings: () -> Unit) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            stringResource(R.string.home_schedule_off),
+            style = MaterialTheme.typography.bodyMedium,
+            modifier = Modifier.weight(1f),
+        )
+        TextButton(onClick = onOpenSettings) { Text(stringResource(R.string.home_schedule_enable)) }
+    }
+}
+
 @Composable
 private fun MicIndicator(visible: Boolean) {
     // Visible microphone-active indication (docs/PRIVACY_AND_REGULATORY.md §6 requirement).
@@ -481,6 +507,30 @@ internal fun captureWindowLabel(
     val end = endedAt ?: return null
     val startMs = CaptureStats.parse(captureStatsJson)?.captureStartMs?.takeIf { it > 0 } ?: startedAt
     return Formatting.time(startMs) to Formatting.time(end)
+}
+
+/**
+ * What the Home schedule row shows (design: recording controls). Hidden until the first
+ * schedule read completes — until then an off schedule and a not-yet-read one look alike, and
+ * an on-schedule user must never see the off-row flash — and hidden whenever recording is
+ * disabled. Otherwise the scheduler's answer decides: an armed start is shown, null (what it
+ * answers when the schedule is off) is the explicit off-state. 2026-11-23: a row that vanished
+ * without a trace read as the feature being removed, and a night went unrecorded.
+ */
+internal sealed interface ScheduleRowState {
+    data object Hidden : ScheduleRowState
+    data object Off : ScheduleRowState
+    data class Armed(val nextStart: ZonedDateTime) : ScheduleRowState
+}
+
+internal fun scheduleRowState(
+    scheduleResolved: Boolean,
+    recordingEnabled: Boolean,
+    armedStart: ZonedDateTime?,
+): ScheduleRowState = when {
+    !scheduleResolved -> ScheduleRowState.Hidden
+    !recordingEnabled -> ScheduleRowState.Hidden
+    else -> armedStart?.let(ScheduleRowState::Armed) ?: ScheduleRowState.Off
 }
 
 /**

@@ -60,6 +60,8 @@
     <string name="home_schedule_next_tonight">Scheduled start tonight at %1$s</string>
     <string name="home_schedule_next">Next scheduled start: %1$s</string>
     <string name="home_schedule_skip">Skip tonight</string>
+    <string name="home_schedule_off">Scheduled start is off — recording starts manually.</string>
+    <string name="home_schedule_enable">Turn on in Settings</string>
     <string name="home_capture_window">Captured %1$s – %2$s</string>
     <!-- Missed-night banner: calm absence made visible; skipped/recorded nights show nothing. -->
     <string name="home_missed_night_title">No recording last night</string>
