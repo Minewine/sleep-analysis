@@ -41,9 +41,9 @@ sealed interface MissedNightResult {
 object MissedNightPolicy {
 
     /**
-     * Night-like threshold — mirrors ReportAssembler.PreviousNight.NIGHT_LIKE_MIN_IN_BED_MS
-     * (kept equal; the test pins the two together). Kept here because the report package
-     * already depends on the policy package, never the reverse.
+     * Night-like threshold — the ONE copy (plan T4i); ReportAssembler.PreviousNight
+     * references it. Kept here because the report package depends on the policy package,
+     * never the reverse.
      */
     const val NIGHT_LIKE_MIN_IN_BED_MS: Long = 4 * 3_600_000L
 

@@ -30,6 +30,14 @@ class OrphanSweepPolicyTest {
     }
 
     @Test
+    fun `negative ages from a bogus clock are never swept — map defect D-07 locked here`() {
+        // Future timestamps (bogus clock) yield negative ages; the existing >= MIN_FILE_AGE_MS
+        // bound already rejects them — pinned so it stays that way.
+        assertFalse(OrphanSweepPolicy.shouldSweep(openSessionCount = 0, fileAgeMs = -1L))
+        assertFalse(OrphanSweepPolicy.shouldSweep(openSessionCount = 0, fileAgeMs = -3_600_000L))
+    }
+
+    @Test
     fun `the hour boundary itself is sweepable`() {
         assertTrue(
             OrphanSweepPolicy.shouldSweep(openSessionCount = 0, fileAgeMs = OrphanSweepPolicy.MIN_FILE_AGE_MS),

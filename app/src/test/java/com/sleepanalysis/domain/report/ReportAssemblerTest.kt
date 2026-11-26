@@ -2,7 +2,6 @@ package com.sleepanalysis.domain.report
 
 import com.sleepanalysis.data.db.entity.AcousticEventEntity
 import com.sleepanalysis.data.db.entity.AudioClipEntity
-import com.sleepanalysis.data.db.entity.ClinicalBaselineEntity
 import com.sleepanalysis.data.db.entity.EventType
 import com.sleepanalysis.data.db.entity.SessionStatus
 import com.sleepanalysis.data.db.entity.SleepSessionEntity
@@ -27,9 +26,9 @@ class ReportAssemblerTest {
             endedAt = endedAt,
             status = status,
             timeZone = "Europe/Zurich",
-            deviceModel = "Test",
-            osVersion = "30",
-            appVersion = "0.1.0",
+            
+            
+            
         )
 
     private fun snoreEvent(id: Long, offsetMs: Long, durationMs: Long, tier: String) =
@@ -138,7 +137,7 @@ class ReportAssemblerTest {
         assertTrue(report.integrityNotes.first().contains("Resumed after an interruption"))
         assertEquals(2, report.integrityNotes.size)
 
-        val fresh = ReportAssembler.assemble(session(), emptyList(), emptyList(), emptyList())!!
+        val fresh = ReportAssembler.assemble(session(), emptyList(), emptyList())!!
         assertTrue(fresh.integrityNotes.isEmpty())
     }
 
@@ -153,7 +152,7 @@ class ReportAssemblerTest {
             GarminMetric("VENDOR_HRV_RMSSD", 45.0, "MS", t0),
             GarminMetric("VENDOR_SLEEP_DURATION", 26460.0, "SECONDS", t0),
         )
-        val report = ReportAssembler.assemble(session(), emptyList(), emptyList(), emptyList(), garmin)!!
+        val report = ReportAssembler.assemble(session(), emptyList(), emptyList(), garmin = garmin)!!
         assertEquals(2, report.garmin.size)
         assertEquals("VENDOR_HRV_RMSSD", report.garmin[0].measurementType)
         // Garmin metrics never feed the acoustic snore score.
@@ -274,19 +273,6 @@ class ReportAssemblerTest {
         assertEquals(1L, report.loudestEpisodes[0].clip!!.eventId)
         assertEquals(-25.0, report.loudestEpisodes[1].peakDbfs, 0.0001)
         assertEquals(null, report.loudestEpisodes[1].clip)
-    }
-
-    @Test
-    fun `clinical baseline rides along as context`() {
-        val baseline = listOf(
-            ClinicalBaselineEntity(
-                id = 1, studyDate = "2026-01-12", lab = "HUG", studyType = "PSG",
-                ahiPerHour = 17.6, totalSleepTimeMinutes = 334,
-            ),
-        )
-        val report = ReportAssembler.assemble(session(), emptyList(), emptyList(), baseline)!!
-        assertEquals(1, report.baseline.size)
-        assertEquals(17.6, report.baseline[0].ahiPerHour!!, 0.0001)
     }
 
     // ---- display filtering: low-confidence OTHER_NOISE (docs/NIGHT_REPORT.md) ----
@@ -485,16 +471,16 @@ class ReportAssemblerTest {
     @Test
     fun `garmin status reflects payload presence`() {
         val metricsOnly = ReportAssembler.assemble(
-            session(), emptyList(), emptyList(), emptyList(),
+            session(), emptyList(), emptyList(),
             garmin = listOf(GarminMetric("VENDOR_HRV_RMSSD", 45.0, "MS", t0)),
         )!!
         assertEquals(GarminLinkStatus.METRICS_ONLY, metricsOnly.garminStatus)
 
-        val missing = ReportAssembler.assemble(session(), emptyList(), emptyList(), emptyList())!!
+        val missing = ReportAssembler.assemble(session(), emptyList(), emptyList())!!
         assertEquals(GarminLinkStatus.MISSING, missing.garminStatus)
 
         val linked = ReportAssembler.assemble(
-            session(), emptyList(), emptyList(), emptyList(),
+            session(), emptyList(), emptyList(),
             garmin = listOf(GarminMetric("VENDOR_HRV_RMSSD", 45.0, "MS", t0)),
             garminSleep = GarminSleepSummary("2026-11-06", t0, t0 + 1, 71.0, 1, t0, t0 + 1),
         )!!
@@ -670,7 +656,7 @@ class ReportAssemblerTest {
     @Test
     fun `metrics-only nights have no sleep summary to normalize (line absent)`() {
         val report = ReportAssembler.assemble(
-            session(), emptyList(), emptyList(), emptyList(),
+            session(), emptyList(), emptyList(),
             garmin = listOf(GarminMetric("VENDOR_HRV_RMSSD", 45.0, "MS", t0)),
         )!!
         assertEquals(GarminLinkStatus.METRICS_ONLY, report.garminStatus)

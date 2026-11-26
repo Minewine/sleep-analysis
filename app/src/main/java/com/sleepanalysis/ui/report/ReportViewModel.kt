@@ -1,7 +1,6 @@
 package com.sleepanalysis.ui.report
 
 import android.content.Context
-import android.media.MediaPlayer
 import android.util.Log
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
@@ -88,8 +87,8 @@ internal fun refreshHealthConnectGateOpen(
  * Pure outcome check for the "stage timeline not available yet" line: neither Health Connect
  * nor Garmin produced stage rows for this night even after the refresh — the timeline is
  * expected around wake time and may land later, so the honest line is "try again later",
- * not a failure. The vendor stage totals alone do not count (they can survive while the
- * timeline aged out).
+ * not a failure. Non-empty vendor stage totals alone satisfy the check (they can
+ * survive while the timeline aged out).
  */
 internal fun stagesStillMissing(hasStageTimeline: Boolean, garminStageMinutes: Map<String, Long>): Boolean =
     !hasStageTimeline && garminStageMinutes.isEmpty()
@@ -526,46 +525,17 @@ class ReportViewModel @Inject constructor(
     private val _playingEventId = MutableStateFlow<Long?>(null)
     val playingEventId: StateFlow<Long?> = _playingEventId.asStateFlow()
 
-    private var mediaPlayer: MediaPlayer? = null
+    // One shared clip player (plan T4e) — stop-then-play, release on completion/failure/clear.
+    private val clipPlayer = com.sleepanalysis.ui.components.ClipPlayer { _playingEventId.value = it }
 
     fun clipFile(clip: ClipRef): File = clipStore.absolutePath(clip.filePath)
 
-    fun playClip(clip: ClipRef) {
-        stopPlayback()
-        val file = clipFile(clip)
-        if (!file.exists()) return
-        runCatching {
-            mediaPlayer = MediaPlayer().apply {
-                setDataSource(file.absolutePath)
-                setOnCompletionListener {
-                    _playingEventId.value = null
-                    releasePlayer()
-                }
-                prepare()
-                start()
-            }
-            _playingEventId.value = clip.eventId
-        }.onFailure {
-            _playingEventId.value = null
-            releasePlayer()
-        }
-    }
+    fun playClip(clip: ClipRef) = clipPlayer.play(clip.eventId, clipFile(clip))
 
-    fun stopPlayback() {
-        runCatching {
-            mediaPlayer?.stop()
-        }
-        releasePlayer()
-        _playingEventId.value = null
-    }
-
-    private fun releasePlayer() {
-        runCatching { mediaPlayer?.release() }
-        mediaPlayer = null
-    }
+    fun stopPlayback() = clipPlayer.stopPlayback()
 
     override fun onCleared() {
-        releasePlayer()
+        clipPlayer.release()
         super.onCleared()
     }
 }

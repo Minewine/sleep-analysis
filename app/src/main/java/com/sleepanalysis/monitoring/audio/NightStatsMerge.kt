@@ -49,6 +49,19 @@ data class StatsCarry(
     }
 }
 
+/**
+ * The ONE monitoring.audio → domain bucket mapping (plan T4j) — used by AudioEngine.stats;
+ * the merge carries already-domain buckets verbatim.
+ */
+internal fun AmbientLevelBuckets.Bucket.toDomainBucket(): AmbientLevelBucket =
+    AmbientLevelBucket(
+        startMs = startMs,
+        endMs = endMs,
+        meanDbfs = meanDbfs,
+        coveredMs = coveredMs,
+        dbfsVariance = dbfsVariance,
+    )
+
 /** Adds pre-restart counters from [carry] (null = fresh session, nothing to carry). */
 fun AudioEngine.NightStats.withCarry(carry: StatsCarry?): AudioEngine.NightStats {
     if (carry == null) return this
@@ -60,19 +73,9 @@ fun AudioEngine.NightStats.withCarry(carry: StatsCarry?): AudioEngine.NightStats
         spectralSkipped = spectralSkipped + carry.spectralSkipped,
         skippedHopSpans = (carry.skippedHopSpans + skippedHopSpans).sortedBy { it.startEpochMs },
         clientSilencedSpans = (carry.clientSilencedSpans + clientSilencedSpans).sortedBy { it.startEpochMs },
-        // The current engine's buckets arrive as monitoring.audio types — carried as the
-        // domain type the capture stats (and the gap classification) consume.
-        ambientBuckets = (
-            carry.ambientBuckets + ambientBuckets.map {
-                AmbientLevelBucket(
-                    startMs = it.startMs,
-                    endMs = it.endMs,
-                    meanDbfs = it.meanDbfs,
-                    coveredMs = it.coveredMs,
-                    dbfsVariance = it.dbfsVariance,
-                )
-            }
-            ).sortedBy { it.startMs },
+        // The current engine's buckets are already the domain type the capture stats (and
+        // the gap classification) consume — no re-mapping (plan T4j: one mapping, in stats()).
+        ambientBuckets = (carry.ambientBuckets + ambientBuckets).sortedBy { it.startMs },
     )
 }
 

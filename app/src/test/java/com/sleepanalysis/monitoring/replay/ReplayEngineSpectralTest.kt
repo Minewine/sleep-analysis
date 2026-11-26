@@ -5,6 +5,7 @@ import com.sleepanalysis.monitoring.detection.DetectionResult
 import com.sleepanalysis.monitoring.detection.EnergySnoreDetector
 import com.sleepanalysis.monitoring.detection.SnoreDetector
 import com.sleepanalysis.monitoring.features.SpectralFeatures
+import com.sleepanalysis.monitoring.features.compute
 import kotlin.math.PI
 import kotlin.math.log10
 import kotlin.math.sin

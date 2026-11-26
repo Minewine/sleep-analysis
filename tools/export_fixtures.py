@@ -39,12 +39,17 @@ APP_PACKAGE = "com.sleepanalysis"
 DB_NAME = "sleepanalysis.db"
 CLIPS_DIR = "files/clips"
 
-QUERY = """
+# Shared pure helpers live in analysis/tooling.py; not a package, so insert.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "analysis"))
+from tooling import CLIP_JOIN_SQL
+from tooling import detect_serial as _detect_serial
+
+QUERY = f"""
     SELECT e.id, e.sessionId, e.type, e.startMs, e.offsetMs, e.durationMs,
            e.peakDbfs, e.meanDbfs, e.intensityTier, e.confidence,
-           e.userLabel, e.labeledAt, e.featuresJson, c.filePath
+           e.userLabel, e.featuresJson, c.filePath
     FROM acoustic_event e
-    LEFT JOIN audio_clip c ON c.eventId = e.id
+    LEFT JOIN {CLIP_JOIN_SQL}
     WHERE e.sessionId = ? AND c.filePath IS NOT NULL
 """
 
@@ -54,27 +59,10 @@ def adb_device_args(serial: str | None) -> list[str]:
 
 
 def detect_serial() -> str | None:
-    """First attached device with the app installed; None if unambiguous (0-1 devices)."""
-    out = subprocess.run(
-        ["adb", "devices"], check=True, capture_output=True, text=True
-    ).stdout
-    serials = [
-        line.split()[0]
-        for line in out.splitlines()[1:]
-        if line.strip() and line.split()[1] == "device"
-    ]
-    if len(serials) <= 1:
-        return serials[0] if serials else None
-    for serial in serials:
-        installed = subprocess.run(
-            ["adb", "-s", serial, "shell", "pm", "list", "packages", APP_PACKAGE],
-            capture_output=True,
-            text=True,
-            check=False,  # non-zero is just "device lacks the package"
-        )
-        if APP_PACKAGE in installed.stdout:
-            return serial
-    return None
+    """Shared helper — see analysis/tooling.py (single source for the
+    formerly triplicated copy); re-exported here for the tools that
+    import transfer helpers from this module."""
+    return _detect_serial()
 
 
 def pull_db(serial: str | None, work_dir: Path) -> Path:

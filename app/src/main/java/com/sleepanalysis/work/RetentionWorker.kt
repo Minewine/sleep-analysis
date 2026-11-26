@@ -21,7 +21,7 @@ import kotlinx.coroutines.withContext
 
 /**
  * Daily retention job (docs/DATA_MODEL.md §6): clips expire before sessions, sessions before
- * measurements; measurements and the clinical baseline persist until the user deletes them.
+ * measurements; measurements persist until the user deletes them.
  */
 @HiltWorker
 class RetentionWorker @AssistedInject constructor(

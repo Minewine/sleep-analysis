@@ -277,6 +277,7 @@ class AudioEngine(
         levelGateSkipped = 0
         spectralSkipped = 0
         lastBudgetLogBucket = Long.MIN_VALUE
+        lastCooldownLogBucket = Long.MIN_VALUE
         clipBytes = 0
         skippedHops.reset()
         captureStartEpochMs = 0L
@@ -324,15 +325,7 @@ class AudioEngine(
             levelGateSkipped = levelGateSkipped,
             spectralSkipped = spectralSkipped,
             skippedHopSpans = skippedHops.spans(),
-            ambientBuckets = ambientBuckets.snapshot().map {
-                com.sleepanalysis.domain.report.AmbientLevelBucket(
-                    startMs = it.startMs,
-                    endMs = it.endMs,
-                    meanDbfs = it.meanDbfs,
-                    coveredMs = it.coveredMs,
-                    dbfsVariance = it.dbfsVariance,
-                )
-            },
+            ambientBuckets = ambientBuckets.snapshot().map { it.toDomainBucket() },
             clientSilencedSpans = synchronized(silencedLock) { clientSilencedSpanList.toList() },
         )
     }
@@ -651,6 +644,10 @@ class AudioEngine(
                                     // A failed clip write must never break the capture loop or drop the event.
                                     listener.onLog("clip_write_failed", "${it.javaClass.simpleName}: ${it.message}")
                                 }
+                            } else {
+                                // Empty snapshot (horizon-passed but ring held nothing writable):
+                                // log it — no budget is booked on this path.
+                                listener.onLog("clip_snapshot_empty", "type=${draft.type} endMs=${draft.endMs}")
                             }
                         } else {
                             listener.onLog(

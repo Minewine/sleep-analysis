@@ -33,8 +33,8 @@ class TrendAssemblerTest {
         captureStats: String? = """{"schema_version":2,"windows_processed":40000}""",
     ) = SleepSessionEntity(
         id = nextId++, startedAt = startedAt, endedAt = startedAt + 8 * 3_600_000L,
-        status = status, timeZone = "Europe/Zurich", deviceModel = "Test",
-        osVersion = "30", appVersion = "0.1.0", captureStats = captureStats,
+        status = status, timeZone = "Europe/Zurich", 
+        captureStats = captureStats,
     )
 
     private fun garmin(sessionId: Long, type: String, value: Double) = MeasurementEntity(
@@ -376,7 +376,7 @@ class TrendAssemblerTest {
         val open = SleepSessionEntity(
             id = 99, startedAt = today.minusDays(1).atTime(23, 0).atZone(zone).toInstant().toEpochMilli(),
             endedAt = null, status = SessionStatus.RECORDING, timeZone = zone.id,
-            deviceModel = "Test", osVersion = "30", appVersion = "0.1.0",
+            
         )
         val merged = TrendAssembler.injectMissedNights(rows, listOf(open), emptySet(), today, zone)
         assertEquals(0, merged.count { it.missed && it.startedAt == midnightMs(today) })
@@ -439,8 +439,8 @@ class TrendAssemblerTest {
             id = nextId++,
             startedAt = today.minusDays(1).atTime(16, 0).atZone(utc).toInstant().toEpochMilli(),
             endedAt = today.minusDays(1).atTime(23, 30).atZone(utc).toInstant().toEpochMilli(),
-            status = SessionStatus.COMPLETED, timeZone = utc.id, deviceModel = "Test",
-            osVersion = "30", appVersion = "0.1.0",
+            status = SessionStatus.COMPLETED, timeZone = utc.id, 
+            
             captureStats = """{"schema_version":2,"windows_processed":40000}""",
         )
         val rows = TrendAssembler.assemble(listOf(utcNight), emptyMap(), emptyMap(), emptyMap())

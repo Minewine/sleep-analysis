@@ -225,10 +225,8 @@ class MeasurementRecorder @Inject constructor(
         }
 
         object Methods {
-            const val CLINICAL_MEASURED = "CLINICAL_MEASURED"
             const val ALGORITHM_ESTIMATED = "ALGORITHM_ESTIMATED"
             const val DEVICE_REPORTED = "DEVICE_REPORTED"
-            const val USER_REPORTED = "USER_REPORTED"
         }
 
         /** Notes flag marking a measurement rewritten by a user-label recompute (§7.1). */

@@ -7,8 +7,7 @@ import org.junit.Test
  * The skip-history mirroring rule (UserPreferences.setScheduleSkipEpochDay): every skip write
  * adds its epoch day to an additive string set, and the read side parses the strings back,
  * dropping malformed entries. The DataStore itself needs an Android context and lives behind
- * instrumentation, so the pure seam is pinned here — same discipline as
- * [UserPreferencesDefaultsTest].
+ * instrumentation, so the pure seam is pinned here.
  */
 class ScheduleSkipHistoryTest {
 

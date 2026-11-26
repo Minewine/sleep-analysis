@@ -25,18 +25,20 @@ erDiagram
 Two write paths exist, both through `MeasurementRecorder` ([ARCHITECTURE.md](ARCHITECTURE.md) §6):
 
 - **Session pipeline** (phone): AcousticEvent → Measurement → Report.
-- **Entry/import paths**: clinical baseline (read-only form), user factors (form), wearable imports (Phase 3) — all landing as Measurement rows with their own source/method.
+- **Entry/import paths**: user factors (report-side morning card; the standalone form was removed in the 2026-11-22 consolidation), wearable imports (Garmin Personal API + Health Connect, shipped) — landing as Measurement rows (or `sleep_stage` rows for HC stages) with their own source/method.
 
 ## 2. Conventions
 
 - Timestamps: Unix epoch **milliseconds, UTC** (`Long`). Session-local times additionally stored as `offset_ms` from session start (timeline rendering across midnight/DST).
 - Enums stored as `TEXT` (debuggability) with Room type converters.
 - Booleans as `INTEGER`. Free-form structure as JSON `TEXT` with a `schema_version` alongside.
-- All tables: `created_at` epoch ms; `updated_at` where mutable.
+- All tables: `created_at` epoch ms where a write-time stamp is meaningful; **no** `updated_at` column exists anywhere (migration 15→16 removed the write-only `createdAt` columns from `acoustic_event` and `quiet_gap`).
 
 ## 3. Core entities
 
-### 3.1 `clinical_baseline` — one row per study night (immutable)
+### 3.1 `clinical_baseline` — REMOVED (migration 15→16, 2026-11-22 consolidation)
+
+The table, its DAO, its screen, and the two immutability triggers were dropped (task T7; see §4). Historical note: it stored one row per HUG study night (Phase 1 data: TST 5h34m–7h35m; efficiency 70–91%; arousal index 27.0–31.9/h; N3 7–15%; AHI 17.6).
 
 | Column | Type | Notes |
 |---|---|---|
@@ -63,36 +65,35 @@ One row per metric value. This is the table all longitudinal analysis (Phase 4+)
 | Column | Type | Notes |
 |---|---|---|
 | `id` | Long PK | |
-| `session_id` | Long? FK → sleep_session, **ON DELETE SET NULL** | Null for clinical/user/period rows; survives session deletion |
-| `baseline_id` | Long? FK → clinical_baseline | *Planned, not in the implemented table* — clinical values live in `clinical_baseline` (§3.1); mirroring into `measurement` is a Phase 4+ option |
-| `source_type` | TEXT enum | `CLINICAL` / `PHONE` / `USER` / `GARMIN` (implemented) · `WEARABLE` reserved for Health Connect on this table (the HC import writes no measurement rows — its provenance lives on `sleep_stage.source`, schema v14, §3.10) |
+| `sessionId` | Long? FK → sleep_session, **ON DELETE SET NULL** | Null for user/period rows; survives session deletion |
+| `sourceType` | TEXT enum | `CLINICAL` / `PHONE` / `USER` / `GARMIN` (implemented) · `WEARABLE` reserved for Health Connect on this table (the HC import writes no measurement rows — its provenance lives on `sleep_stage.source`, schema v14, §3.10) |
 | `method` | TEXT enum | `CLINICAL_MEASURED` / `ALGORITHM_ESTIMATED` / `DEVICE_REPORTED` / `USER_REPORTED` |
-| `measurement_type` | TEXT enum | See §3.3 |
+| `measurementType` | TEXT enum | See §3.3 |
 | `tier` | TEXT enum | `ESTABLISHED` / `EXPERIMENTAL` — validated against `ClaimPolicy` at write time; Tier 3 types are rejected |
-| `value_num` | REAL? | Numeric value |
-| `value_text` | TEXT? | Non-numeric values |
+| `valueNum` | REAL? | Numeric value |
+| `valueText` | TEXT? | Non-numeric values |
 | `unit` | TEXT enum | `SECONDS` / `MINUTES` / `PERCENT` / `COUNT` / `PER_HOUR` / `DBFS` / `INDEX_0_100` / `INDEX_0_10` / `MS` / `BPM` / `BREATHS_PER_MINUTE` |
-| `is_clinical` | Bool | True only for clinical-source rows — SQL triggers + recorder logic key on it |
+| `isClinical` | Bool | True only for clinical-source rows (legacy rows; recorder logic keys on it — the SQL triggers that also keyed on it were dropped with `clinical_baseline` in 15→16) |
 | `confidence` | REAL? | 0–1, nullable (user/clinical rows typically null) |
-| `model_version` | TEXT? | Model identity stamped at write time — currently the `energy-heuristic-v3-peakgate` constant (v1-spectral on pre-v2 rows; `+dbg1` suffix when the debug enter-windows toggle was active). The FK to `model_registry` applies once the registry exists (§3.8, Phase 2) |
-| `period_start` / `period_end` | Long? | For period-scoped rows (e.g., per-hour, weekly) |
+| `modelVersion` | TEXT? | Model identity stamped at write time — currently the `energy-heuristic-v3-peakgate` constant (older rows carry their era's detector string; `+dbg1` suffix when the debug enter-windows toggle was active). No `model_id`/registry-FK column exists; the temporal registry (§3.8) is written at finalize, not referenced from rows |
+| `periodStart` / `periodEnd` | Long? | For period-scoped rows (e.g., per-hour, weekly) |
 | `notes` | TEXT? | |
 | `timestamp` | Long | When the value occurred (event/measurement time — not row-write time) |
-| `created_at` | Long | When the row was written |
+| `createdAt` | Long | When the row was written |
 
-**Indices (implemented):** `(measurement_type, period_start)`, `(session_id)`, `(source_type, method)`.
+**Indices (implemented):** `(measurementType, periodStart)`, `(sessionId)`, `(sourceType, method)`.
 
 **Example rows (as written by the implemented code):**
 
-| session_id | source | method | type | tier | value | unit | model |
+| sessionId | source | method | type | tier | value | unit | model |
 |---|---|---|---|---|---|---|---|
-| 401 | PHONE | ALGORITHM_ESTIMATED | SNORE_TIME | ESTABLISHED | 812 | SECONDS | energy-heuristic-v1-spectral |
-| 401 | PHONE | ALGORITHM_ESTIMATED | SNORE_INTENSITY_PEAK | ESTABLISHED | -14.2 | DBFS | energy-heuristic-v1-spectral |
-| 401 | PHONE | ALGORITHM_ESTIMATED | NOISE_MEDIAN | ESTABLISHED | -31.5 | DBFS | energy-heuristic-v1-spectral |
+| 401 | PHONE | ALGORITHM_ESTIMATED | SNORE_TIME | ESTABLISHED | 812 | SECONDS | energy-heuristic-v3-peakgate |
+| 401 | PHONE | ALGORITHM_ESTIMATED | SNORE_INTENSITY_PEAK | ESTABLISHED | -14.2 | DBFS | energy-heuristic-v3-peakgate |
+| 401 | PHONE | ALGORITHM_ESTIMATED | NOISE_MEDIAN | ESTABLISHED | -31.5 | DBFS | energy-heuristic-v3-peakgate |
 | 401 | GARMIN | DEVICE_REPORTED | VENDOR_HRV_RMSSD | ESTABLISHED | 48 | MS | null |
 | null | USER | USER_REPORTED | ALCOHOL_UNITS | ESTABLISHED | 2 | COUNT | null |
 
-Clinical baseline values (e.g., AHI 17.6) currently live in `clinical_baseline` (§3.1) with their own provenance columns — they are **not** mirrored into `measurement` today.
+(The retired `clinical_baseline` never mirrored into `measurement`; its AHI/TST values were written directly to that table, removed in 15→16.)
 
 ### 3.3 `measurement_type` registry (extensible enum, enforced in `ClaimPolicy`)
 
@@ -111,14 +112,14 @@ Clinical baseline values (e.g., AHI 17.6) currently live in `clinical_baseline` 
 | Column | Type | Notes |
 |---|---|---|
 | `id` | Long PK | |
-| `started_at` / `ended_at` | Long, `ended_at` nullable | Null ended_at ⇒ in progress / interrupted |
+| `startedAt` / `endedAt` | Long, `endedAt` nullable | Null endedAt ⇒ in progress / interrupted |
 | `status` | TEXT enum | `COMPLETED` / `INTERRUPTED` / `RECOVERED` |
-| `time_zone` | TEXT | IANA id at session start |
-| `device_model`, `os_version`, `app_version` | TEXT | Reproducibility |
-| `capture_stats` | TEXT (JSON, v2) | See §5.1 |
-| `audio_bytes_total` | Long | Clip bytes written |
-| `morning_notes` | TEXT (schema v6) | Short user note added after the night. User-entered context, never a measurement; **included in exports** |
-| `resumed_after_interruption` | Bool (schema v7) | Set when START_STICKY resumed an open session after mid-night process death: capture was **not** continuous. The morning report leads its integrity notes with it. `RECOVERED` status covers the opposite outcome (death with no resume) |
+| `timeZone` | TEXT | IANA id at session start |
+| `captureStats` | TEXT (JSON, v2) | See §5.1 |
+| `morningNotes` | TEXT (schema v6) | Short user note added after the night. User-entered context, never a measurement; **included in exports** |
+| `resumedAfterInterruption` | Bool (schema v7, DEFAULT 0) | Set only by the explicit **Resume** action on the interrupted-night banner: the user chose to continue a session whose capture was **not** continuous (a START_STICKY restart does *not* set it — capture never auto-resumes; `StartIntentPolicy` refuses the background restart). The morning report leads its integrity notes with it. `RECOVERED` status covers the opposite outcome (death with no resume) |
+
+(Write-only reproducibility columns — `deviceModel`, `osVersion`, `appVersion`, `audioBytesTotal` — were dropped in migration 15→16.)
 
 ### 3.5 `acoustic_event` and `audio_clip`
 
@@ -127,33 +128,32 @@ Clinical baseline values (e.g., AHI 17.6) currently live in `clinical_baseline` 
 | Column | Type | Notes |
 |---|---|---|
 | `id` | Long PK | |
-| `session_id` | Long FK, **ON DELETE CASCADE** | |
+| `sessionId` | Long FK, **ON DELETE CASCADE** | |
 | `type` | TEXT enum | Phase 1: `SNORE` / `COUGH` / `SPEECH` / `LOUD_BREATHING` / `OTHER_NOISE` / `UNKNOWN`. Phase 2 adds experimental types (`GASP_LIKE`, `BREATHING_PAUSE_CANDIDATE`) — Tier 2 only |
-| `start_ms`, `end_ms` | Long | Epoch |
-| `offset_ms`, `duration_ms` | Long | Session-local, derived-but-stored for queries |
-| `peak_dbfs`, `mean_dbfs` | REAL | Relative intensity only ([MEASUREMENT_RELIABILITY.md](MEASUREMENT_RELIABILITY.md) M2) |
-| `intensity_tier` | TEXT enum | `QUIET` / `LIGHT` / `LOUD` / `EPIC` |
-| `confidence` | REAL | Model probability at peak |
-| `model_version` | TEXT | Detector identity (e.g. `energy-heuristic-v2-burst`; v1-spectral on pre-2026-11-06 rows); no model_id/registry FK yet (§3.8) |
-| `clip_id` | Long? FK → audio_clip | |
-| `user_label` | TEXT? | User-corrected class from clip playback: `SNORE` / `COUGH` / `SPEECH` / `MOVEMENT` / `OTHER_NOT_SNORE` / `SILENCE` (nothing real on the clip) — the personal labeled dataset Phase 2 model improvement trains against. **Since `snore-score-v3` (2026-11-08) labels also re-weigh the night's aggregates**: a non-SNORE label excludes the event from every snore aggregate, `SNORE` includes it, no label keeps the detector's class (`SnoreMath.eventsCountingAsSnore`) — the session's snore-aggregate PHONE rows are recomputed and rewritten on label save, flagged `label_corrected=true` in notes (§3.2). The stored `type` column is never changed |
-| `labeled_at` | Long? | When the user applied the label (schema v4) — distinguishes label age when curating training data |
-| `features_json` | TEXT? | The detection model's decision inputs as JSON (schema v5; for `energy-heuristic-v1-spectral`: `enter_windows`, `exit_windows`, `open_windows`, `close_windows`, `snr_peak_db`, `snr_mean_db`, `low_band_ratio_peak`, `low_band_ratio_mean`, `noise_floor_dbfs`, `spectral_flatness_mean`, `harmonic_ratio_mean` — the v0 rows predate `exit/open/close_windows` (added schema v7 era, 2026-11-02), and rows recorded before 2026-11-05 lack the two spectral means (absent key = null on parse)). Debug visibility of detector decisions — never a measurement, never rendered as clinical |
+| `startMs`, `endMs` | Long | Epoch |
+| `offsetMs`, `durationMs` | Long | Session-local, derived-but-stored for queries |
+| `peakDbfs`, `meanDbfs` | REAL | Relative intensity only ([MEASUREMENT_RELIABILITY.md](MEASUREMENT_RELIABILITY.md) M2) |
+| `intensityTier` | TEXT enum | `QUIET` / `LIGHT` / `LOUD` / `EPIC` |
+| `confidence` | REAL | Detector confidence at peak |
+| `modelVersion` | TEXT | Detector identity (e.g. `energy-heuristic-v3-peakgate`; older rows carry their era's string); no model_id/registry FK column (§3.8) |
+| `clipId` | Long? FK → audio_clip | |
+| `userLabel` | TEXT? | User-corrected class from clip playback: `SNORE` / `COUGH` / `SPEECH` / `MOVEMENT` / `OTHER_NOT_SNORE` / `SILENCE` (nothing real on the clip) — the personal labeled dataset Phase 2 model improvement trains against. **Since `snore-score-v3` (2026-11-08) labels also re-weigh the night's aggregates**: a non-SNORE label excludes the event from every snore aggregate, `SNORE` includes it, no label keeps the detector's class (`SnoreMath.eventsCountingAsSnore`) — the session's snore-aggregate PHONE rows are recomputed and rewritten on label save, flagged `label_corrected=true` in notes (§3.2). The stored `type` column is never changed. (The separate `labeledAt` timestamp column was dropped in 15→16) |
+| `featuresJson` | TEXT? | The detection model's decision inputs as JSON (schema v5; for `energy-heuristic-v1-spectral`: `enter_windows`, `exit_windows`, `open_windows`, `close_windows`, `snr_peak_db`, `snr_mean_db`, `low_band_ratio_peak`, `low_band_ratio_mean`, `noise_floor_dbfs`, `spectral_flatness_mean`, `harmonic_ratio_mean` — the v0 rows predate `exit/open/close_windows` (added schema v7 era, 2026-11-02), and rows recorded before 2026-11-05 lack the two spectral means (absent key = null on parse)). Debug visibility of detector decisions — never a measurement, never rendered as clinical. (Its write-only `createdAt` was dropped in 15→16) |
 
 `audio_clip`:
 
 | Column | Type | Notes |
 |---|---|---|
 | `id` | Long PK | |
-| `session_id` | Long FK, CASCADE | Denormalized for fast retention sweeps |
-| `event_id` | Long? FK, unique | 1:1 with an event when set |
-| `file_path` | TEXT | Relative to `filesDir/clips/` |
-| `duration_ms`, `size_bytes`, `sample_rate` | Long/Int | sample_rate = 16000 |
-| `applied_gain` | REAL | Total gain applied to the stored samples (schema v11): mic gain × block peak-limit scale — below the mic gain on loud clips, which are written raw + limited so their peak lands at ≈ −1 dBFS instead of clipping to 0 dBFS. Pre-v11 rows keep the fixed 2.5 in-place int16 mic gain (the v11 DEFAULT is truthful history) |
-| `file_peak_dbfs` | REAL? | Peak of the stored samples in dBFS (schema v11, ≈ −1.0 on limited clips); NULL for pre-v11 rows, whose peaks were never recorded |
-| `created_at` | Long | |
+| `sessionId` | Long FK, CASCADE | Denormalized for fast retention sweeps |
+| `eventId` | Long? FK, unique | 1:1 with an event when set |
+| `filePath` | TEXT | Relative to `filesDir/clips/` |
+| `durationMs`, `sizeBytes`, `sampleRate` | Long/Int | sampleRate = 16000 |
+| `appliedGain` | REAL | Total gain applied to the stored samples (schema v11): mic gain × block peak-limit scale — below the mic gain on loud clips, which are written raw + limited so their peak lands at ≈ −1 dBFS instead of clipping to 0 dBFS. Pre-v11 rows keep the fixed 2.5 in-place int16 mic gain (the v11 DEFAULT is truthful history) |
+| `filePeakDbfs` | REAL? | Peak of the stored samples in dBFS (schema v11, ≈ −1.0 on limited clips); NULL for pre-v11 rows, whose peaks were never recorded |
+| `createdAt` | Long | |
 
-**Index:** `(session_id, start_ms)` on events; `created_at` on clips (retention).
+**Index:** `(sessionId, startMs)` on events; `createdAt` on clips (retention).
 
 ### 3.6 `user_factor` — lifestyle logging (implemented in Phase 3, lightweight UI)
 
@@ -161,9 +161,10 @@ Clinical baseline values (e.g., AHI 17.6) currently live in `clinical_baseline` 
 |---|---|---|
 | `id` | Long PK | |
 | `date` | TEXT (ISO, local) | The day the factor applies to |
-| `factor_key` | TEXT enum | `ALCOHOL` (units in valueNum, 1.0 = yes-unspecified), `LATE_MEAL`, `CAFFEINE_AFTER_14`, `EXERCISE`, `MEDICATION_OR_DEVICE` (1.0 = yes), `STRESS` (1–5), `NOTES` (valueText) |
-| `value_num` / `value_text` | REAL? / TEXT? | |
-| `recorded_at` | Long | |
+| `factorKey` | TEXT enum | `ALCOHOL` (units in valueNum, 1.0 = yes-unspecified), `LATE_MEAL`, `CAFFEINE_AFTER_14`, `EXERCISE`, `MEDICATION_OR_DEVICE` (1.0 = yes), `STRESS` (1–5), `NOTES` (valueText), plus the morning-rating/day keys (`MORNING_RATING`, `SICK`, `SLEPT_ON_BACK`) |
+| `valueNum` / `valueText` | REAL? / TEXT? | |
+
+(The write-only `recordedAt` column was dropped in migration 15→16.)
 
 Only set/affirmative factors are stored — absence means "not logged that day". Saving a date replaces that date's rows. These are **user-entered context, not measurements**: no tier, no confidence, no Measurement rows; the report renders them under "Daily factors (self-logged)". Mirroring into `measurement` (`source_type = USER`, `method = USER_REPORTED`) is deferred to Phase 4's analysis engine, which will read them with explicit user-reported framing. Wiped by delete-all.
 
@@ -174,11 +175,11 @@ The full report stays a **live in-memory computation** (`ReportAssembler` → `M
 | Column | Type | Notes |
 |---|---|---|
 | `id` | Long PK | |
-| `session_id` | Long FK, CASCADE | |
-| `generated_at` | Long | |
-| `app_version` | TEXT | App version at finalize |
-| `detector_version` | TEXT? | First snore event's model version (null: no snoring that night) |
-| `score_version` | TEXT? | SNORE_SCORE formula version ([SnoreScore.FORMULA_VERSION]) |
+| `sessionId` | Long FK, CASCADE | |
+| `generatedAt` | Long | |
+| `appVersion` | TEXT | App version at finalize |
+| `detectorVersion` | TEXT? | First snore event's model version (null: no snoring that night) |
+| `scoreVersion` | TEXT? | SNORE_SCORE formula version ([SnoreScore.FORMULA_VERSION]) |
 | `payload` | TEXT (JSON) | Compact headline JSON (`schema_version` INSIDE the JSON — `domain/report/ReportSnapshot.kt`), shape per §5.2 |
 
 Written only at finalize, inside the same transaction as the measurements and the NIGHT_VALIDITY row; a user-label recompute (`labelEvent`) refreshes the snapshot in ITS transaction so the payload keeps mirroring the rewritten aggregates — one pure builder (`reportSnapshotHeadline`) serves both paths, so neither can drift from the stored rows. Never contains values ClaimPolicy would refuse to render.
@@ -216,43 +217,13 @@ nights ([NIGHT_REPORT.md](NIGHT_REPORT.md) §1).
 
 One row per contiguous stage span of a **linked** session: `(sessionId FK CASCADE, startMs, endMs, stage, source)` with a `(sessionId, startMs)` index. Populated by the Garmin import only when the dailySleep payload carries a `sleepLevels` timeline AND a time-overlapping session was identified (§5, §6), and by the Health Connect import from the wearable stage timeline over on-device IPC (user-triggered, docs/PRIVACY_AND_REGULATORY.md §3); each re-import replaces atomically. Device-reported context only (M13) — never compared to PSG stages; the night report uses it to say which stage the longest snore bout fell in. Stage labels are the vendor's own, canonicalized to DEEP/LIGHT/REM/AWAKE where known, unknown labels kept verbatim (HC: AWAKE_IN_BED folds to AWAKE; SLEEPING/OUT_OF_BED/UNKNOWN spans are skipped but accounted per type in the raw_payload summary row). `source` (schema v14) is provenance: `GARMIN` = stage spans derived from the Personal API night payload (estimate), `WEARABLE` = Health Connect stage timeline — both timelines can coexist on one session, so deletes/replaces are per-source. Session deletion removes the timeline (FK CASCADE); delete-all purges the table (all sources).
 
-### 3.12 `sleep_experiment` — N-of-1 experiment rows (schema v13, implemented)
+### 3.12 `sleep_experiment` — REMOVED (migration 15→16, 2026-11-22 consolidation)
 
-One row per N-of-1 experiment (docs/INSIGHTS.md §Playbook): a playbook action tried for a
-planned number of nights against the personal baseline band captured at start. Exactly ONE row
-may be ACTIVE — enforced in tracker logic (`ExperimentTracker`), not SQL, because the optional
-A-B-A confirm phase re-activates the same DONE row (status machine: ACTIVE → DONE with the
-phase verdict → ACTIVE (confirm) → DONE/final; ABANDONED at any user step). NOT session-bound
-(an experiment spans nights and outlives them): no FK, never CASCADE-deleted; delete-all
-purges it. Starts empty — rows are written when the user starts an experiment, never
-back-filled.
+The table and the machinery around it (`ExperimentTracker`, `Playbook`, `EscalationRule`) were dropped in task T7; the N-of-1 experiments line is shelved (NEXT_STEPS). Historical note: it stored one row per N-of-1 experiment with a single-ACTIVE-row invariant enforced in tracker logic, verdict math in the pure `ExperimentMath`.
 
-| Column | Type | Notes |
-|---|---|---|
-| `id` | Long PK | |
-| `hypothesis_rule_id` | TEXT? | Suggesting insight-rule id (docs/INSIGHTS.md §Rule catalog); null = user-started |
-| `playbook_action_id` | TEXT? | Playbook action (docs/INSIGHTS.md §Playbook); null = free-form hypothesis |
-| `metric` | TEXT | Verification metric id ([PersonalBaseline.Metrics]) |
-| `started_at` | Long | Phase-1 start (epoch ms) |
-| `planned_nights` | Int | ≥ 5 (WWC 2010 floor), default 7 — clamped in the tracker |
-| `status` | TEXT | `ACTIVE` / `DONE` / `ABANDONED` ([ExperimentStatus]) |
-| `baseline_stats_json` | TEXT | Band captured at start: `{"metric":…,"median":…,"mad":…,"low":…,"high":…}` |
-| `result_json` | TEXT? | Verdict JSON (`schema_version`, change_detected, direction, confidence, phase_median, robust_z, used/excluded night ids, kept; after A-B-A: confirmed, confirm_median, confirm_returned_to_band) |
-| `confirm_phase_json` | TEXT? | Optional A-B-A confirm phase: `{"phase":"CONFIRM","started_at":…}` while collecting, plus the outcome when final |
-| `created_at` | Long | |
+## 4. Clinical immutability — RETIRED (2026-11-22 consolidation)
 
-The verdict math is pure (`domain/experiments/ExperimentMath`): usable nights = eligible nights
-since the phase start minus confound exclusions (any logged factor outside the experiment's
-own — [Playbook.ownFactorKeys]) minus missing metric values; a verdict renders at ≥
-planned_nights usable nights.
-
-## 4. Clinical immutability
-
-1. **Insert-only API.** `BaselineRepository` exposes insert + read only; no update/delete methods exist for clinical rows (delete-all purge is the sole exception, via a dedicated maintenance path).
-2. **Database triggers.** Two triggers guard the `clinical_baseline` table itself:
-   `CREATE TRIGGER IF NOT EXISTS trg_clinical_baseline_no_update BEFORE UPDATE ON clinical_baseline BEGIN SELECT RAISE(ABORT, 'clinical baseline is immutable'); END;` and the matching `trg_clinical_baseline_no_delete` for `DELETE`. `AppDatabase` creates them on database create **and re-creates them on every open**; they are dropped only inside `purgeEverythingIncludingClinical()` — the single delete-all maintenance path — and recreated in its `finally` block. (Protection of clinical *measurements* is enforced in code — `MeasurementRecorder`/`ClaimPolicy` — not SQL.)
-3. **UI rule.** Baseline entries render read-only with an "entered <date> from <source>" caption; corrections mean a **new, superseding entry** (new row, `notes` cross-reference), never an edit — preserving the audit trail.
-4. **Provenance display.** Every clinical number shown anywhere cites study date + lab.
+The `clinical_baseline` table, `BaselineRepository`, the baseline UI, and the two immutability triggers (`trg_clinical_baseline_no_update` / `trg_clinical_baseline_no_delete`) were dropped in migration 15→16 — there are no clinical rows left to guard, and INV-03 retires with them. Measurement-level claim discipline lives entirely in code (`MeasurementRecorder`/`ClaimPolicy`), never SQL. `purgeEverythingIncludingClinical()` (the delete-all maintenance path) now wipes the ten surviving tables in one transaction.
 
 ## 5. JSON payloads
 
@@ -319,25 +290,26 @@ Manual imports from Settings import the user-picked date as-is, so a manual impo
 
 | Data | Default retention | Rationale |
 |---|---|---|
-| Audio clips | **7 days** | Verification value fades; storage and privacy cost stay |
-| Sessions + acoustic events | **90 days** | Full auditability window |
+| Audio clips | **7 days** (`clips_retention_days`) | Verification value fades; storage and privacy cost stay |
+| Sessions + acoustic events | **90 days** (`session_retention_days`) | Full auditability window |
 | Per-session log files (`filesDir/logs/session_<id>.log`) | With their session (worker purges past session retention) | Text diagnostics only — never audio |
+| `raw_payload` (Garmin JSON) | With session retention (worker purges past the session cutoff) | The one otherwise-unbounded store; the mapped vendor metrics survive in `measurement` |
 | Measurements | **Indefinite** (survive session deletion via `SET NULL`) | Tiny rows; the longitudinal substrate; user can delete manually |
-| Clinical baseline | **Until delete-all** | Never expires; the anchor of the platform |
-| Reports | With their session | Regenerable while source data exists |
+| `user_factor`, `model_registry` | **Never touched by the worker** (only delete-all wipes them) | User context and version provenance, both tiny |
+| `sleep_stage`, `quiet_gap`, `report` | With their session (FK CASCADE when the session row goes) | Derived per-night data, regenerable while sources exist |
 
 Deletion paths:
 
-- **Per-night delete:** deletes report → events → clips → session (cascades); measurements of that session get `session_id = null` and persist.
-- **Clips-only purge:** retention worker sweeps `audio_clip` rows past 7 days + files; events keep their metadata (clip_id becomes dangling-but-typed: cleared to null).
-- **Delete-all:** single button, wipes DB (including clinical baseline) and clip files, with confirmation that includes "this removes your clinical baseline too". Trigger-based immutability is bypassed only here.
-- **Orphan sweep:** daily job removes files under `filesDir/clips/` with no clip row.
+- **Per-night delete:** deletes report → events → clips → session (cascades, taking `sleep_stage`/`quiet_gap` with it); measurements of that session get `sessionId = null` and persist.
+- **Clips-only removal (worker only):** the retention worker sweeps `audio_clip` rows past 7 days + files; events keep their metadata (clip_id cleared to null). There is **no user-triggered clips-only purge** in the UI — only the worker removes clips.
+- **Delete-all:** single button, wipes the DB (`purgeEverythingIncludingClinical()`, one transaction over all ten tables) and clip files, with confirmation. (The name's "Clinical" is a legacy of the retired baseline table.)
+- **Orphan sweep:** daily job removes files under `filesDir/clips/` with no clip row, guarded by `OrphanSweepPolicy`: it sweeps **only when no session is open** (a live recording has a window between `writeClip()` and its DB insert) **and only for files untouched for ≥ 1 hour** (a just-written file may still be waiting for its row).
 
 ## 7. Migrations and versioning
 
-- Room schemas exported to `app/schemas/`; **shipped migrations are never edited**, only appended. Migration SQL is hand-reviewed and covered end-to-end by the instrumented `MigrationTest` (androidTest): seeds rows at v1, migrates to the latest version with `MigrationTestHelper`, verifies the rows survive and the clinical-immutability triggers exist and enforce.
+- Room schemas exported to `app/schemas/` (1→16); **shipped migrations are never edited**, only appended. Migration SQL is hand-reviewed and covered end-to-end by the instrumented `MigrationTest` (androidTest): seeds rows at v1, migrates to the latest version with `MigrationTestHelper`, verifies the rows survive, and asserts the 15→16 consolidation cuts (baseline table + triggers gone, write-only columns dropped with data preserved).
 - JSON payloads (`capture_stats`, report payload) carry `schema_version`; readers handle older versions defensively.
 - `measurement_type`/enum growth is additive; `ClaimPolicy` is the gate, so unknown types in the DB can never render in the UI.
 - GARMIN measurement rows carry `sessionId` when the import identified a time-overlapping session (schema v9); rows written before then have `NULL` and join by day window only.
-- Schema history: 1→14 via thirteen real migrations (v9 `sleep_stage` §3.10; v10 `quiet_gap` §3.11; v11 `audio_clip.appliedGain`/`filePeakDbfs` §3.5; v12 `report` §3.7 + `model_registry` §3.8; v13 `sleep_experiment` §3.12; v14 `sleep_stage.source` §3.10); v8 is declaration-only (`@ColumnInfo(defaultValue = "0")` on `sleep_session.resumedAfterInterruption`, matching the `DEFAULT 0` the column has carried since v7). **v9** adds `sleep_stage` (§3.10): the vendor sleep-stage timeline of a linked session, FK CASCADE on session delete. **v12** adds the per-session report snapshot (§3.7) and the temporal model-version registry (§3.8); both start empty — snapshots and registry rows are written at each new finalize, never back-filled. **v13** adds `sleep_experiment` (§3.12): N-of-1 experiment rows, not session-bound (no FK), starting empty — written only when the user starts an experiment. **v14** adds `sleep_stage.source` (§3.10): per-row provenance — `GARMIN` (Personal API estimate) vs `WEARABLE` (Health Connect stage timeline) — backfilled `DEFAULT 'GARMIN'` so pre-v14 rows keep their truthful history.
-- Reprocessing (Phase 4+): re-running a newer model over stored clips writes **new** Measurement rows with the new `model_id`; old rows remain — provenance history is append-only.
+- Schema history: 1→16 via **fifteen** declared migrations, **fourteen** of which run SQL (v8 is declaration-only: `@ColumnInfo(defaultValue = "0")` on `sleep_session.resumedAfterInterruption`, matching the `DEFAULT 0` the column has carried since v7). Highlights: v9 `sleep_stage` (§3.10); v10 `quiet_gap` (§3.11); v11 `audio_clip.appliedGain`/`filePeakDbfs` (§3.5); v12 `report` (§3.7) + `model_registry` (§3.8); v13 `sleep_experiment` (§3.12, since removed); v14 `sleep_stage.source` (§3.10, backfilled `DEFAULT 'GARMIN'` so pre-v14 rows keep their truthful history); **v15** drops the `sleep_experiment` table (T7); **v16** drops the `clinical_baseline` table + its two immutability triggers and a bundle of write-only columns (`sleep_session` {deviceModel, osVersion, appVersion, audioBytesTotal}, `acoustic_event` {labeledAt, createdAt}, `quiet_gap` {createdAt}, `user_factor` {recordedAt}) via table rebuild (create new → copy → drop → rename), preserving surviving row data.
+- Reprocessing (Phase 4+): re-running a newer model over stored clips writes **new** Measurement rows carrying the new `modelVersion` string (and a new `model_registry` window, opened at that finalize); old rows remain — provenance history is append-only.

@@ -62,7 +62,7 @@ android {
 
     sourceSets {
         // Exported Room schemas as androidTest assets: MigrationTestHelper replays the real
-        // 1.json…8.json history for the migration test (docs/DATA_MODEL.md §7).
+        // 1.json…14.json history for the migration test (docs/DATA_MODEL.md §7).
         getByName("androidTest").assets.srcDir("$projectDir/schemas")
     }
 }
@@ -90,16 +90,13 @@ tasks.register<Test>("evalFixtures") {
 dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.compose)
-    implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.androidx.activity.compose)
 
     implementation(platform(libs.compose.bom))
     implementation(libs.compose.ui)
     implementation(libs.compose.ui.graphics)
-    implementation(libs.compose.ui.tooling.preview)
     implementation(libs.compose.material3)
     implementation(libs.compose.material.icons)
-    debugImplementation(libs.compose.ui.tooling)
 
     implementation(libs.androidx.navigation.compose)
 

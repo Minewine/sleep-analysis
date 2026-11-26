@@ -55,6 +55,11 @@ from zoneinfo import ZoneInfo
 # export_fixtures.py. sys.path[0] is tools/ both as a script and under pytest.
 from export_fixtures import DB_NAME, pull_clip, pull_db
 
+# Shared pure helpers (detect_serial / latest_session_id / clip join) live in
+# analysis/tooling.py; analysis/ is not a package, hence the sys.path insert.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "analysis"))
+from tooling import detect_serial, latest_session_id
+
 APP_PACKAGE = "com.sleepanalysis"
 GARMIN_SOURCE = "GARMIN"
 DAILY_SLEEP_ENDPOINT = "/sleep-service/sleep/dailySleep"
@@ -73,10 +78,6 @@ SESSION_COLUMNS = [
     "endedAt",
     "status",
     "timeZone",
-    "deviceModel",
-    "osVersion",
-    "appVersion",
-    "audioBytesTotal",
     "morningNotes",
     "resumedAfterInterruption",
     "createdAt",
@@ -180,37 +181,6 @@ def resolve_out_dir(out: str) -> Path:
     return resolved
 
 
-def detect_serial() -> str | None:
-    """First attached device with the app installed; None if unambiguous (0-1 devices)."""
-    out = subprocess.run(
-        ["adb", "devices"], check=True, capture_output=True, text=True
-    ).stdout
-    serials = [
-        line.split()[0]
-        for line in out.splitlines()[1:]
-        if line.strip() and line.split()[1] == "device"
-    ]
-    if len(serials) <= 1:
-        return serials[0] if serials else None
-    for serial in serials:
-        installed = subprocess.run(
-            ["adb", "-s", serial, "shell", "pm", "list", "packages", APP_PACKAGE],
-            capture_output=True,
-            text=True,
-            check=False,  # non-zero is just "device lacks the package"
-        )
-        if APP_PACKAGE in installed.stdout:
-            return serial
-    return None
-
-
-def latest_session_id(conn: sqlite3.Connection) -> int:
-    row = conn.execute(
-        "SELECT id FROM sleep_session ORDER BY startedAt DESC LIMIT 1"
-    ).fetchone()
-    if row is None:
-        raise ValueError("no sessions in the database — nothing to export")
-    return row[0]
 
 
 def parse_capture_stats(capture_stats: str | None) -> dict | None:
@@ -554,7 +524,7 @@ def export_clips(
         """
         SELECT e.id, e.type, e.startMs, e.endMs, e.peakDbfs, e.confidence, c.filePath
         FROM acoustic_event e
-        JOIN audio_clip c ON c.eventId = e.id OR c.id = e.clipId
+        JOIN audio_clip c ON (c.eventId = e.id OR c.id = e.clipId)
         WHERE e.sessionId = ? AND c.filePath IS NOT NULL
         ORDER BY e.startMs, e.id
         """,

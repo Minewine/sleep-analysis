@@ -12,7 +12,7 @@ import java.time.ZoneId
  * Decision table for the missed-night banner (dogfood 2026-11-18→19: recording only began at
  * 01:02 and the report first read as "nothing recorded"). A night is identified by its WAKE
  * date (the local day the session ended on — the anchor Garmin keys nights by), the skip set
- * holds START-evening epoch days, and night-like means ≥ 4 h in bed.
+ * holds WAKE-date epoch days, and night-like means ≥ 4 h in bed.
  */
 class MissedNightPolicyTest {
 
@@ -29,7 +29,7 @@ class MissedNightPolicyTest {
         captureStats: String? = """{"schema_version":5,"windows_processed":40000}""",
     ) = SleepSessionEntity(
         id = 1, startedAt = startedAt, endedAt = endedAt, status = status,
-        timeZone = zone.id, deviceModel = "Test", osVersion = "30", appVersion = "0.1.0",
+        timeZone = zone.id, 
         captureStats = captureStats,
     )
 
@@ -209,8 +209,8 @@ class MissedNightPolicyTest {
         // the banner's "today" must be UTC's today, the same zone the wake dates use.
         val utcSession = SleepSessionEntity(
             id = 2, startedAt = ms(today.minusDays(1), 22, 0), endedAt = ms(today, 6, 0),
-            status = SessionStatus.COMPLETED, timeZone = "UTC", deviceModel = "Test",
-            osVersion = "30", appVersion = "0.1.0",
+            status = SessionStatus.COMPLETED, timeZone = "UTC", 
+            
         )
         val deviceZone = ZoneId.of("Europe/Zurich")
         assertEquals(ZoneId.of("UTC"), MissedNightPolicy.todayZone(listOf(utcSession), deviceZone))
@@ -225,8 +225,8 @@ class MissedNightPolicyTest {
     fun `an unparseable session zone falls back to the device zone`() {
         val broken = SleepSessionEntity(
             id = 3, startedAt = ms(today.minusDays(1), 22, 0), endedAt = ms(today, 6, 0),
-            status = SessionStatus.COMPLETED, timeZone = "Not/AZone", deviceModel = "Test",
-            osVersion = "30", appVersion = "0.1.0",
+            status = SessionStatus.COMPLETED, timeZone = "Not/AZone", 
+            
         )
         assertEquals(ZoneId.of("Europe/Zurich"), MissedNightPolicy.todayZone(listOf(broken), ZoneId.of("Europe/Zurich")))
     }

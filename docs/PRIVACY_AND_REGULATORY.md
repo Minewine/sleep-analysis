@@ -26,8 +26,7 @@ Related: [Measurement reliability](MEASUREMENT_RELIABILITY.md) · [Architecture]
 | Raw audio stream | Memory (8 s ring buffer) | Never | Only event-triggered slices are written |
 | Event clips (WAV) | `filesDir/clips/<session>/` (app-private) | 7 days default | ≤ 8 s each (256 KB), capped ~150/night (~38 MB) |
 | Per-session log files (text) | `filesDir/logs/session_<id>.log` (app-private) | With their session (90 days default) | Timestamped lifecycle/diagnostic lines only — never audio, never sensor payloads |
-| Database (sessions, events, measurements, reports, baseline) | App-private Room DB | Sessions/events 90 days; measurements indefinite; baseline until delete-all | WAL mode |
-| Clinical source documents | Referenced by path only (`clinical_baseline.source_document`) | Until delete-all | The app never copies the PDF into its storage |
+| Database (sessions, events, measurements, reports, user factors, model registry) | App-private Room DB | Sessions/events 90 days; measurements indefinite; user factors/model registry until delete-all | WAL mode |
 | Preferences (retention settings, disclaimer acceptance, detection debug toggle; experimental toggle arrives in Phase 2) | DataStore | Until cleared | |
 
 Storage security posture: app sandbox + Android file-based encryption (device lock screen required). `android:allowBackup="false"` **and** `res/xml/data_extraction_rules.xml`, which excludes the `root`, `file`, `database` and `sharedpref` domains from both **cloud backup** and **device-to-device transfer** — no app data syncs to Google's device backup or migrates to a new device (the rules are belt-and-braces alongside `allowBackup`, keeping the exclusion explicit if the flag is ever revisited). App-level clip encryption (SQLCipher or AES for clip files) is an evaluated option in Phase 2 ([Architecture](ARCHITECTURE.md) §10); the DB never contains audio bytes.
@@ -55,14 +54,14 @@ Battery-optimization exemption is requested with an in-app rationale (sideloaded
 
 ## 4. Retention controls and deletion
 
-Defaults ([Data model](DATA_MODEL.md) §6): clips 7 days, sessions/events 90 days, measurements persist, clinical baseline until delete-all. Stored in DataStore and read by the retention worker; the Settings UI to change them is still pending (NEXT_STEPS P1).
+Defaults ([Data model](DATA_MODEL.md) §6): clips 7 days, sessions/events 90 days, measurements persist, `user_factor`/`model_registry` until delete-all. Stored in DataStore (`clips_retention_days` / `session_retention_days`) and read by the retention worker; the Settings UI to change them is still pending (NEXT_STEPS P1).
 
-User controls (Phase 1 ships all of these):
+User controls (per-night delete and delete-all are shipped):
 
-- **Per-night delete** — cascades report → events → clips → session; measurements survive with session link nulled.
-- **Clips-only purge** — delete audio while keeping numeric history.
-- **Bulk delete-all** — wipes DB *including clinical baseline* and all clip files; double confirmation explicitly naming the clinical data loss; bypasses clinical-immutability triggers through the single maintenance path.
-- **Export-then-delete** — export must be available before deletion so erasure rights don't conflict with data retention needs.
+- **Per-night delete** — cascades report → events → clips → session (and the derived `sleep_stage`/`quiet_gap` rows); measurements survive with session link nulled.
+- **Bulk delete-all** — wipes the DB and all clip files via the single maintenance path (`purgeEverythingIncludingClinical()`, one transaction; the name's "Clinical" is a legacy of the retired baseline table).
+- **Clips-only purge** — *not a user control*: there is no user-triggered clips-only purge in the UI. Audio clips age out only through the retention worker's daily sweep (7-day default); numeric history survives that sweep.
+- **Export-then-delete** — export must be available before deletion so erasure rights don't conflict with data retention needs (export is not yet shipped — ROADMAP Phase 3).
 
 Right-to-erasure framing (Swiss revFADP / EU GDPR): the user is the data subject and controller's sole user; all personal data is deletable in one gesture, and processing happens locally under active use.
 
@@ -84,15 +83,11 @@ Right-to-erasure framing (Swiss revFADP / EU GDPR): the user is the data subject
 
 > **Experimental.** Derived from sound patterns; not a breathing measurement. Audible pauses are not apneas, and acoustic events are not arousals.
 
-### 5.4 Clinical baseline screen
-
-> Values shown here were clinically measured during sleep studies at the listed lab and date. They are entered read-only and are never compared one-to-one with phone estimates — the two are different kinds of measurement.
-
-### 5.5 Cross-source comparison view (Phase 3+)
+### 5.4 Cross-source comparison view (Phase 3+)
 
 > Correlation and context — not equivalence. Phone estimates, wearable data, and clinical measurements come from different methods.
 
-### 5.6 Wording rules (summary; full table in [MEASUREMENT_RELIABILITY.md](MEASUREMENT_RELIABILITY.md) §3)
+### 5.5 Wording rules (summary; full table in [MEASUREMENT_RELIABILITY.md](MEASUREMENT_RELIABILITY.md) §3)
 
 | Never say | Say instead |
 |---|---|
@@ -116,7 +111,7 @@ A lint rule flags forbidden clinical terms in `strings.xml` outside approved dis
 
 **Practical rules:**
 
-1. Any new UI copy, export template, or README change gets a 30-second check against §5.6 and [MEASUREMENT_RELIABILITY.md](MEASUREMENT_RELIABILITY.md) §3.
+1. Any new UI copy, export template, or README change gets a 30-second check against §5.5 and [MEASUREMENT_RELIABILITY.md](MEASUREMENT_RELIABILITY.md) §3.
 2. Tier-2 indicators exist for personal exploration only; they must never appear in exports as findings.
 3. Clinician-facing exports describe the tool ("personal acoustic sleep logger") and embed disclaimers; they present observations, never conclusions.
 4. If this project ever pivots toward consumers or diagnostic claims, it becomes a regulatory project (MDR conformity, notified body, quality system) — treat that as a new project, not a feature.

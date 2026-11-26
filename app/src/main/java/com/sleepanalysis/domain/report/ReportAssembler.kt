@@ -2,7 +2,6 @@ package com.sleepanalysis.domain.report
 
 import com.sleepanalysis.data.db.entity.AcousticEventEntity
 import com.sleepanalysis.data.db.entity.AudioClipEntity
-import com.sleepanalysis.data.db.entity.ClinicalBaselineEntity
 import com.sleepanalysis.data.db.entity.EventType
 import com.sleepanalysis.data.db.entity.SessionStatus
 import com.sleepanalysis.data.db.entity.SleepSessionEntity
@@ -73,7 +72,8 @@ object PreviousNight {
      * session (e.g. a 1 h recording stopped at bedtime) must not become the anchor of the
      * TL;DR "vs previous night" line when a real 7 h night exists just before it.
      */
-    const val NIGHT_LIKE_MIN_IN_BED_MS: Long = 4 * 3_600_000L
+    const val NIGHT_LIKE_MIN_IN_BED_MS: Long =
+        com.sleepanalysis.domain.policy.MissedNightPolicy.NIGHT_LIKE_MIN_IN_BED_MS
 
     fun isEligible(session: SleepSessionEntity): Boolean =
         session.endedAt != null && (session.status == SessionStatus.COMPLETED ||
@@ -169,7 +169,6 @@ data class MorningReport(
     val sessionId: Long,
     val startedAt: Long,
     val endedAt: Long,
-    val status: String,
     val timeZone: String,
     val timeInBedSeconds: Long,
     val snoreSeconds: Long,
@@ -192,7 +191,6 @@ data class MorningReport(
     /** eventId → clip reference for playback. */
     val clips: Map<Long, ClipRef>,
     val integrityNotes: List<String>,
-    val baseline: List<ClinicalBaselineEntity>,
     val modelVersion: String?,
     /** Garmin device-reported metrics for the session's calendar day (may be empty). */
     val garmin: List<GarminMetric> = emptyList(),
@@ -302,7 +300,6 @@ object ReportAssembler {
         session: SleepSessionEntity,
         events: List<AcousticEventEntity>,
         clips: List<AudioClipEntity>,
-        baseline: List<ClinicalBaselineEntity>,
         garmin: List<GarminMetric> = emptyList(),
         factors: List<FactorEntry> = emptyList(),
         capture: CaptureStats? = null,
@@ -337,32 +334,19 @@ object ReportAssembler {
         // contradict the stored rows the trend reads — docs/NIGHT_REPORT.md §Score). A user
         // label re-weighs aggregates only: display (timeline, episodes, counts) still shows
         // every visible event with its detector type.
-        val snoreEvents = com.sleepanalysis.domain.scoring.SnoreMath.eventsCountingAsSnore(events)
-        // Union, not sum — the same math as the stored measurements (SnoreMath): merged
-        // overlapping event windows must count their audio once.
-        val snoreSeconds = com.sleepanalysis.domain.scoring.SnoreMath
-            .unionDurationMs(snoreEvents.map { it.startMs to it.endMs }) / 1000
-        // Same denominator as the measurements: mic-live captured analysis time, not
-        // tap-to-end time in bed (docs/DATA_MODEL.md §5.1). Falls back to time in bed only
-        // when the session has no capture stats at all.
-        val capturedSeconds = capture?.capturedAnalysisMs()?.div(1000)?.takeIf { it > 0 }
-            ?: timeInBedSeconds
-        val sharePercent = if (capturedSeconds > 0) snoreSeconds * 100.0 / capturedSeconds else 0.0
+        // ONE shared math builder (plan T4a) — identical to finalize's measurement math, so
+        // the report's live recompute always reproduces the stored rows (docs/NIGHT_REPORT.md
+        // §Score). Input is ALL events: the low-confidence display filter above is
+        // presentation-only.
+        val math = snoreNightMath(session.startedAt, endedAt, session.status, capture, events)
+        val snoreEvents = math.snoreEvents
+        val snoreSeconds = math.snoreSeconds
+        val capturedSeconds = math.capturedSeconds
+        val sharePercent = math.sharePercent
 
         val tierCounts = snoreEvents.groupingBy { it.intensityTier }.eachCount()
-        // Score v2 weights intensity by per-tier snoring TIME (the per-tier unions partition
-        // snoreSeconds) — identical math to the finalize-time measurement, so the report's
-        // score always reproduces the stored one (docs/NIGHT_REPORT.md §Score).
-        val tierSeconds: Map<String, Long> = snoreEvents.groupBy { it.intensityTier }
-            .mapValues { (_, tierEvents) ->
-                com.sleepanalysis.domain.scoring.SnoreMath
-                    .unionDurationMs(tierEvents.map { it.startMs to it.endMs })
-            }
-        val score = SnoreScore.compute(
-            snoreSeconds = snoreSeconds,
-            nightSeconds = capturedSeconds,
-            tierSeconds = tierSeconds,
-        )
+        val tierSeconds = math.tierSeconds
+        val score = math.score
 
         val integrityNotes = buildList {
             // First note: a resumed night was not continuously captured — the headline numbers
@@ -459,7 +443,6 @@ object ReportAssembler {
             sessionId = session.id,
             startedAt = session.startedAt,
             endedAt = endedAt,
-            status = session.status,
             timeZone = session.timeZone,
             timeInBedSeconds = timeInBedSeconds,
             snoreSeconds = snoreSeconds,
@@ -477,7 +460,6 @@ object ReportAssembler {
                 .mapNotNull { event -> clipRefsById[event.id]?.let { event.id to it } }
                 .toMap(),
             integrityNotes = integrityNotes,
-            baseline = baseline,
             modelVersion = snoreEvents.firstOrNull()?.modelVersion,
             garmin = garmin,
             dailyFactors = factors,
@@ -629,14 +611,11 @@ object ReportAssembler {
     }
 
     /**
-     * Overlap between the Garmin sleep window and the session's capture window, clamped at 0
-     * (a disjoint window — the "wrong night's data" signal — overlaps by exactly 0).
-     */
-    /**
      * Union snoring minutes inside each stage span of [stages] (bursts overlap-counted once
      * via SnoreMath; a burst straddling two stages contributes to both proportionally to its
      * overlap, so the per-stage sums can slightly exceed the night's union when timelines
-     * switch mid-burst). Stages with no snoring are omitted; sorted by minutes, loudest first.
+     * switch mid-burst). Minutes are floored to whole minutes; stages below one full minute of
+ * snoring are dropped after rounding. Sorted by minutes, loudest first.
      * [StageSnoreMinutes.stageMinutes] carries each stage's total span length for context.
      */
     fun snoreMinutesPerStage(
@@ -699,6 +678,10 @@ object ReportAssembler {
             .firstNotNullOfOrNull { clipsById[it.id] }
     }
 
+    /**
+     * Overlap between the Garmin sleep window and the session's capture window, clamped at 0
+     * (a disjoint window — the "wrong night's data" signal — overlaps by exactly 0).
+     */
     fun garminOverlapMs(
         captureStartMs: Long,
         captureEndMs: Long,
@@ -728,4 +711,70 @@ object ReportAssembler {
         SnoreScore.IntensityTiers.LIGHT -> 2
         else -> 1
     }
+}
+
+
+/**
+ * ONE copy of the night's snore aggregates (plan T4a): the label-aware event set
+ * ([com.sleepanalysis.domain.scoring.SnoreMath.eventsCountingAsSnore]), the union snore
+ * seconds, the captured-analysis denominator (fallback: time in bed), the share percent,
+ * the per-tier unions and the score — shared verbatim by finalizeSession,
+ * reportSnapshotHeadline, labelCorrectedSnoreEstimates and [ReportAssembler.assemble].
+ * Denominators are pinned by ReportSnapshotRefreshTest / ReportAssemblerTest; do not tune
+ * them here.
+ *
+ * [capturedAnalysisSecondsOverride] lets a caller holding live engine stats (finalize,
+ * mid-session) supply the fresher denominator — else it is derived from [capture].
+ * [hasCaptureEvidenceOverride] likewise (finalize reads the engine's windowsProcessed
+ * before the stats are stored).
+ */
+internal data class SnoreNightMath(
+    val snoreEvents: List<com.sleepanalysis.data.db.entity.AcousticEventEntity>,
+    val snoreSeconds: Long,
+    val capturedSeconds: Long,
+    val sharePercent: Double,
+    val tierSeconds: Map<String, Long>,
+    val score: com.sleepanalysis.domain.scoring.SnoreScore.Result,
+    val hasCaptureEvidence: Boolean,
+    val recoveredWithNoEvents: Boolean,
+)
+
+internal fun snoreNightMath(
+    startedAt: Long,
+    endedAt: Long?,
+    status: String,
+    capture: com.sleepanalysis.domain.report.CaptureStats?,
+    events: List<com.sleepanalysis.data.db.entity.AcousticEventEntity>,
+    capturedAnalysisSecondsOverride: Long? = null,
+    hasCaptureEvidenceOverride: Boolean? = null,
+): SnoreNightMath {
+    val snoreEvents = com.sleepanalysis.domain.scoring.SnoreMath.eventsCountingAsSnore(events)
+    val timeInBedSeconds = if (endedAt == null) 0 else ((endedAt - startedAt).coerceAtLeast(0)) / 1000
+    val capturedSeconds = (
+        capturedAnalysisSecondsOverride ?: capture?.capturedAnalysisMs()?.div(1000)
+        )?.takeIf { it > 0 } ?: timeInBedSeconds
+    // Union, not sum — overlapping merged-window events must count their audio once
+    // (docs/DATA_MODEL.md §5.1; com.sleepanalysis.domain.scoring.SnoreMath).
+    val snoreSeconds = com.sleepanalysis.domain.scoring.SnoreMath
+        .unionDurationMs(snoreEvents.map { it.startMs to it.endMs }) / 1000
+    val sharePercent = if (capturedSeconds > 0) snoreSeconds * 100.0 / capturedSeconds else 0.0
+    // Score weights intensity by per-tier snoring TIME (the per-tier unions partition
+    // snoreSeconds) — docs/NIGHT_REPORT.md §Score.
+    val tierSeconds: Map<String, Long> = snoreEvents.groupBy { it.intensityTier }
+        .mapValues { (_, tierEvents) ->
+            com.sleepanalysis.domain.scoring.SnoreMath
+                .unionDurationMs(tierEvents.map { it.startMs to it.endMs })
+        }
+    val score = SnoreScore.compute(snoreSeconds, capturedSeconds, tierSeconds)
+    // P2-7: a night with no processed windows measured nothing — no share/score anywhere.
+    return SnoreNightMath(
+        snoreEvents = snoreEvents,
+        snoreSeconds = snoreSeconds,
+        capturedSeconds = capturedSeconds,
+        sharePercent = sharePercent,
+        tierSeconds = tierSeconds,
+        score = score,
+        hasCaptureEvidence = hasCaptureEvidenceOverride ?: (capture?.anyProcessedWindows() == true),
+        recoveredWithNoEvents = status == SessionStatus.RECOVERED && events.isEmpty(),
+    )
 }

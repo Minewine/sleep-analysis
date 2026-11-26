@@ -69,7 +69,7 @@ class ScheduledStartReceiver : BroadcastReceiver() {
                         // P2-1: an open night means the Resume/Finalize decision is pending —
                         // its interrupted notification stays the re-entry point, and a bedtime
                         // Start must never silently finalize it behind a new session.
-                        hasOpenSession = sessionRepository.openSession() != null,
+                        hasOpenSession = sessionRepository.findOpenSession() != null,
                     )
                     if (post) BedtimeNotification.show(context, occurrenceDay)
                 }

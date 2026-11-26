@@ -256,6 +256,6 @@ class FixtureEvaluator {
          * `SessionRepository.MODEL_VERSION` (data layer — not importable from pure-JVM eval
          * code); update both together when the detector model id changes.
          */
-        const val DETECTOR_VERSION = "energy-heuristic-v3-peakgate"
+        const val DETECTOR_VERSION = com.sleepanalysis.data.repo.SessionRepository.MODEL_VERSION
     }
 }

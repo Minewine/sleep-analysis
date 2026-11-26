@@ -2,8 +2,8 @@
 
 Claims the code makes that no automated test can verify — they need real nights on real
 hardware. Log each result in `STATUS.md` (date + pass/fail + one line of evidence). One item
-per night is fine; several combine naturally. Baseline: 460 unit tests + 36 pytest green at
-the time this list was written (2026-11-08).
+per night is fine; several combine naturally. Baseline: 767 unit tests + 121 pytest green
+(2026-11-26, post-consolidation).
 
 ## Carried from NEXT_STEPS P0/P1 (never verified on device)
 

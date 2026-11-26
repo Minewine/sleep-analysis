@@ -1,12 +1,10 @@
 package com.sleepanalysis.monitoring.service
 
-import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import androidx.core.app.NotificationCompat
-import com.sleepanalysis.MainActivity
 import com.sleepanalysis.R
 
 /**
@@ -26,11 +24,7 @@ object InterruptedNotification {
 
     fun show(context: Context) {
         createChannel(context)
-        val contentIntent = PendingIntent.getActivity(
-            context, 0,
-            Intent(context, MainActivity::class.java),
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-        )
+        val contentIntent = AppNotifications.openAppPendingIntent(context)
         val resumeIntent = PendingIntent.getService(
             context, RESUME_REQUEST_CODE,
             Intent(context, MonitorService::class.java).setAction(MonitorService.ACTION_RESUME),
@@ -50,15 +44,10 @@ object InterruptedNotification {
     }
 
     fun cancel(context: Context) {
-        context.getSystemService(NotificationManager::class.java).cancel(NOTIFICATION_ID)
+        AppNotifications.cancel(context, NOTIFICATION_ID)
     }
 
     private fun createChannel(context: Context) {
-        val channel = NotificationChannel(
-            CHANNEL_ID,
-            context.getString(R.string.notif_channel_interrupted),
-            NotificationManager.IMPORTANCE_HIGH,
-        )
-        context.getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
+        AppNotifications.ensureChannel(context, CHANNEL_ID, R.string.notif_channel_interrupted)
     }
 }

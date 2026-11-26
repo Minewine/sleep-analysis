@@ -55,8 +55,6 @@ class ClaimPolicyTest {
         )
         tier3.forEach {
             assertEquals(MeasurementTier.OUT_OF_SCOPE_FOR_CLAIMS, it.tier)
-            assertFalse(ClaimPolicy.displayAllowed(it))
-            assertFalse(ClaimPolicy.displayAllowed(it, experimentalToggleEnabled = true))
         }
         // Nothing else may be out of scope beyond the documented set.
         assertEquals(
@@ -65,12 +63,6 @@ class ClaimPolicyTest {
         )
     }
 
-    @Test
-    fun `experimental values display only behind the toggle`() {
-        val type = MeasurementType.BREATHING_IRREGULARITY_INDICATOR
-        assertFalse(ClaimPolicy.displayAllowed(type, experimentalToggleEnabled = false))
-        assertTrue(ClaimPolicy.displayAllowed(type, experimentalToggleEnabled = true))
-    }
 
     @Test
     fun `recorder stamps full provenance on phone estimates`() = runTest {
@@ -120,7 +112,6 @@ class ClaimPolicyTest {
         )
         vendorTypes.forEach {
             assertEquals("${it.name}", MeasurementTier.ESTABLISHED, it.tier)
-            assertTrue(ClaimPolicy.displayAllowed(it))
         }
     }
 
@@ -162,7 +153,6 @@ class ClaimPolicyTest {
         // it sits with the derived indices (ESTABLISHED), not with the out-of-scope set.
         assertEquals(MeasurementTier.ESTABLISHED, MeasurementType.NIGHT_VALIDITY.tier)
         assertEquals(MeasurementUnit.GRADE, MeasurementType.NIGHT_VALIDITY.unit)
-        assertTrue(ClaimPolicy.displayAllowed(MeasurementType.NIGHT_VALIDITY))
     }
 
     @Test

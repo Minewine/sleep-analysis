@@ -29,10 +29,16 @@ import tempfile
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 # Shared adb transfer helpers (exec-out + verification). sys.path[0] is tools/
 # both as a script and under pytest.
-from export_fixtures import detect_serial, pull_db
+from export_fixtures import pull_db
+
+# Shared pure helpers (detect_serial / union_duration_ms) live in analysis/;
+# insert that dir explicitly since neither tools/ nor analysis/ is a package.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "analysis"))
+from tooling import detect_serial, union_duration_ms
 
 MIN_NIGHTS = 5  # below this the report is a count, not an analysis
 MIN_PAIRS = 3  # a rank correlation over fewer pairs is noise
@@ -82,37 +88,25 @@ class Night:
 def counts_as_snore(event_type: str | None, user_label: str | None) -> bool:
     """SnoreMath.eventsCountingAsSnore, replicated exactly: a user label
     overrides the detector's type (SNORE keeps the event, any other label
-    drops it); no label keeps only detector-SNORE events."""
-    return user_label == "SNORE" or (user_label is None and event_type == "SNORE")
+    drops it); no label keeps only detector-SNORE events. DB rows carry NULL
+    and exported CSVs carry "" for unlabeled — both mean unlabeled (parity
+    with night_aggregates.events_counting_as_snore)."""
+    label = user_label or ""
+    if label:
+        return label == "SNORE"
+    return event_type == "SNORE"
 
 
-def union_duration_ms(intervals: list[tuple[int, int]]) -> int:
-    """Total covered time of possibly-overlapping [startMs, endMs] intervals,
-    counting overlaps once — a direct port of SnoreMath.unionDurationMs
-    (summing raw durations double-counts merged multi-window events). Degenerate
-    intervals (end before start, from corrupt rows) clamp to a point."""
-    if not intervals:
-        return 0
-    total = 0
-    cur_start = 0
-    cur_end = -1
-    for s, raw_end in sorted(intervals):
-        e = max(s, raw_end)
-        if cur_end < cur_start:  # first interval
-            cur_start, cur_end = s, e
-        elif s > cur_end:  # gap (adjacent joins: s == curEnd is not a gap)
-            total += cur_end - cur_start
-            cur_start, cur_end = s, e
-        elif e > cur_end:  # overlap: extend, contained intervals add nothing
-            cur_end = e
-    return total + max(cur_end - cur_start, 0)
+# union_duration_ms is the shared SnoreMath-parity port (analysis/tooling.py),
+# imported above and re-exported in this namespace for the mirror tests.
 
 
 def capture_window_ms(started_at: int, ended_at: int, capture_stats: str | None) -> int:
-    """Capture window ms: captureStats $.capture_started_at -> endedAt, falling
-    back to startedAt -> endedAt (same rule as tools/morning_report.sh step 4).
-    Unparseable stats fall back too; a nonsensical window goes negative and the
-    caller reports the night's share as unknown."""
+    """Capture window ms: captureStats $.capture_started_at -> endedAt when the
+    capture start precedes endedAt, else startedAt -> endedAt (exactly the
+    morning_report.sh step 4 rule — a corrupt capture_started_at >= endedAt
+    used to yield a negative window and an "unknown" share; now it falls back
+    to startedAt like the script). Unparseable stats fall back too."""
     cap_start: int | None = None
     if capture_stats:
         try:
@@ -121,7 +115,25 @@ def capture_window_ms(started_at: int, ended_at: int, capture_stats: str | None)
             raw = None
         if isinstance(raw, (int, float)) and not isinstance(raw, bool):
             cap_start = int(raw)
-    return ended_at - (cap_start if cap_start is not None else started_at)
+    if cap_start is not None and cap_start < ended_at:
+        return ended_at - cap_start
+    return ended_at - started_at
+
+
+def night_date(started_at_ms: int, tz_name: str | None) -> str:
+    """Local-time date of startedAt ("the night of"), rendered in the session's
+    stored sleep_session.timeZone (a ZoneInfo name the app writes). NULL,
+    unknown, or schema-missing time zones fall back to the host's local zone —
+    an approximation that can be off by a day around midnight for nights
+    recorded in a zone different from this machine's; the DB has no fallback
+    column to consult."""
+    tz = None
+    if tz_name:
+        try:
+            tz = ZoneInfo(tz_name)
+        except (ZoneInfoNotFoundError, ValueError, KeyError):
+            tz = None
+    return datetime.fromtimestamp(started_at_ms / 1000, tz=tz).strftime("%Y-%m-%d")
 
 
 def metric_value(rows: dict[str, tuple[float, str]], spec: MetricSpec) -> float | None:
@@ -158,13 +170,28 @@ def collect_nights(conn: sqlite3.Connection) -> list[Night]:
         vendor.setdefault(session_id, {})[mtype] = (value, unit)
 
     nights = []
-    for session_id, started_at, ended_at, capture_stats in conn.execute(
-        """
-        SELECT id, startedAt, endedAt, captureStats FROM sleep_session
-        WHERE status IN ('COMPLETED', 'RECOVERED') AND endedAt IS NOT NULL
-        ORDER BY startedAt
-        """
-    ):
+    try:
+        session_rows = conn.execute(
+            """
+            SELECT id, startedAt, endedAt, captureStats, timeZone FROM sleep_session
+            WHERE status IN ('COMPLETED', 'RECOVERED') AND endedAt IS NOT NULL
+            ORDER BY startedAt
+            """
+        ).fetchall()
+    except sqlite3.OperationalError:
+        # Pre-timeZone schema: fall back to the host's local zone and say so
+        # (see the Night.date note below).
+        session_rows = [
+            (*row, None)
+            for row in conn.execute(
+                """
+                SELECT id, startedAt, endedAt, captureStats FROM sleep_session
+                WHERE status IN ('COMPLETED', 'RECOVERED') AND endedAt IS NOT NULL
+                ORDER BY startedAt
+                """
+            )
+        ]
+    for session_id, started_at, ended_at, capture_stats, tz_name in session_rows:
         rows = vendor.get(session_id)
         if not rows:
             continue  # no vendor data -> the night can't join a vendor correlation
@@ -182,7 +209,7 @@ def collect_nights(conn: sqlite3.Connection) -> list[Night]:
         nights.append(
             Night(
                 session_id=session_id,
-                date=datetime.fromtimestamp(started_at / 1000).strftime("%Y-%m-%d"),
+                date=night_date(started_at, tz_name),
                 snore_share=snore_ms / window_ms if window_ms > 0 else None,
                 snore_minutes=snore_ms / 60_000,
                 metrics={spec.key: metric_value(rows, spec) for spec in METRICS},

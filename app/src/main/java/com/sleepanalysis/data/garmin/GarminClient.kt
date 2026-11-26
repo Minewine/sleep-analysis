@@ -123,7 +123,7 @@ class GarminClient @Inject constructor(
         Log.d(TAG, "token exchange ok")
         val info = GarminJsonParsers.parseToken(body ?: "", now)
         val token = info.token
-            ?: throw GarminException("Garmin token response did not contain a token (raw kept for diagnostics).")
+            ?: throw GarminException("Garmin token response did not contain a token.")
         // Unknown TTL → conservative 5-minute cache; honored longer when Garmin reports expiry.
         tokenExpiresAtMs = info.expiresAtMs ?: (now + DEFAULT_TOKEN_TTL_MS)
         cachedToken = token

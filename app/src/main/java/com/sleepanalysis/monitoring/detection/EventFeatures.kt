@@ -3,12 +3,12 @@ package com.sleepanalysis.monitoring.detection
 import org.json.JSONObject
 
 /**
- * The v0 detector's decision inputs, aggregated over one event's windows
+ * The detector's decision inputs, aggregated over one event's windows
  * (docs/NEXT_STEPS.md P0: "make the existing decisions visible").
  *
  * Persisted as JSON on acoustic_event.features_json (schema v5) so the numbers the detector
  * actually saw can be inspected next to the clip after a night. The shape is version-bound to
- * the model id (energy-heuristic-v0); future models get their own shape. Keys are additive:
+ * the model id (energy-heuristic-v3-peakgate); future models get their own shape. Keys are additive:
  * exit/open/close window counts were added 2026-11-02 so hysteresis can be retuned from stored
  * events without reprocessing audio; readers must tolerate their absence on legacy rows.
  */

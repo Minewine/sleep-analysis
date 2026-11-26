@@ -266,12 +266,96 @@ def test_capture_window_fallbacks():
     assert night.snore_share == pytest.approx(0.05)
 
 
-def test_future_capture_start_yields_no_share_but_keeps_night():
-    # cap_start >= endedAt: window <= 0 — share None; the night stays in the
-    # table (min-nights gate) but joins no correlation.
+def test_corrupt_future_capture_start_falls_back_to_started_at():
+    # cap_start >= endedAt is corrupt (morning_report.sh step 4 parity): the
+    # window falls back to startedAt -> endedAt instead of going negative —
+    # the share is computed, not reported as unknown.
     stats = '{"capture_started_at":' + str(START_MS + WINDOW_MS) + "}"
     (night,) = nt.collect_nights(trend_db([0.05], {"hrv": [27.0]}, capture_stats=stats))
-    assert night.snore_share is None
+    assert night.snore_share == pytest.approx(0.05)
+
+
+def test_counts_as_snore_empty_string_label_is_unlabeled():
+    # Exported CSVs carry "" for unlabeled (night_aggregates parity): "" must
+    # behave like NULL, keeping detector-SNORE events and no others.
+    assert nt.counts_as_snore("SNORE", "")
+    assert not nt.counts_as_snore("OTHER_NOISE", "")
+    assert not nt.counts_as_snore("SNORE", "COUGH")
+    assert nt.counts_as_snore("SNORE", None)
+
+
+def test_empty_label_events_count_into_minutes():
+    # Same union as test_labeled_out_events_do_not_count_into_minutes but the
+    # kept events carry "" instead of NULL (what a CSV round-trip produces).
+    sid, start = 1, START_MS
+    conn = build_db(
+        sessions=[(sid, start, start + WINDOW_MS, "COMPLETED", None)],
+        events=[
+            (1, sid, "SNORE", start, start + 60_000, ""),
+            (2, sid, "SNORE", start, start + 600_000, "COUGH"),
+            (3, sid, "OTHER_NOISE", start + 600_000, start + 630_000, "SNORE"),
+            (4, sid, "SNORE", start, start + 120_000, ""),
+        ],
+        measurements=[(1, sid, start, "VENDOR_DEEP_SLEEP", 5400.0, "SECONDS")],
+    )
+    (night,) = nt.collect_nights(conn)
+    assert night.snore_minutes == pytest.approx(150.0 / 60)
+
+
+def test_night_date_uses_the_stored_session_time_zone():
+    # startedAt 01:30 in Europe/Zurich local time: in a zone one hour behind,
+    # the naive local render lands on the wrong "night of" date.
+    from datetime import datetime as dt
+    from zoneinfo import ZoneInfo
+
+    start = int(dt(2026, 11, 20, 1, 30, tzinfo=ZoneInfo("Europe/Zurich")).timestamp() * 1000)
+    assert nt.night_date(start, "Europe/Zurich") == "2026-11-20"
+    assert nt.night_date(start, "Europe/London") == "2026-11-20"  # 00:30 local
+    # 01:30 Zurich = 00:30 UTC: UTC-8 renders the previous date
+    assert nt.night_date(start, "America/Los_Angeles") == "2026-11-19"
+
+
+def test_night_date_falls_back_to_host_zone_on_bad_tz():
+    from datetime import datetime as dt
+
+    start = int(dt(2026, 11, 20, 12, 0).timestamp() * 1000)
+    expected = dt.fromtimestamp(start / 1000).strftime("%Y-%m-%d")
+    for bad in (None, "", "Not/AZone"):
+        assert nt.night_date(start, bad) == expected
+
+
+def test_collect_nights_renders_dates_in_the_session_time_zone():
+    # A reduced schema WITH the timeZone column: dates must come from the
+    # stored zone, not the host's.
+    import sqlite3
+    from datetime import datetime as dt
+    from zoneinfo import ZoneInfo
+
+    start = int(dt(2026, 11, 20, 1, 30, tzinfo=ZoneInfo("Europe/Zurich")).timestamp() * 1000)
+    conn = sqlite3.connect(":memory:")
+    conn.executescript(
+        """
+        CREATE TABLE sleep_session (
+            id INTEGER PRIMARY KEY, startedAt INTEGER, endedAt INTEGER,
+            status TEXT, captureStats TEXT, timeZone TEXT);
+        CREATE TABLE acoustic_event (
+            id INTEGER PRIMARY KEY, sessionId INTEGER, type TEXT,
+            startMs INTEGER, endMs INTEGER, userLabel TEXT);
+        CREATE TABLE measurement (
+            id INTEGER PRIMARY KEY, sessionId INTEGER, timestamp INTEGER,
+            measurementType TEXT, valueNum REAL, unit TEXT);
+        """
+    )
+    conn.execute(
+        "INSERT INTO sleep_session VALUES (?,?,?,?,?,?)",
+        (1, start, start + WINDOW_MS, "COMPLETED", None, "America/Los_Angeles"),
+    )
+    conn.execute(
+        "INSERT INTO measurement VALUES (?,?,?,?,?,?)",
+        (1, 1, start, "VENDOR_HRV_RMSSD", 27.0, "MS"),
+    )
+    (night,) = nt.collect_nights(conn)
+    assert night.date == "2026-11-19"
 
 
 # ----------------------------------------------------- Report formatting

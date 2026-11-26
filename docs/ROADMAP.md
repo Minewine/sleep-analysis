@@ -23,8 +23,8 @@ Related: [Product vision](PRODUCT_VISION.md) · [MVP scope](MVP_SCOPE.md) (Phase
 - Foreground-service audio capture, ring buffer, event clips only (no full-night audio)
 - Swappable snore detector *(shipped: `energy-heuristic-v3-peakgate` — energy/band heuristic + spectral flatness/harmonicity and breath-rhythm gates, plus a quiet-room peak gate; the YAMNet-mapped model is Phase 2)*, snore + loud-noise events (cough/speech classification arrives with the model)
 - Night timeline + clip playback + user labels
-- Morning report: time in bed, snoring summary (time, share, tiers, score), acoustic event counts, integrity notes, baseline context
-- Clinical baseline structured read-only entry (HUG numbers)
+- Morning report: time in bed, snoring summary (time, share, tiers, score), acoustic event counts, integrity notes
+- ~~Clinical baseline structured read-only entry (HUG numbers)~~ — **removed in the 2026-11-22 consolidation** (table, DAO, screen, and immutability triggers dropped in migration 15→16)
 - Disclaimers, retention worker, per-night + delete-all
 - Privacy posture: app-private storage; `INTERNET` exists only under the Phase 3 Garmin amendment ([PRIVACY_AND_REGULATORY.md](PRIVACY_AND_REGULATORY.md) §1)
 
@@ -55,8 +55,8 @@ Related: [Product vision](PRODUCT_VISION.md) · [MVP scope](MVP_SCOPE.md) (Phase
 
 **Goal:** bring the other data layers in — wearables, factors, clinical comparison, export.
 
-- **Health Connect integration:** import sleep sessions (device-reported), nocturnal HR/HRV (M10/M11), vendor SpO₂ levels (M12, device-reported levels only), vendor sleep stages (M13, context-only) — all land as Measurement rows via `WearableSource`, `method = DEVICE_REPORTED`; Health Connect is on-device IPC (no INTERNET)
-- **Garmin import — SHIPPED EARLY (first slice of this phase):** Personal API key in Android Keystore, on-demand pull of sleep/HRV/Body Battery/resting HR for one date, raw JSON in `raw_payload`, report labeled "Garmin estimate" (docs/GARMIN_INTEGRATION.md). Still open from this item: Health Connect, FIT/CSV file-import fallback
+- **Health Connect integration — first slice SHIPPED (2026-11-16):** on-device import of vendor sleep stages (M13, context-only) via `HealthConnectImportManager.importForDate`, landing as `sleep_stage` rows with GARMIN/WEARABLE source scoping (schema v14), plus the Settings card and report backfill. Still open here: sleep sessions (device-reported), nocturnal HR/HRV (M10/M11), vendor SpO₂ levels (M12); Health Connect is on-device IPC (no INTERNET)
+- **Garmin import — SHIPPED EARLY (first slice of this phase):** Personal API key in Android Keystore, on-demand pull of sleep/HRV/Body Battery/resting HR for one date, raw JSON in `raw_payload`, report labeled "Garmin estimate" (docs/GARMIN_INTEGRATION.md). Still open from this item: FIT/CSV file-import fallback
 - **Lifestyle factor logging UI:** weight, tirzepatide dose, alcohol, caffeine, exercise, stress, pain, notes ([DATA_MODEL.md](DATA_MODEL.md) §3.6)
 - **Clinical comparison view:** baseline metrics side by side with longitudinal trends under the §4 framing ("correlation and context — not equivalence")
 - **Export:** user-initiated local CSV/JSON (full provenance columns) + PDF morning/period report for clinician sharing; exports pass the same ClaimPolicy filter and embed disclaimers
@@ -72,10 +72,10 @@ Related: [Product vision](PRODUCT_VISION.md) · [MVP scope](MVP_SCOPE.md) (Phase
 
 **Goal:** longitudinal analysis over the data platform — without adding new measurement claims.
 
-- **Trends:** nightly/weekly/monthly views per measurement type, per source
-- **Personal baseline bands:** rolling normal ranges per measurement (e.g., snoring time p25–p75) computed from the user's own history; deviations flagged as *observations* with conservative wording
+- **Trends — SHIPPED (`TrendAssembler.assemble`, `ui/trends/`):** nightly/weekly/monthly views per measurement type, per source
+- **Personal baseline bands — shipped (`PersonalBaseline`, `ui/insights/`):** rolling normal ranges per measurement (e.g., snoring time p25–p75) computed from the user's own history; deviations flagged as *observations* with conservative wording
 - **Associations:** factor ↔ measurement correlations (e.g., alcohol units vs snore time), with lag options, minimum-sample thresholds, and explicit "correlation, not causation" framing; low sample sizes show "not enough data" instead of a number
-- **Insight rules engine:** rule-based (deterministic) insights in the report — e.g., "This week's snoring ran above your usual range on 3 nights"
+- **Insight rules engine — shipped (`InsightRules.evaluate`, `ui/insights/`):** rule-based (deterministic) insights in the report — e.g., "This week's snoring ran above your usual range on 3 nights"
 - **Reprocessing:** re-run newer models over stored clips → new Measurement rows (append-only provenance history)
 
 **Effort:** 4–6 weeks.
@@ -99,7 +99,7 @@ Related: [Product vision](PRODUCT_VISION.md) · [MVP scope](MVP_SCOPE.md) (Phase
 
 ## The pain-point analysis line (decided 2026-11-19, sequenced in NEXT_STEPS)
 
-The current dogfood goal — **analyse sleep and highlight pain points** — has an approved five-item line cutting across phases: morning rating + night tags (DailyFactor extensions — deliberately user-logged context, never Measurement rows), the rolling-baseline pain-point layer (extends Phase 4's baseline-excursion direction once a multi-week baseline exists), formalized N-of-1 experiments over the shipped Playbook/`sleep_experiment` machinery, and the breathing-irregularity indicator inside the already-reserved Tier-2 slot (Phase 2's M7, behind the experimental toggle; promotion stays Phase 5). Ordering and the concrete first candidates: [NEXT_STEPS.md](NEXT_STEPS.md).
+The current dogfood goal — **analyse sleep and highlight pain points** — has an approved five-item line cutting across phases: morning rating + night tags (DailyFactor extensions — deliberately user-logged context, never Measurement rows), the rolling-baseline pain-point layer (extends Phase 4's baseline-excursion direction once a multi-week baseline exists), formalized N-of-1 experiments (the Playbook/`sleep_experiment` machinery was **removed in the 2026-11-22 consolidation** — see NEXT_STEPS), and the breathing-irregularity indicator inside the already-reserved Tier-2 slot (Phase 2's M7, behind the experimental toggle; promotion stays Phase 5). Ordering and the concrete first candidates: [NEXT_STEPS.md](NEXT_STEPS.md).
 
 ## Cross-phase gates (every release)
 

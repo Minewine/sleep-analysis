@@ -32,9 +32,9 @@ class ReportSnapshotRefreshTest {
         endedAt = endedAt,
         status = status,
         timeZone = "UTC",
-        deviceModel = "TestDevice",
-        osVersion = "15",
-        appVersion = "0.1.0",
+        
+        
+        
         captureStats = capture,
     )
 

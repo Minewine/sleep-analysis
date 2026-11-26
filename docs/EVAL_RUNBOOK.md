@@ -30,7 +30,7 @@ reduces per-window snore calls to one clip-level decision (snore-window ratio �
 prints per-class precision/recall. One-vs-rest: a clip labeled `SNORE` is positive for the
 SNORE row and negative for every other row.
 
-**Gate (MVP_SCOPE):** SNORE precision ≥ 0.80, recall ≥ 0.70 on the labeled set.
+**Target (MVP_SCOPE ship gate):** SNORE precision ≥ 0.80, recall ≥ 0.70 on the labeled set. This is a **recorded target, not an enforced gate** — `FixtureEvalRunTest` asserts only clip-count bookkeeping (TP+FN per label equals that label's clip count; nothing is skipped), so the 0.80/0.70 numbers must be read from the printed table and judged by hand.
 
 ## 4. Tune from evidence (only after 3)
 

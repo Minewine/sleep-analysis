@@ -2,7 +2,7 @@
 
 This document defines what the morning summary (report screen), the Garmin section and the
 7-day trend show, where every number comes from, and which constants govern them. Written
-against schema v9 and detector `energy-heuristic-v3-peakgate` (pre-v3 nights are historical and flagged by the trend's version markers).
+against schema v16 and detector `energy-heuristic-v3-peakgate` (pre-v3 nights are historical and flagged by the trend's version markers).
 
 ## 1. Morning summary (report screen)
 
@@ -29,7 +29,7 @@ delta and surfaces a banner instead of comparing across it.
 |---|---|---|
 | Time in bed | session row (`startedAt`→`endedAt`) | Includes a configured start delay (documented decision — the session row starts at the tap). |
 | Previous-night comparison | `PreviousNight.pick` | Anchors on the previous **full night** (≥ 4 h in bed) when one exists, falling back to the latest eligible session — a short evening test session never becomes the comparison anchor. |
-| Snore score | `SnoreScore.compute` (formula `snore-score-v3`) | 60 pts from snoring share (saturates at **40%** of the night) + 40 pts tier-weighted over **snoring TIME**, over the label-aware snore event set (a non-SNORE user label excludes the event). The report shows the breakdown ("share X + intensity Y") and the SNORE_SCORE row stores formula version + breakdown in `notes`. See §Score formula versions. |
+| Snore score | `SnoreScore.compute` (formula `snore-score-v4`) | 60 pts from snoring share (saturates at **40%** of captured analysis time) + 40 pts tier-weighted over **snoring TIME**, over the label-aware snore event set (a non-SNORE user label excludes the event). The report shows the breakdown ("share X + intensity Y") and the SNORE_SCORE row stores formula version + breakdown in `notes`. See §Score formula versions. |
 | Snoring time / share | `SnoreMath.unionDurationMs` over SNORE events | Union, never sum. The share denominator is **mic-live captured analysis time** (`capture_stats.windows × 0.5 s`), falling back to recording time only when no capture stats exist. The card states which denominator is in use. |
 | Garmin-normalized share | `ReportAssembler.garminNormalizedSharePercent(snoreSeconds, overlapWithCaptureMs)` | TL;DR-only line ("Snored X% of the captured part of Garmin's sleep window"), rendered only when the night is Garmin **LINKED** and the overlap is > 0 — the honest ratio when capture started late (dogfood 2026-11-18→19: capture from 01:02, Garmin's window from 22:14). A result above 100% (sub-second overlap inflation can push it there) **omits** the line instead of clamping — clamping would assert everything Garmin saw was snoring, a stronger claim than silence. Display-only: the finalize-time `snoreSharePercent` stays contract-frozen; this line is never stored or compared. |
 | Longest burst | max-duration SNORE event (`LongSnoreEvent`) | The worst continuous stretch the detector emitted — a real burst since v2-burst, never a merged train. |
@@ -197,6 +197,7 @@ breakdown, e.g. `snore-score-v2: share 43.8/60 + intensity 9.7/40 (tier weight 0
 | `snore-score-v1` (retroactive name; all rows before 2026-11-06) | 60 pts, saturating at **10%** share | 40 pts, tier weights over **event counts** | 13%→66, 16%→66, 27%→66, 29%→67, 30%→67 — saturated, indistinguishable |
 | `snore-score-v2` | 60 pts, saturating at **40%** share | 40 pts, tier weights over per-tier **snoring seconds** (union) | 13%→**25**, 16%→**29**, 27%→**47**, 29%→**53**, 30%→**53** |
 | `snore-score-v3` (2026-11-08) | identical arithmetic to v2 | identical arithmetic to v2 | unchanged — the **input set** changed: the snore event set is label-aware (`SnoreMath.eventsCountingAsSnore`) |
+| `snore-score-v4` (2026-11-22) | identical arithmetic to v3 | identical arithmetic to v3 | unchanged — the **denominator** changed: windows_processed counts classified windows only and thermally skipped hops count once in windows_skipped (capture_stats v5), so a throttled night's captured-analysis-time denominator no longer double-counts (~1.5× under sustained throttling); unthrottled nights compute byte-identically |
 
 Rationale for v2: every dogfood night exceeded the 10% saturation point, locking the share
 component at 60/60 and leaving only ~7 pts of tier variance; and count-weighting let many short
@@ -290,13 +291,13 @@ back for the report and the trend).
 | `AmbientLevelBuckets.BUCKET_MS` | 300 000 ms | 5-minute mean-window-dBFS buckets in capture stats (schema v3) |
 | `QUIET_GAP_MIN_MS` storage | ≥ 600 000 ms stored per session | `quiet_gap` table (schema v10), finalize-time |
 | `SnoreScore.SHARE_SATURATION` | 0.40 | `SnoreScore.kt` — share component locks at 60 pts at 40% of the night |
-| `SnoreScore.FORMULA_VERSION` | `snore-score-v3` | `SnoreScore.kt` — stored on SNORE_SCORE rows (`model_version`) |
+| `SnoreScore.FORMULA_VERSION` | `snore-score-v4` | `SnoreScore.kt` — stored on SNORE_SCORE rows (`model_version`) |
 | `MAX_TIMELINE_EVENTS` | 2 000 (existing) | `ReportAssembler.kt` |
 | `EPISODE_GAP_MS` | 10 000 ms (existing) | `Episodes.kt` — loudest-episode grouping |
 
-The report features compute from the current v9 schema. The detector changed in this change
-set (v1-spectral → v2-burst: burst-level events, see §1) — `MODEL_VERSION` was bumped in lockstep
-so new nights are trend-flagged against v1 rows, and the fixture eval carries the same string.
+The report features compute from the current v16 schema. The detector has changed several times
+(v1-spectral → v2-burst → v3-peakgate, see §1) — `MODEL_VERSION` was bumped in lockstep each
+time so new nights are trend-flagged against older rows, and the fixture eval carries the same string.
 The SNORE_SCORE row's provenance field remains the score formula version (not the detector).
 
 ## Known limitations / follow-ups

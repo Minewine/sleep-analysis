@@ -14,7 +14,7 @@ class PreviousNightTest {
     private fun session(startedAt: Long, status: String = SessionStatus.COMPLETED, endedAt: Long? = startedAt + 8 * 3_600_000) =
         SleepSessionEntity(
             id = nextId++, startedAt = startedAt, endedAt = endedAt, status = status,
-            timeZone = "Europe/Zurich", deviceModel = "Test", osVersion = "30", appVersion = "0.1.0",
+            timeZone = "Europe/Zurich", 
         )
 
     @Test

@@ -274,9 +274,6 @@ class GarminImportManager @Inject constructor(
         }
     }
 
-    /** Metrics already imported for a date (used by the report to decide what to show). */
-    suspend fun garminMetricsBetween(from: Long, to: Long) = measurementDao.garminBetween(from, to)
-
     companion object {
         private const val TAG = "GarminImport"
         const val SOURCE = "GARMIN"

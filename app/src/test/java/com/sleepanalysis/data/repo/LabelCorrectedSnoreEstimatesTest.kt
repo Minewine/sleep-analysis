@@ -33,9 +33,9 @@ class LabelCorrectedSnoreEstimatesTest {
         endedAt = endedAt,
         status = status,
         timeZone = "Europe/Zurich",
-        deviceModel = "test",
-        osVersion = "16",
-        appVersion = "test",
+        
+        
+        
         captureStats = captureStats,
     )
 

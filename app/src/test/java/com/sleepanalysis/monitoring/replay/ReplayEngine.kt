@@ -9,8 +9,10 @@ import kotlin.math.log10
 import kotlin.math.sqrt
 
 /**
- * Offline replay of recorded clip audio through the detection pipeline, feature-for-feature
- * identical to the live loop in [com.sleepanalysis.monitoring.audio.AudioEngine] — the fixture
+ * Offline replay of recorded clip audio through the detection pipeline with the same classification chain as
+ * the live loop in [com.sleepanalysis.monitoring.audio.AudioEngine] — not value-identical:
+ * replay recomputes the noise floor every window and always computes spectral features, live
+ * refreshes the ring every 8 pushes once full and skips windows per SpectralGatePolicy — the fixture
  * eval harness (docs/NEXT_STEPS.md P2) exists so detector changes can be evaluated against
  * labeled clips (user labels from clip playback) without a device, and that only means
  * something if replay computes the same window dBFS, low-band ratio, noise floor and window

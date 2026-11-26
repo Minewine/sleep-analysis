@@ -315,22 +315,6 @@ fun ReportScreen(
             }
 
             item {
-                Text(stringResource(R.string.report_baseline_section), style = MaterialTheme.typography.titleSmall)
-                Text(
-                    stringResource(R.string.report_baseline_note),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            if (r.baseline.isEmpty()) {
-                item { Text(stringResource(R.string.baseline_empty), color = MaterialTheme.colorScheme.onSurfaceVariant) }
-            } else {
-                items(r.baseline.size) { index ->
-                    BaselineSummaryRow(r.baseline[index])
-                }
-            }
-
-            item {
                 GarminCard(
                     metrics = r.garmin,
                     snoreSeconds = r.snoreSeconds,
@@ -447,11 +431,13 @@ private fun TldrCard(report: com.sleepanalysis.domain.report.MorningReport) {
                 )
             }
             report.previousNight?.let { prev ->
-                if (prev.sameDetectorVersion && prev.snoreSeconds != null) {
-                    val delta = report.snoreSeconds - prev.snoreSeconds
+                val comparison = com.sleepanalysis.domain.report.NightSummaryText
+                    .previousNightComparison(report)!!
+                if (comparison.compared) {
+                    val delta = comparison.deltaSeconds
                     val sign = if (delta > 0) "+" else if (delta < 0) "−" else ""
                     val deltaText = sign + formatDuration(kotlin.math.abs(delta) * 1000)
-                    val scoreLine = if (prev.sameScoreFormula && prev.snoreScore != null) {
+                    val scoreLine = if (comparison.scoreComparable) {
                         "${report.snoreScore} vs ${prev.snoreScore}"
                     } else {
                         stringResource(R.string.report_tldr_prev_score_nc, "${report.snoreScore}")
@@ -459,7 +445,7 @@ private fun TldrCard(report: com.sleepanalysis.domain.report.MorningReport) {
                     Text(
                         stringResource(
                             R.string.report_tldr_prev,
-                            formatDuration(prev.snoreSeconds * 1000),
+                            formatDuration(prev.snoreSeconds!! * 1000), // non-null when compared
                             deltaText,
                             scoreLine,
                         ),
@@ -736,17 +722,10 @@ private fun ClipLabelChips(
     current: String?,
     onLabel: (Long, com.sleepanalysis.domain.labels.EventUserLabel) -> Unit,
 ) {
-    androidx.compose.foundation.layout.FlowRow(
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        com.sleepanalysis.domain.labels.EventUserLabel.entries.forEach { label ->
-            FilterChip(
-                selected = current == label.name,
-                onClick = { onLabel(eventId, label) },
-                label = { Text(label.label) },
-            )
-        }
-    }
+    com.sleepanalysis.ui.components.EventLabelChips(
+        isSelected = { it.name == current },
+        onLabel = { onLabel(eventId, it) },
+    )
 }
 
 @Composable
@@ -1211,17 +1190,10 @@ private fun SelectedEventCard(
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                androidx.compose.foundation.layout.FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    com.sleepanalysis.domain.labels.EventUserLabel.entries.forEach { label ->
-                        FilterChip(
-                            selected = selected.userLabel == label.name,
-                            onClick = { onLabel(label) },
-                            label = { Text(label.label) },
-                        )
-                    }
-                }
+                com.sleepanalysis.ui.components.EventLabelChips(
+                    isSelected = { selected.userLabel == it.name },
+                    onLabel = onLabel,
+                )
             }
         }
     }
@@ -1255,37 +1227,6 @@ private fun EventRow(
                 formatDuration(event.durationMs),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-    }
-}
-
-@Composable
-private fun BaselineSummaryRow(baseline: com.sleepanalysis.data.db.entity.ClinicalBaselineEntity) {
-    Card {
-        Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text(
-                baseline.studyDate + " · " + baseline.lab +
-                    (baseline.nightLabel?.let { " · $it" } ?: ""),
-                style = MaterialTheme.typography.bodyMedium,
-                fontWeight = FontWeight.SemiBold,
-            )
-            val metrics = buildList {
-                baseline.ahiPerHour?.let { add("AHI $it/h") }
-                baseline.totalSleepTimeMinutes?.let { add("TST ${it / 60}h ${it % 60}m") }
-                baseline.sleepEfficiencyPercent?.let { add("Eff ${it}%") }
-                baseline.arousalIndexPerHour?.let { add("Arousal ${it}/h") }
-                baseline.n3Percent?.let { add("N3 ${it}%") }
-            }
-            Text(
-                metrics.joinToString(" · ").ifEmpty { baseline.notes ?: "" },
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Text(
-                stringResource(R.string.baseline_clinically_measured) + " (" + baseline.studyType + ")",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.primary,
             )
         }
     }

@@ -41,9 +41,9 @@ class HealthConnectSessionLinkTest {
         endedAt = end,
         status = SessionStatus.COMPLETED,
         timeZone = "Europe/Zurich",
-        deviceModel = "Test",
-        osVersion = "30",
-        appVersion = "0.1.0",
+        
+        
+        
     )
 
     @Test

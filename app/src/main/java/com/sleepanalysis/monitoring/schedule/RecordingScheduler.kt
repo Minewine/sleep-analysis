@@ -15,7 +15,7 @@ import javax.inject.Singleton
  * Arms/cancels the two nightly alarms (bedtime start, end time). Start and end are computed
  * independently from "now" so that after the start fires, tonight's end and tomorrow's start
  * both still get armed. Exact when the exact-alarm permission is granted, otherwise an inexact
- * ~10-minute window (surface the fallback in Settings). Re-armed on boot, on every settings
+ * ~10-minute window (surface the fallback in Settings). Re-armed on boot, on every HomeViewModel creation, on every settings
  * change, and at the end of every start/stop receiver run.
  */
 @Singleton
@@ -90,6 +90,16 @@ class RecordingScheduler @Inject constructor(
         prefs.setScheduleSkipEpochDay(ScheduleTimes.intendedWakeDay(next, prefs.scheduleEndMinutesNow()))
         arm()
         return next
+    }
+
+    /**
+     * The ONE skip+refresh path (plan T4c): skips tonight's armed start, re-arms, and
+     * returns the REFRESHED next start (null = schedule off) — Home and Settings both
+     * publish this into their next-start state.
+     */
+    suspend fun skipTonight(): ZonedDateTime? {
+        skipNextStart()
+        return nextStartOrNull(ZonedDateTime.now())
     }
 
     private companion object {

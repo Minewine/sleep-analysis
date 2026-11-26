@@ -4,7 +4,6 @@ import android.content.Context
 import com.sleepanalysis.data.db.AppDatabase
 import com.sleepanalysis.data.db.dao.AcousticEventDao
 import com.sleepanalysis.data.db.dao.AudioClipDao
-import com.sleepanalysis.data.db.dao.ClinicalBaselineDao
 import com.sleepanalysis.data.db.dao.MeasurementDao
 import com.sleepanalysis.data.db.dao.SleepSessionDao
 import com.sleepanalysis.data.files.ClipStore
@@ -35,17 +34,9 @@ object AppModule {
 
     @Provides fun provideMeasurementDao(db: AppDatabase): MeasurementDao = db.measurementDao()
 
-    @Provides fun provideBaselineDao(db: AppDatabase): ClinicalBaselineDao = db.clinicalBaselineDao()
-
     @Provides fun provideRawPayloadDao(db: AppDatabase): com.sleepanalysis.data.db.dao.RawPayloadDao = db.rawPayloadDao()
 
     @Provides fun provideUserFactorDao(db: AppDatabase): com.sleepanalysis.data.db.dao.UserFactorDao = db.userFactorDao()
-
-    @Provides fun provideReportDao(db: AppDatabase): com.sleepanalysis.data.db.dao.ReportDao = db.reportDao()
-
-    @Provides fun provideModelRegistryDao(db: AppDatabase): com.sleepanalysis.data.db.dao.ModelRegistryDao = db.modelRegistryDao()
-
-    @Provides fun provideSleepExperimentDao(db: AppDatabase): com.sleepanalysis.data.db.dao.SleepExperimentDao = db.sleepExperimentDao()
 
     @Provides
     @Singleton

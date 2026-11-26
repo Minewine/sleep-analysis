@@ -89,12 +89,6 @@ class SettingsViewModel @Inject constructor(
     private val _keyMessage = MutableStateFlow<String?>(null)
     val keyMessage: StateFlow<String?> = _keyMessage.asStateFlow()
 
-    private val _debugEnter1 = MutableStateFlow(false)
-    val debugEnter1: StateFlow<Boolean> = _debugEnter1.asStateFlow()
-
-    private val _debugSkipWakelock = MutableStateFlow(false)
-    val debugSkipWakelock: StateFlow<Boolean> = _debugSkipWakelock.asStateFlow()
-
     // Recording controls (design: recording controls) — optimistic-set-then-persist like above.
     private val _recordingEnabled = MutableStateFlow(true)
     val recordingEnabled: StateFlow<Boolean> = _recordingEnabled.asStateFlow()
@@ -131,8 +125,6 @@ class SettingsViewModel @Inject constructor(
     val noiseMinConfidence: StateFlow<Double> = _noiseMinConfidence.asStateFlow()
 
     init {
-        viewModelScope.launch { _debugEnter1.value = prefs.debugEnterWindows1Now() }
-        viewModelScope.launch { _debugSkipWakelock.value = prefs.debugSkipCaptureWakelockNow() }
         refreshExactAlarmPermission()
         refreshNotificationPermission()
         viewModelScope.launch {
@@ -156,17 +148,6 @@ class SettingsViewModel @Inject constructor(
     fun setNoiseMinConfidence(value: Double) {
         _noiseMinConfidence.value = value
         viewModelScope.launch { prefs.setNoiseDisplayMinConfidence(value) }
-    }
-
-    fun setDebugEnter1(enabled: Boolean) {
-        _debugEnter1.value = enabled
-        viewModelScope.launch { prefs.setDebugEnterWindows1(enabled) }
-    }
-
-    /** Applies to the NEXT recording start; a running session keeps its lock state. */
-    fun setDebugSkipWakelock(enabled: Boolean) {
-        _debugSkipWakelock.value = enabled
-        viewModelScope.launch { prefs.setDebugSkipCaptureWakelock(enabled) }
     }
 
     fun setRecordingEnabled(enabled: Boolean) {
@@ -213,8 +194,7 @@ class SettingsViewModel @Inject constructor(
 
     fun skipTonight() {
         viewModelScope.launch {
-            scheduler.skipNextStart()
-            _nextScheduledStart.value = scheduler.nextStartOrNull(ZonedDateTime.now())
+            _nextScheduledStart.value = scheduler.skipTonight()
         }
     }
 
@@ -303,8 +283,6 @@ fun SettingsScreen(
     val keyMessage by viewModel.keyMessage.collectAsStateWithLifecycle()
     val importState by viewModel.importManager.state.collectAsStateWithLifecycle()
     val hcImportState by viewModel.healthConnectImportManager.state.collectAsStateWithLifecycle()
-    val debugEnter1 by viewModel.debugEnter1.collectAsStateWithLifecycle()
-    val debugSkipWakelock by viewModel.debugSkipWakelock.collectAsStateWithLifecycle()
     val recordingEnabled by viewModel.recordingEnabled.collectAsStateWithLifecycle()
     val scheduleEnabled by viewModel.scheduleEnabled.collectAsStateWithLifecycle()
     val scheduleStartMinutes by viewModel.scheduleStartMinutes.collectAsStateWithLifecycle()
@@ -673,47 +651,6 @@ fun SettingsScreen(
                     style = MaterialTheme.typography.bodySmall,
                 )
             }
-
-            Card {
-                Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
-                    ) {
-                        Column(Modifier.weight(1f)) {
-                            Text(stringResource(R.string.settings_debug_title), fontWeight = FontWeight.SemiBold)
-                            Text(
-                                stringResource(R.string.settings_debug_body),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                        androidx.compose.material3.Switch(
-                            checked = debugEnter1,
-                            onCheckedChange = { viewModel.setDebugEnter1(it) },
-                        )
-                    }
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
-                    ) {
-                        Column(Modifier.weight(1f)) {
-                            Text(stringResource(R.string.settings_debug_wakelock_title), fontWeight = FontWeight.SemiBold)
-                            Text(
-                                stringResource(R.string.settings_debug_wakelock_body),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                        androidx.compose.material3.Switch(
-                            checked = debugSkipWakelock,
-                            onCheckedChange = { viewModel.setDebugSkipWakelock(it) },
-                        )
-                    }
-                }
-            }
         }
     }
 
@@ -743,16 +680,10 @@ fun SettingsScreen(
 
 /** One time row: label + tappable "22:30" value; disabled while scheduling is off. */
 @Composable
-private fun TimeRow(label: String, value: String, enabled: Boolean, onClick: () -> Unit) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
-    ) {
-        Text(label, style = MaterialTheme.typography.bodyMedium)
+private fun TimeRow(label: String, value: String, enabled: Boolean, onClick: () -> Unit) =
+    com.sleepanalysis.ui.components.LabeledRow(label) {
         TextButton(onClick = onClick, enabled = enabled) { Text(value) }
     }
-}
 
 /** Presets for the capture start delay; 0 = off. Values in minutes (night-2 dogfood idea). */
 private val START_DELAY_OPTIONS = intArrayOf(0, 15, 30, 45, 60, 90)

@@ -17,8 +17,7 @@
     </string>
     <string name="onboarding_what_we_record">What this app records</string>
     <string name="onboarding_what_body">
-        • Microphone audio is processed on this device only — nothing is uploaded (the app has no
-        internet permission at all).\n\n
+        • Microphone audio is processed on this device only — nothing is uploaded.\n\n
         • Full-night audio is never saved. Short clips (a few seconds) are kept for detected events
         so you can verify them, and are deleted automatically after your retention period.\n\n
         • All data stays in this app\'s private storage. You can delete a single night or everything
@@ -46,21 +45,16 @@
     <string name="home_stop_confirm_ok">Stop recording</string>
     <string name="home_stop_confirm_cancel">Keep recording</string>
     <string name="home_mic_indicator">Microphone active</string>
+    <string name="home_mic_indicator_inactive">Microphone off</string>
     <string name="home_last_night">Last morning report</string>
     <string name="home_no_sessions">No recorded nights yet.</string>
-    <string name="home_view_report">Open report</string>
     <string name="home_history">History</string>
-    <string name="home_baseline">Clinical baseline</string>
     <string name="home_settings">Settings</string>
-    <string name="home_battery_hint_title">Battery optimization is on</string>
-    <string name="home_battery_hint_body">Android may stop overnight recording to save power. For reliable all-night capture, exclude SleepAnalysis from battery optimization.</string>
-    <string name="home_battery_hint_button">Open battery settings</string>
     <string name="home_error_prefix">Could not start: %1$s</string>
     <string name="home_recording_disabled_hint">Recording is disabled in Settings.</string>
     <string name="home_schedule_next_tonight">Scheduled start tonight at %1$s</string>
     <string name="home_schedule_next">Next scheduled start: %1$s</string>
     <string name="home_schedule_skip">Skip tonight</string>
-    <string name="home_schedule_off">Scheduled start is off — recording starts manually.</string>
     <string name="home_schedule_enable">Turn on in Settings</string>
     <string name="home_capture_window">Captured %1$s – %2$s</string>
     <!-- Missed-night banner: calm absence made visible; skipped/recorded nights show nothing. -->
@@ -96,9 +90,6 @@
     <string name="report_events_title">Acoustic events</string>
     <string name="report_tap_event">Tap the timeline or an event to play its clip.</string>
     <string name="report_no_events">No acoustic events were detected this night.</string>
-    <string name="report_baseline_section">Your clinical baseline (PSG, read-only)</string>
-    <string name="report_baseline_note">Values below were clinically measured during sleep studies and are never compared one-to-one with the phone estimates above — the two are different kinds of measurement.</string>
-    <string name="report_interrupted_note">This session was interrupted and recovered; the report covers only what was recorded.</string>
     <string name="report_no_clip">No clip stored for this event.</string>
     <string name="report_play">Play clip</string>
     <string name="report_stop_playback">Stop playback</string>
@@ -118,7 +109,6 @@
     <string name="report_quality_version_score">Previous night\'s score is not comparable — different or unknown score formula version.</string>
 
     <!-- Night validity badge (grade A–D over capture integrity — docs/NIGHT_REPORT.md) -->
-    <string name="validity_title">Night data quality</string>
     <string name="validity_summary_a">Good capture conditions</string>
     <string name="validity_summary_b">Mostly solid data, a few caveats</string>
     <string name="validity_summary_c">Several caveats — worth reading the notes</string>
@@ -157,24 +147,6 @@
     <string name="report_top_clips_note">Loudest retained audio, highest peak first — tap the row for details.</string>
 
     <!-- Baseline -->
-    <string name="baseline_title">Clinical baseline</string>
-    <string name="baseline_note">Enter the summary numbers from your sleep study reports (e.g. HUG, January 2026). These are stored read-only as your reference: corrections are made by adding a new entry, never by editing.</string>
-    <string name="baseline_add">Add study night</string>
-    <string name="baseline_empty">No clinical baseline stored yet.</string>
-    <string name="baseline_dialog_title">Add clinical study night</string>
-    <string name="baseline_field_date">Study date (YYYY-MM-DD)</string>
-    <string name="baseline_field_lab">Lab</string>
-    <string name="baseline_field_night">Night label</string>
-    <string name="baseline_field_tst">Total sleep time (minutes)</string>
-    <string name="baseline_field_efficiency">Sleep efficiency (%)</string>
-    <string name="baseline_field_arousal">Arousal index (/h)</string>
-    <string name="baseline_field_n3">N3 deep sleep (%)</string>
-    <string name="baseline_field_ahi">AHI (/h)</string>
-    <string name="baseline_field_notes">Notes</string>
-    <string name="baseline_field_source_doc">Source document reference</string>
-    <string name="baseline_save">Save (permanent)</string>
-    <string name="baseline_invalid_date">Study date must be YYYY-MM-DD.</string>
-    <string name="baseline_clinically_measured">Clinically measured</string>
 
     <!-- History -->
     <string name="history_title">Recorded nights</string>
@@ -184,7 +156,7 @@
     <string name="history_delete_confirm_title">Delete this night?</string>
     <string name="history_delete_confirm_body">Deletes the session, its events and its audio clips. Derived measurements are kept for trends.</string>
     <string name="history_delete_all_confirm_title">Delete ALL data?</string>
-    <string name="history_delete_all_confirm_body">This removes every recording, event, clip, measurement AND your clinical baseline. This cannot be undone.</string>
+    <string name="history_delete_all_confirm_body">This removes every recording, event, clip, measurement and factor log entry. This cannot be undone.</string>
     <string name="history_in_progress">in progress</string>
     <string name="history_cancel">Cancel</string>
     <string name="history_deleted_toast">Night deleted</string>
@@ -200,6 +172,7 @@
     <string name="home_interrupted_title">Previous night was interrupted</string>
     <string name="home_interrupted_body">Recording stopped unexpectedly (session started %1$s). %2$d acoustic events were saved up to that point. You can finalize them into a report now.</string>
     <string name="home_interrupted_action">Finalize &amp; view report</string>
+    <string name="home_interrupted_resume">Resume</string>
 
     <!-- Notification -->
     <string name="notif_channel_name">Night recording</string>
@@ -224,7 +197,6 @@
     <string name="service_error_session_missing">Session row missing</string>
 
     <!-- Retention -->
-    <string name="retention_worker_note">Retention: clips are deleted after 7 days, sessions after 90 days (settings in a later phase).</string>
 
     <!-- Settings -->
     <string name="settings_title">Settings</string>
@@ -287,7 +259,6 @@
     <string name="report_garmin_note">Vendor algorithms, shown as context next to the acoustic estimates above — never compared numerically with clinical data.</string>
     <string name="report_garmin_empty">No Garmin data imported for this night yet.</string>
     <string name="report_garmin_import">Import from Garmin</string>
-    <string name="report_garmin_window">Garmin sleep window (%1$s)</string>
     <string name="report_garmin_overlap">Overlap with captured night</string>
     <string name="report_garmin_no_overlap">Garmin\'s window does not overlap the captured night — this may be the wrong night\'s data.</string>
     <string name="report_garmin_score">Garmin sleep score</string>
@@ -360,14 +331,10 @@
     <string name="log_share">Export</string>
     <string name="log_empty">No log file exists for this session (recorded before health tracking, or logging failed silently).</string>
 
-    <!-- Settings: debug -->
+    <!-- Settings: noise filter -->
     <string name="settings_noise_filter_title">Low-confidence noise in reports</string>
     <string name="settings_noise_filter_subtitle">Hide noise events whose detector confidence falls below the threshold (kept in the database either way). Off shows everything.</string>
     <string name="settings_noise_filter_off">Off</string>
-    <string name="settings_debug_title">Debug: relax event opening</string>
-    <string name="settings_debug_body">Open an event after a single loud window instead of two consecutive ones. Debug aid for quiet testing only — takes effect on the next recording, which is marked \"dbg1\" in its data.</string>
-    <string name="settings_debug_wakelock_title">Debug: drop capture wake lock</string>
-    <string name="settings_debug_wakelock_body">Battery A/B experiment: drop the capture wake lock for the recording itself so the SoC can suspend between hops. A configured start delay keeps its lock — it is a plain timer with no alarm backup — and the lock is dropped when capture begins. Audio may drop out; the next recording is marked \"wl=off\" (or \"wl=off-delay-covered\" when a start delay held the lock) in its session log so the arm is identifiable.</string>
 
     <!-- Report: event features (debug visibility) -->
     <string name="report_features_title">Detector inputs</string>
@@ -393,12 +360,6 @@
     <string name="report_factors_note">You logged these for the day of this recording. User-entered context, not measurements.</string>
 
     <!-- Daily factor log -->
-    <string name="factor_title">Daily log</string>
-    <string name="factor_date">Date (YYYY-MM-DD)</string>
-    <string name="factor_note">Log the day behind tonight\'s recording. Only what you set is stored; entries for a date are replaced when you save again.</string>
-    <string name="factor_alcohol_units">Units (optional)</string>
-    <string name="factor_save">Save</string>
-    <string name="factor_saved">Saved</string>
 
     <!-- Insights (docs/INSIGHTS.md): tone is "your recordings suggest" — never clinical, never diagnosis. -->
     <string name="insight_title">Insights</string>
@@ -443,93 +404,6 @@
     <string name="insight_rule_caffeine_nights">On nights you logged caffeine after 14:00, your recordings suggest somewhat more awake time or shorter sleep than on other nights. Research reports small average effects; these numbers are yours.</string>
     <string name="insight_rule_exercise_evening">On this exercise-logged night, awake time ran above your usual range. We can\'t tell when or how hard you exercised — the app records only the fact — so this is association, not a mechanism.</string>
     <string name="insight_rule_stress_high">On nights you logged high stress, your wrist rMSSD ran lower and awake time higher than your usual range. Stress physiology and wrist sensors are both imperfect — your recordings suggest; they don\'t diagnose.</string>
-
-    <!-- Escalation card (docs/INSIGHTS.md §Escalation) — screening context, never a diagnosis -->
-    <string name="escalation_title">Worth discussing with a clinician?</string>
-    <string name="escalation_triggered">Worth discussing with a clinician — snoring is common and usually harmless, but these signals warrant a professional opinion.</string>
-    <string name="escalation_acoustic_arm">Your recordings: snoring over a quarter of the night, with bouts over 10 minutes, on 3 or more eligible nights in a row.</string>
-    <string name="escalation_selfreport_arm">Your answers below marked at least one screening signal.</string>
-    <string name="escalation_question_s">Is your snoring louder than talking, or can it be heard through closed doors?</string>
-    <string name="escalation_question_o">Have breathing pauses or gasping during sleep ever been witnessed?</string>
-    <string name="escalation_question_t">Are you sleepy most days?</string>
-    <string name="escalation_yes">Yes</string>
-    <string name="escalation_no">No</string>
-    <string name="escalation_save">Save answers</string>
-    <string name="escalation_edit">Edit answers</string>
-    <string name="escalation_context">These are three screening questions from a widely used clinical checklist (STOP-BANG). A conversation aid — never a diagnosis, never a test result.</string>
-    <string name="escalation_collecting">The acoustic signal needs 3 eligible nights in a row (quality grade A or B).</string>
-
-    <!-- Playbook (docs/INSIGHTS.md §Playbook) — suggestions, never cures -->
-    <string name="playbook_title">Things you could try</string>
-    <string name="playbook_intro">Evidence-graded suggestions that may fit what your recordings show. Each names its evidence and the number that would verify it — a suggestion, never a cure.</string>
-    <string name="playbook_stimulus_control_title">Get up when you can\'t sleep</string>
-    <string name="playbook_stimulus_control_instruction">Awake for more than 20 minutes? Get up, keep the light dim, and return to bed when sleepy.</string>
-    <string name="playbook_fixed_wake_title">Fix your wake time</string>
-    <string name="playbook_fixed_wake_instruction">Fix your wake time within ±30 minutes — every day of the week.</string>
-    <string name="playbook_morning_light_title">Morning daylight</string>
-    <string name="playbook_morning_light_instruction">Get 10–30 minutes of outdoor light within about an hour of waking.</string>
-    <string name="playbook_wind_down_title">Wind-down buffer</string>
-    <string name="playbook_wind_down_instruction">Keep a 30–60 minute dim, low-stimulation buffer before bed.</string>
-    <string name="playbook_slow_breathing_title">Slow breathing</string>
-    <string name="playbook_slow_breathing_instruction">Try 5 minutes of slow breathing at about 6 breaths per minute.</string>
-    <string name="playbook_mindfulness_title">Mindfulness practice</string>
-    <string name="playbook_mindfulness_instruction">A regular mindfulness practice is associated with calmer evenings in research reviews.</string>
-    <string name="playbook_bedroom_temp_title">Bedroom temperature</string>
-    <string name="playbook_bedroom_temp_instruction">Keep the bedroom around 18–20 °C — the range reported comfortable for most adults.</string>
-    <string name="playbook_nap_limit_title">Short, early naps</string>
-    <string name="playbook_nap_limit_instruction">Nap 20 minutes or less, ending by 15:00; on nights when falling or staying asleep is hard, skip the nap.</string>
-    <string name="playbook_screens_optional_title">Screens before bed (optional)</string>
-    <string name="playbook_screens_optional_instruction">Changing screen use before bed is optional: the evidence is weak, so this is never a promise — do what suits you.</string>
-    <string name="playbook_side_sleeping_title">Side sleeping</string>
-    <string name="playbook_side_sleeping_instruction">Try side-sleeping for a week and watch your snoring share — the app has no position data, so observe for yourself.</string>
-    <string name="playbook_myofunctional_title">Mouth and throat exercises</string>
-    <string name="playbook_myofunctional_instruction">Try 5 minutes of tongue and throat exercises daily, for 8–12 weeks.</string>
-    <string name="playbook_bed_elevation_title">Raise the head of the bed</string>
-    <string name="playbook_bed_elevation_instruction">Raise the head of your bed by 7.5–30°.</string>
-    <string name="playbook_nasal_dilator_title">Nasal dilator strip</string>
-    <string name="playbook_nasal_dilator_instruction">Try an external nasal dilator strip for a week.</string>
-    <string name="playbook_no_evening_alcohol_title">No evening alcohol</string>
-    <string name="playbook_no_evening_alcohol_instruction">Skip alcohol in the evening for a week and watch your snoring share.</string>
-    <string name="playbook_weight_context_title">Weight and snoring (context)</string>
-    <string name="playbook_weight_context_instruction">In large cohort research, a ~2.6% weight change went with roughly a 1% shift in breathing-related sleep measures. Context only — this app measures snoring, not weight, and cannot verify this for you.</string>
-    <string name="playbook_evidence_edinger_2021">Evidence: AASM clinical guideline (Edinger 2021, J Clin Sleep Med) — strong.</string>
-    <string name="playbook_evidence_windred_2024">Evidence: Windred 2024, Sleep (observational regularity research) — moderate.</string>
-    <string name="playbook_evidence_roenneberg_2012">Evidence: Roenneberg 2012, Current Biology (circadian context) — observational.</string>
-    <string name="playbook_evidence_balban_2023">Evidence: Balban 2023, Cell Reports Medicine (randomized trial) — moderate.</string>
-    <string name="playbook_evidence_rusch_2019">Evidence: Rusch 2019 (meta-analysis) — moderate.</string>
-    <string name="playbook_evidence_lan_2017">Evidence: Lan 2017 (thermoregulation review); Baniassadi 2023 — moderate.</string>
-    <string name="playbook_evidence_dutheil_2021">Evidence: Dutheil 2021 (review) — moderate.</string>
-    <string name="playbook_evidence_brosnan_2024">Evidence: Brosnan 2024 — weak. Optional; never promised.</string>
-    <string name="playbook_evidence_ravesloot_2017">Evidence: Ravesloot 2017 (position and sleep) — moderate.</string>
-    <string name="playbook_evidence_camacho_2015">Evidence: Camacho 2015; Camacho 2018 (reviews) — moderate.</string>
-    <string name="playbook_evidence_souza_2017">Evidence: Souza 2017; Maniaci 2025 — weak to moderate.</string>
-    <string name="playbook_evidence_mazza_2019">Evidence: Mazza 2019 (randomized trial) — moderate.</string>
-    <string name="playbook_evidence_ebrahim_2013">Evidence: Ebrahim 2013, Alcoholism: Clinical &amp; Experimental Research — moderate.</string>
-    <string name="playbook_evidence_peppard_2000">Evidence: Peppard 2000 (cohort study) — observational; context only.</string>
-
-    <!-- N-of-1 experiments (docs/DATA_MODEL.md §3.12, docs/INSIGHTS.md §Playbook) -->
-    <string name="experiment_chip">Experiment day %1$d/%2$d: %3$s</string>
-    <string name="experiment_confirm_chip">Confirm phase — back to your old routine, night %1$d/%2$d: %3$s</string>
-    <string name="experiment_active_title">Your experiment</string>
-    <string name="experiment_active_body">Trying: %1$s — verifying with: %2$s.</string>
-    <string name="experiment_progress">%1$d usable night(s) of %2$d planned — %3$d excluded (other logged factors), %4$d without a metric value.</string>
-    <string name="experiment_below_pace">Nights with other logged factors or a missing metric don\'t count toward the verdict — this count is honest, even when it lags.</string>
-    <string name="experiment_start_button">Try this for %1$d nights</string>
-    <string name="experiment_verify">Verify: %1$s</string>
-    <string name="experiment_recheck">Recheck in 7 nights</string>
-    <string name="experiment_finish_first">One experiment at a time — finish or abandon the current one first.</string>
-    <string name="experiment_baseline_collecting">Your baseline is still collecting (%1$d eligible night(s)) — experiments need it ready (10 eligible nights).</string>
-    <string name="experiment_no_band">No baseline band for this metric yet — the experiment cannot start.</string>
-    <string name="experiment_abandon">Abandon</string>
-    <string name="experiment_keep">Keep</string>
-    <string name="experiment_confirm_intro">Go back to your old routine for %1$d more nights — if the number then returns to your usual range, the change looks real. That is an A-B-A check, not proof.</string>
-    <string name="experiment_confirm_start">Run a return-to-baseline phase (%1$d nights)</string>
-    <string name="experiment_verdict_change">While you tried the change, your %1$s ran %2$s beyond your usual night-to-night variation. Low confidence — a change, never an improvement claim.</string>
-    <string name="experiment_verdict_no_change">No change beyond your usual night-to-night variation. Low confidence — absence of evidence is not evidence of no effect.</string>
-    <string name="experiment_direction_up">higher</string>
-    <string name="experiment_direction_down">lower</string>
-    <string name="experiment_confirmed">Your return-to-baseline phase is consistent with the change (moderate confidence).</string>
-    <string name="experiment_not_confirmed">The return-to-baseline phase did not confirm the effect (low confidence).</string>
 
     <!-- Bulk clip labeling (LabelingScreen) -->
     <string name="labeling_title">Label clips</string>

@@ -38,9 +38,9 @@ class ValidityCalculatorTest {
         endedAt = endedAt,
         status = "COMPLETED",
         timeZone = "UTC",
-        deviceModel = "test",
-        osVersion = "0",
-        appVersion = "0",
+        
+        
+        
         captureStats = if (p95 == null) {
             """{"schema_version":1}""" // stats-less legacy night (pre-v3)
         } else {

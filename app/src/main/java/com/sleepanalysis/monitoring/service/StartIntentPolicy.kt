@@ -58,6 +58,14 @@ internal enum class ResumeDecision {
     STALE,
 }
 
+/**
+ * Whether the "start capture now" tap still owes a foreground promotion: Recording/Starting
+ * and Delayed are already foreground (re-promoting re-posts a fresh chronometer-anchored
+ * notification), the other states promote first so the startForegroundService delivery is
+ * paid before standing down.
+ */
+fun shouldPromoteOnSkip(state: MonitorState): Boolean = state !is MonitorState.Delayed
+
 internal fun resumeDecision(openSessionId: Long, recordingEnabled: Boolean): ResumeDecision = when {
     openSessionId <= 0L -> ResumeDecision.STALE
     !recordingEnabled -> ResumeDecision.BLOCKED

@@ -6,12 +6,10 @@ import androidx.room.Query
 import androidx.room.Transaction
 import com.sleepanalysis.data.db.entity.AcousticEventEntity
 import com.sleepanalysis.data.db.entity.AudioClipEntity
-import com.sleepanalysis.data.db.entity.ClinicalBaselineEntity
 import com.sleepanalysis.data.db.entity.MeasurementEntity
 import com.sleepanalysis.data.db.entity.ModelRegistryEntity
 import com.sleepanalysis.data.db.entity.RawPayloadEntity
 import com.sleepanalysis.data.db.entity.ReportSnapshotEntity
-import com.sleepanalysis.data.db.entity.SleepExperimentEntity
 import com.sleepanalysis.data.db.entity.SleepSessionEntity
 import com.sleepanalysis.data.db.entity.QuietGapEntity
 import com.sleepanalysis.data.db.entity.SleepStageEntity
@@ -25,9 +23,9 @@ interface SleepSessionDao {
 
     @Query(
         "UPDATE sleep_session SET endedAt = :endedAt, status = :status, " +
-            "captureStats = :captureStats, audioBytesTotal = :audioBytes WHERE id = :id"
+            "captureStats = :captureStats WHERE id = :id"
     )
-    suspend fun finalize(id: Long, endedAt: Long, status: String, captureStats: String?, audioBytes: Long)
+    suspend fun finalize(id: Long, endedAt: Long, status: String, captureStats: String?)
 
     @Query("SELECT * FROM sleep_session WHERE endedAt IS NULL ORDER BY startedAt DESC LIMIT 1")
     suspend fun findOpen(): SleepSessionEntity?
@@ -44,9 +42,6 @@ interface SleepSessionDao {
 
     @Query("SELECT * FROM sleep_session ORDER BY startedAt DESC")
     fun observeAll(): Flow<List<SleepSessionEntity>>
-
-    @Query("SELECT startedAt FROM sleep_session ORDER BY startedAt DESC")
-    suspend fun allStartTimes(): List<Long>
 
     @Query("SELECT * FROM sleep_session")
     suspend fun all(): List<SleepSessionEntity>
@@ -107,13 +102,13 @@ interface AcousticEventDao {
     @Query("SELECT COUNT(*) FROM acoustic_event WHERE sessionId = :sessionId")
     suspend fun countForSession(sessionId: Long): Int
 
-    @Query("UPDATE acoustic_event SET userLabel = :label, labeledAt = :labeledAt WHERE id = :eventId")
-    suspend fun setUserLabel(eventId: Long, label: String?, labeledAt: Long?)
+    @Query("UPDATE acoustic_event SET userLabel = :label WHERE id = :eventId")
+    suspend fun setUserLabel(eventId: Long, label: String?)
 
     /**
      * Retention: clears the clip link of events whose clip rows are being deleted, in the
-     * same transaction as the row deletion (RetentionWorker) — belt-and-braces alongside the
-     * FK's ON DELETE SET_NULL, keeping the clip↔event invariant explicit (DATA_MODEL.md §3.5).
+     * same transaction as the row deletion (RetentionWorker) — acoustic_event.clipId has no
+     * foreign key (v14), so this query is the only thing that clears the link.
      */
     @Query("UPDATE acoustic_event SET clipId = NULL WHERE clipId IN (:clipIds)")
     suspend fun clearClipIds(clipIds: List<Long>)
@@ -222,22 +217,6 @@ interface MeasurementDao {
     }
 }
 
-/** Clinical baseline is insert + read only — immutability is enforced (docs/DATA_MODEL.md §4). */
-@Dao
-interface ClinicalBaselineDao {
-    @Insert
-    suspend fun insert(baseline: ClinicalBaselineEntity): Long
-
-    @Query("SELECT * FROM clinical_baseline ORDER BY studyDate DESC, id DESC")
-    fun observeAll(): Flow<List<ClinicalBaselineEntity>>
-
-    @Query("SELECT * FROM clinical_baseline ORDER BY studyDate")
-    suspend fun all(): List<ClinicalBaselineEntity>
-
-    @Query("DELETE FROM clinical_baseline")
-    suspend fun deleteAll()
-}
-
 /** Raw vendor payloads (docs/GARMIN_INTEGRATION.md). Upsert per (source, endpoint, date). */
 @Dao
 interface RawPayloadDao {
@@ -342,65 +321,7 @@ interface ReportDao {
     @Query("SELECT * FROM report WHERE sessionId = :sessionId")
     suspend fun bySession(sessionId: Long): ReportSnapshotEntity?
 
-    @Query("SELECT * FROM report ORDER BY generatedAt DESC")
-    suspend fun all(): List<ReportSnapshotEntity>
-
     @Query("DELETE FROM report")
-    suspend fun deleteAll()
-}
-
-/**
- * N-of-1 experiment rows (schema v13, docs/DATA_MODEL.md §3.12). Exactly ONE ACTIVE row is a
- * tracker-logic invariant (not SQL); the A-B-A confirm phase re-activates the DONE row itself.
- */
-@Dao
-interface SleepExperimentDao {
-    @Insert
-    suspend fun insert(experiment: SleepExperimentEntity): Long
-
-    /** The single ACTIVE row, if any (exactly one is enforced before insert — ExperimentTracker). */
-    @Query("SELECT * FROM sleep_experiment WHERE status = 'ACTIVE' ORDER BY startedAt DESC LIMIT 1")
-    suspend fun active(): SleepExperimentEntity?
-
-    @Query("SELECT * FROM sleep_experiment ORDER BY startedAt DESC")
-    suspend fun history(): List<SleepExperimentEntity>
-
-    @Query("SELECT * FROM sleep_experiment WHERE id = :id")
-    suspend fun byId(id: Long): SleepExperimentEntity?
-
-    /** Phase verdict lands at the night threshold: ACTIVE → DONE with the verdict JSON. */
-    @Query("UPDATE sleep_experiment SET status = 'DONE', resultJson = :resultJson WHERE id = :id AND status = 'ACTIVE'")
-    suspend fun finish(id: Long, resultJson: String)
-
-    /** A-B-A confirm phase re-activates the DONE row (reuse — the single-ACTIVE invariant holds). */
-    @Query("UPDATE sleep_experiment SET status = 'ACTIVE', confirmPhaseJson = :confirmPhaseJson WHERE id = :id AND status = 'DONE'")
-    suspend fun beginConfirmPhase(id: Long, confirmPhaseJson: String)
-
-    /**
-     * Confirm completed: back to DONE with the (possibly upgraded) verdict + the final confirm
-     * JSON. Guarded to ACTIVE — an ABANDONED (or already-DONE) row can never be resurrected
-     * by an in-flight finalize.
-     */
-    @Query(
-        "UPDATE sleep_experiment SET status = 'DONE', resultJson = :resultJson, " +
-            "confirmPhaseJson = :confirmPhaseJson WHERE id = :id AND status = 'ACTIVE'"
-    )
-    suspend fun finishConfirm(id: Long, resultJson: String, confirmPhaseJson: String)
-
-    /**
-     * User keeps the verdict (verdict card stops rendering; result otherwise untouched).
-     * Allowed on DONE and — for a Keep that races the confirm finalize's recomposition window
-     * — on an ACTIVE confirm row too (the finalize rebuild preserves the kept flag); never on
-     * an ABANDONED row.
-     */
-    @Query("UPDATE sleep_experiment SET resultJson = :resultJson WHERE id = :id AND status != 'ABANDONED'")
-    suspend fun updateResult(id: Long, resultJson: String)
-
-    /** User abandons the experiment (ACTIVE or DONE — the row keeps any verdict it earned). */
-    @Query("UPDATE sleep_experiment SET status = 'ABANDONED' WHERE id = :id AND status != 'ABANDONED'")
-    suspend fun abandon(id: Long)
-
-    @Query("DELETE FROM sleep_experiment")
     suspend fun deleteAll()
 }
 
@@ -427,17 +348,6 @@ interface ModelRegistryDao {
             "ORDER BY validFromUtc DESC LIMIT 1"
     )
     suspend fun currentForKind(kind: String): ModelRegistryEntity?
-
-    /** Full validity history of [kind], oldest first. */
-    @Query("SELECT * FROM model_registry WHERE kind = :kind ORDER BY validFromUtc")
-    suspend fun historyForKind(kind: String): List<ModelRegistryEntity>
-
-    /** Versions valid at [atMs] — rows whose range covers the instant (null validTo = open end). */
-    @Query(
-        "SELECT * FROM model_registry WHERE kind = :kind AND validFromUtc <= :atMs " +
-            "AND (validToUtc IS NULL OR validToUtc > :atMs) ORDER BY validFromUtc"
-    )
-    suspend fun versionsAt(kind: String, atMs: Long): List<ModelRegistryEntity>
 
     @Query("DELETE FROM model_registry")
     suspend fun deleteAll()

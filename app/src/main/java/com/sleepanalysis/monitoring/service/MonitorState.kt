@@ -66,6 +66,14 @@ fun canSkipStartDelay(current: MonitorState): Boolean = current is MonitorState.
  */
 fun canStartNewSession(current: MonitorState): Boolean = current !is MonitorState.Interrupted
 
+/**
+ * Pure guard for clearing the interrupted-night banner: the banner is obsolete once the
+ * service is actually capturing (Recording) or about to capture after a resume-with-delay
+ * (Delayed) — both prove the open session was resumed and no longer needs the banner.
+ */
+fun clearsInterruptedBanner(state: MonitorState): Boolean =
+    state is MonitorState.Recording || state is MonitorState.Delayed
+
 @Singleton
 class MonitorStateHolder @Inject constructor() {
     private val _state = MutableStateFlow<MonitorState>(MonitorState.Idle)

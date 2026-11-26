@@ -163,7 +163,6 @@ object DetectorConfig {
      * [STRONG_SNR_DB]) is believed only when another snore window occurred within
      * [RHYTHM_WINDOW_MS] — snoring arrives in periodic trains, isolated spikes do not.
      */
-    const val RHYTHM_ENABLED = true
     const val RHYTHM_WINDOW_MS = 8_000L
 
     /** SNR margin above SNORE_MIN_SNR_DB that bypasses the rhythm gate. */

@@ -1,7 +1,6 @@
 package com.sleepanalysis.ui.report
 
 import android.content.Context
-import android.media.MediaPlayer
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -110,7 +109,8 @@ class LabelingViewModel @Inject constructor(
     private val _playingEventId = MutableStateFlow<Long?>(null)
     val playingEventId: StateFlow<Long?> = _playingEventId.asStateFlow()
 
-    private var mediaPlayer: MediaPlayer? = null
+    // One shared clip player (plan T4e) — stop-then-play, release on completion/failure/clear.
+    private val clipPlayer = com.sleepanalysis.ui.components.ClipPlayer { _playingEventId.value = it }
 
     init {
         viewModelScope.launch {
@@ -148,40 +148,12 @@ class LabelingViewModel @Inject constructor(
 
     fun clipFile(item: LabelingItem): File = clipStore.absolutePath(item.clipPath)
 
-    fun play(item: LabelingItem) {
-        stopPlayback()
-        val file = clipFile(item)
-        if (!file.exists()) return
-        runCatching {
-            mediaPlayer = MediaPlayer().apply {
-                setDataSource(file.absolutePath)
-                setOnCompletionListener {
-                    _playingEventId.value = null
-                    releasePlayer()
-                }
-                prepare()
-                start()
-            }
-            _playingEventId.value = item.eventId
-        }.onFailure {
-            _playingEventId.value = null
-            releasePlayer()
-        }
-    }
+    fun play(item: LabelingItem) = clipPlayer.play(item.eventId, clipFile(item))
 
-    fun stopPlayback() {
-        runCatching { mediaPlayer?.stop() }
-        releasePlayer()
-        _playingEventId.value = null
-    }
-
-    private fun releasePlayer() {
-        runCatching { mediaPlayer?.release() }
-        mediaPlayer = null
-    }
+    fun stopPlayback() = clipPlayer.stopPlayback()
 
     override fun onCleared() {
-        releasePlayer()
+        clipPlayer.release()
         super.onCleared()
     }
 }
@@ -305,20 +277,14 @@ private fun LabelingRow(
                 Button(onClick = onPlay) { Text(stringResource(R.string.report_play)) }
             }
         }
-        // FlowRow: six chips exceed one screen width — a plain Row pushed the last labels
-        // (Other / Not snore, Silence) off-screen and unreachable.
-        @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
-        androidx.compose.foundation.layout.FlowRow(
-            Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-        ) {
-            EventUserLabel.entries.forEach { label ->
-                FilterChip(
-                    selected = item.label == label,
-                    onClick = { onLabel(label) },
-                    label = { Text(label.label, style = MaterialTheme.typography.labelSmall) },
-                )
-            }
-        }
+        // FlowRow inside: six chips exceed one screen width — a plain Row pushed the last
+        // labels (Other / Not snore, Silence) off-screen and unreachable.
+        com.sleepanalysis.ui.components.EventLabelChips(
+            isSelected = { item.label == it },
+            onLabel = onLabel,
+            modifier = Modifier.fillMaxWidth(),
+            spacing = 6.dp,
+            labelStyle = MaterialTheme.typography.labelSmall,
+        )
     }
 }

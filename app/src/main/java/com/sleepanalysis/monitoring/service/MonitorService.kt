@@ -17,7 +17,6 @@ import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
-import com.sleepanalysis.MainActivity
 import com.sleepanalysis.R
 import com.sleepanalysis.data.db.entity.SessionStatus
 import com.sleepanalysis.data.logs.SessionLogger
@@ -50,15 +49,7 @@ import kotlinx.coroutines.sync.withLock
  *    keeps the SoC's audio path awake anyway, but the lock makes capture reliable across OEMs —
  *    missed audio is the worst failure mode for this product. Battery cost is measured in the
  *    Phase 1 dogfood (quality gate: ≤ 10 %/8 h) and the lock will be dropped if soak tests show
- *    the audio path alone is sufficient. That no-lock arm is now runnable as the documented
- *    experiment: the debug "drop capture wake lock" Settings toggle
- *    (UserPreferences.debugSkipCaptureWakelock) drops the lock for the RECORDING itself. A
- *    configured start delay keeps its lock — the delay wait is a plain coroutine with no alarm
- *    backup, so without it the SoC can suspend mid-delay and capture would silently start
- *    late — and the lock is dropped when capture begins ([beginCaptureLocked]), so the
- *    experiment covers exactly the capture window. The arm is marked in the session log:
- *    recording_start gains "wl=off" (no lock at all, only with a zero delay) or
- *    "wl=off-delay-covered" (lock held through the delay only).
+ *    the audio path alone is sufficient.
  *  - Thermal throttling: at MODERATE+ the engine analyzes every 2nd hop (0.5 s → 1.0 s) while
  *    the ring buffer keeps advancing, so clip capture is unaffected.
  */
@@ -92,21 +83,6 @@ class MonitorService : Service() {
     private var thermalListener: PowerManager.OnThermalStatusChangedListener? = null
     private var heartbeatJob: kotlinx.coroutines.Job? = null
 
-    /** Wakelock coverage of the active session (battery A/B experiment — see the class KDoc). */
-    @Volatile private var captureWakelockMode = CaptureWakelockMode.FULL
-
-    /**
-     * How the capture wakelock is held for the active session (battery A/B experiment):
-     *  - [FULL]: held for the whole session (default, historical behavior).
-     *  - [DELAY_ONLY]: debug flag + a configured start delay — the lock covers ONLY the delay
-     *    wait (a plain coroutine with no alarm backup; without it the SoC can suspend
-     *    mid-delay and capture would silently start late) and is dropped in
-     *    [beginCaptureLocked] just before the engine starts.
-     *  - [SKIPPED]: debug flag + no start delay — never acquired; recording_start is marked
-     *    "wl=off".
-     */
-    private enum class CaptureWakelockMode { FULL, DELAY_ONLY, SKIPPED }
-
     /**
      * The active engine. @Volatile and assigned BEFORE start(): the capture thread delivers
      * events as soon as audio starts, and it reads the engine's capture-time base — a
@@ -137,7 +113,6 @@ class MonitorService : Service() {
 
     /** When audio capture actually began (after the start delay) — persisted via capture stats. */
     @Volatile private var captureStartAtMs = 0L
-    @Volatile private var activeModelVersion = SessionRepository.MODEL_VERSION
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -171,6 +146,12 @@ class MonitorService : Service() {
         unregisterThermalListener()
         releaseWakeLock()
         serviceScope.cancel()
+        // The holder is a process-wide singleton: leave Idle, not a stale Recording/Delayed
+        // that would block future starts in this process. A Finished state is kept — the UI
+        // still needs it to navigate to the report (a scheduled end while backgrounded).
+        // The open session row is surfaced by HomeViewModel's init from the DB, not from
+        // holder state.
+        if (stateHolder.state.value !is MonitorState.Finished) stateHolder.set(MonitorState.Idle)
         super.onDestroy()
     }
 
@@ -235,14 +216,14 @@ class MonitorService : Service() {
                         stopSelf()
                         return@withLock
                     }
-                    if (existingSessionId == null && sessionRepository.openSession() != null) {
+                    if (existingSessionId == null && sessionRepository.findOpenSession() != null) {
                         // P2-1: an open session means the Resume/Finalize decision is pending —
                         // possibly in a fresh process whose in-memory state is Idle (an
                         // alarm-fired bedtime notification Start after process death). A new
                         // Start must never silently finalize the open night RECOVERED; refuse,
                         // surface the interruption, and leave the banner/notification as the
                         // re-entry point. (The UI disables Start via canStartNewSession.)
-                        val open = sessionRepository.openSession()!!
+                        val open = sessionRepository.findOpenSession()!!
                         logger.log(open.id, "start_blocked_interrupted", "openSession=${open.id}")
                         stateHolder.set(MonitorState.Interrupted(open.id, open.startedAt))
                         stopForegroundStop()
@@ -252,6 +233,12 @@ class MonitorService : Service() {
                     val sessionId = existingSessionId ?: sessionRepository.startSession()
                     val session = sessionRepository.session(sessionId)
                     if (session == null) {
+                        if (existingSessionId == null) {
+                            // compensate: the row we just inserted must not stay open
+                            runCatching {
+                                sessionRepository.finalizeSession(sessionId, SessionStatus.INTERRUPTED, null)
+                            }
+                        }
                         stateHolder.set(MonitorState.StartError(getString(R.string.service_error_session_missing)))
                         stopForegroundStop()
                         stopSelf()
@@ -270,7 +257,7 @@ class MonitorService : Service() {
                     sessionStartEpochMs = session.startedAt
                     // Resuming after process death: carry the counters the heartbeat persisted for
                     // earlier engines of this session, and count already-saved clips against the
-                    // per-night clip cap (otherwise a resumed engine gets a fresh 50-clip budget).
+                    // per-night clip cap (otherwise a resumed engine gets a fresh clip budget).
                     statsCarry = if (existingSessionId != null) {
                         StatsCarry.from(CaptureStats.parse(session.captureStats))
                     } else {
@@ -282,40 +269,12 @@ class MonitorService : Service() {
                         sessionRepository.markResumedAfterInterruption(sessionId)
                         logger.log(sessionId, "session_resumed", "after=process_death")
                     }
-                    // Battery A/B experiment (class KDoc): the debug toggle drops the capture
-                    // wakelock for the RECORDING itself so the SoC can suspend between hops. A
-                    // configured start delay keeps its lock though — the wait is a plain
-                    // coroutine with no alarm backup, so without it the SoC can suspend
-                    // mid-delay and capture would silently start minutes-to-hours late (the
-                    // lock historically acquired here deliberately covers the delay). The lock
-                    // is then dropped in [beginCaptureLocked] just before the engine starts, so
-                    // the experiment covers exactly the capture window and both arms stay
-                    // comparable. recording_start carries the arm marker ("" / "wl=off" /
-                    // "wl=off-delay-covered") and the unlocked capture window is warned once.
-                    val debugSkipWakelock = prefs.debugSkipCaptureWakelockNow()
                     val delayMinutes = prefs.startDelayMinutesNow()
-                    captureWakelockMode = when {
-                        !debugSkipWakelock -> CaptureWakelockMode.FULL
-                        delayMinutes > 0 -> CaptureWakelockMode.DELAY_ONLY
-                        else -> CaptureWakelockMode.SKIPPED
-                    }
-                    if (captureWakelockMode == CaptureWakelockMode.SKIPPED) {
-                        Log.w(
-                            TAG,
-                            "recording WITHOUT capture wakelock (debug experiment): the SoC may " +
-                                "suspend between hops and drop AudioRecord samples",
-                        )
-                    }
-                    if (captureWakelockMode != CaptureWakelockMode.SKIPPED) acquireWakeLock()
+                    acquireWakeLock()
                     registerThermalListener()
                     logger.log(
                         sessionId, "recording_start",
                         "source=$source storageFreeMB=${freeStorageMb()} thermal=${thermalName()}" +
-                            when (captureWakelockMode) {
-                                CaptureWakelockMode.FULL -> ""
-                                CaptureWakelockMode.DELAY_ONLY -> " wl=off-delay-covered"
-                                CaptureWakelockMode.SKIPPED -> " wl=off"
-                            } +
                             (statsCarry?.let { " resumed windows=${it.windowsProcessed}" } ?: "")
                     )
                     BedtimeNotification.cancel(this@MonitorService) // one-tap bedtime flow consumed
@@ -324,8 +283,7 @@ class MonitorService : Service() {
                     // Configurable start delay (night-2 dogfood idea): the session and time-in-bed
                     // begin at the tap, but audio capture waits so falling-asleep noise stays out
                     // of events and clips. The wait runs OUTSIDE the begin/end mutex so Stop,
-                    // the scheduled end, and finalize remain responsive during it. On the
-                    // wl=off-delay-covered arm this wait is exactly what the lock protects.
+                    // the scheduled end, and finalize remain responsive during it.
                     val captureStartAt = StartDelayPolicy.captureStartAtMs(delayMinutes, session.startedAt)
                     val remainingMs = captureStartAt - System.currentTimeMillis()
                     if (remainingMs > 0) {
@@ -373,8 +331,6 @@ class MonitorService : Service() {
             stopSelf()
             return
         }
-        val debugEnter1 = prefs.debugEnterWindows1Now()
-        activeModelVersion = if (debugEnter1) "${SessionRepository.MODEL_VERSION}+dbg1" else SessionRepository.MODEL_VERSION
         val initialClipCount = if (existingSessionId != null) {
             sessionRepository.clipCountForSession(sessionId)
         } else {
@@ -386,7 +342,7 @@ class MonitorService : Service() {
             clipStore = clipStore,
             listener = engineListener,
             config = AudioEngine.Config(
-                enterWindows = if (debugEnter1) 1 else com.sleepanalysis.monitoring.detection.DetectorConfig.ENTER_WINDOWS,
+                enterWindows = com.sleepanalysis.monitoring.detection.DetectorConfig.ENTER_WINDOWS,
                 initialClipCount = initialClipCount,
             ),
             // Silenced-client detection (P2-4): the callback records spans where the OS
@@ -397,25 +353,12 @@ class MonitorService : Service() {
         // Visible to the capture thread before the first samples arrive (see field docs).
         engine = newEngine
         this.captureStartAtMs = captureStartAtMs
-        // The experiment's delay-covered lock (see beginRecording) protects ONLY the start-delay
-        // wait — a plain coroutine with no alarm backup — and is dropped here so the capture
-        // window itself runs unlocked on the wl=off arm. A skipped lock never existed, and the
-        // default FULL lock stays for the whole session (released by endRecording/onDestroy).
-        if (captureWakelockMode == CaptureWakelockMode.DELAY_ONLY) {
-            releaseWakeLock()
-            Log.w(
-                TAG,
-                "capture wakelock dropped at capture start (wl=off-delay-covered): the SoC may " +
-                    "suspend between hops and drop AudioRecord samples",
-            )
-            logger.log(sessionId, "capture_wakelock_released", "covered=start_delay")
-        }
         newEngine.start()
         // The thermal listener was registered before this engine existed, and the system does
         // not re-broadcast the current status — a phone already ≥ MODERATE would record
         // unthrottled until the next status change. Apply it to the fresh engine now.
         applyCurrentThermalStatusToEngine()
-        logger.log(sessionId, "detector_config", "enterWindows=${if (debugEnter1) 1 else 2} model=$activeModelVersion")
+        logger.log(sessionId, "detector_config", "enterWindows=${com.sleepanalysis.monitoring.detection.DetectorConfig.ENTER_WINDOWS} model=${SessionRepository.MODEL_VERSION}")
         startHeartbeat()
         stateHolder.set(MonitorState.Recording(sessionId, session.startedAt))
         updateChronometer(session.startedAt)
@@ -465,13 +408,17 @@ class MonitorService : Service() {
             logger.log(activeSessionId, "start_delay_skip_ignored", "state=${preLock::class.simpleName}")
             return
         }
-        startInForeground(System.currentTimeMillis())
         beginEndMutex.withLock {
             val current = stateHolder.state.value
             if (current is MonitorState.Recording || current is MonitorState.Starting) {
                 logger.log(activeSessionId, "start_delay_skip_ignored", "state=${current::class.simpleName}")
                 return@withLock
             }
+            // Promotion decided against the re-checked state (closes the preLock race):
+            // Delayed is already foreground with the countdown notification — re-promoting
+            // would re-post a fresh chronometer-anchored notification. Every other state still
+            // owes the startForegroundService delivery, including the bail path below.
+            if (shouldPromoteOnSkip(current)) startInForeground(System.currentTimeMillis())
             if (!canSkipStartDelay(current)) {
                 logger.log(activeSessionId, "start_delay_skip_ignored", "state=${current::class.simpleName}")
                 stopForegroundStop()
@@ -523,7 +470,6 @@ class MonitorService : Service() {
             val sessionId = activeSessionId
             activeSessionId = -1
             engine = null
-            captureWakelockMode = CaptureWakelockMode.FULL
             if (sessionId > 0) {
                 stats?.let {
                     logger.log(
@@ -660,7 +606,7 @@ class MonitorService : Service() {
                         clipSizeBytes = clipSizeBytes,
                         appliedGain = appliedGain,
                         filePeakDbfs = filePeakDbfs,
-                        modelVersion = activeModelVersion,
+                        modelVersion = SessionRepository.MODEL_VERSION,
                     )
                 }.onFailure {
                     logger.log(sessionId, "event_persist_failed", "${it.javaClass.simpleName}: ${it.message}")
@@ -670,7 +616,7 @@ class MonitorService : Service() {
 
         override fun onCaptureError(throwable: Throwable) {
             logger.log(activeSessionId, "capture_error", "${throwable.javaClass.simpleName}: ${throwable.message}")
-            serviceScope.launch { endRecording(SessionStatus.INTERRUPTED) }
+            serviceScope.launch { endRecording(SessionStatus.INTERRUPTED, source = SOURCE_CAPTURE_ERROR) }
         }
 
         override fun onLog(event: String, detail: String) {
@@ -726,16 +672,6 @@ class MonitorService : Service() {
         }
     }
 
-    /**
-     * Content intent for the monitoring notifications: tapping reopens the app. Built with the
-     * same immutable pattern as [com.sleepanalysis.monitoring.schedule.BedtimeNotification].
-     */
-    private fun openAppPendingIntent(): PendingIntent = PendingIntent.getActivity(
-        this, 0,
-        Intent(this, MainActivity::class.java),
-        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-    )
-
     private fun buildDelayNotification(captureStartsAtMs: Long): Notification {
         val stopIntent = PendingIntent.getService(
             this, 0,
@@ -749,7 +685,7 @@ class MonitorService : Service() {
             .setSmallIcon(R.drawable.ic_mic)
             .setContentTitle(getString(R.string.notif_delay_title))
             .setContentText(getString(R.string.notif_delay_text, startsAt))
-            .setContentIntent(openAppPendingIntent())
+            .setContentIntent(AppNotifications.openAppPendingIntent(this))
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setUsesChronometer(true)
@@ -770,7 +706,7 @@ class MonitorService : Service() {
             .setSmallIcon(R.drawable.ic_mic)
             .setContentTitle(getString(R.string.notif_recording_title))
             .setContentText(getString(R.string.notif_recording_text))
-            .setContentIntent(openAppPendingIntent())
+            .setContentIntent(AppNotifications.openAppPendingIntent(this))
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setUsesChronometer(true)
@@ -914,12 +850,13 @@ class MonitorService : Service() {
         const val SOURCE_MANUAL = "manual"
         const val SOURCE_SCHEDULE = "schedule"
         const val SOURCE_RESUMED = "resumed"
+        const val SOURCE_CAPTURE_ERROR = "capture_error"
 
-        fun start(context: Context, source: String = SOURCE_MANUAL) {
-            val intent = Intent(context, MonitorService::class.java)
-                .setAction(ACTION_START)
-                .putExtra(EXTRA_START_SOURCE, source)
-            ContextCompat.startForegroundService(context, intent)
+        fun start(context: Context) {
+            ContextCompat.startForegroundService(
+                context,
+                Intent(context, MonitorService::class.java).setAction(ACTION_START),
+            )
         }
 
         fun startNow(context: Context) {
@@ -934,6 +871,14 @@ class MonitorService : Service() {
                 Intent(context, MonitorService::class.java)
                     .setAction(ACTION_STOP)
                     .putExtra(EXTRA_STOP_SOURCE, source)
+            )
+        }
+
+        /** Resumes the open interrupted session (user-tap path — the mic-access path). */
+        fun resume(context: Context) {
+            ContextCompat.startForegroundService(
+                context,
+                Intent(context, MonitorService::class.java).setAction(ACTION_RESUME),
             )
         }
     }

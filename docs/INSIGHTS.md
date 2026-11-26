@@ -1,9 +1,11 @@
 # Insights — personal baselines, regularity, and rule-based suggestions
 
-Schema v13 (docs/DATA_MODEL.md §3.7/§3.8/§3.12). The Insights screen turns the recorded nights into
+Schema v16 (docs/DATA_MODEL.md §3.7/§3.8). The Insights screen turns the recorded nights into
 *personal* observations: robust bands over the user's own eligible nights, an approximate
 sleep-regularity row, and a fixed set of deterministic rules. Everything here is pure Kotlin
 (`domain/insights/`) over stored evidence, assembled by `SessionRepository.buildInsights()`.
+(The playbook/escalation/experiment sections described at the bottom were removed in the
+2026-11-22 consolidation.)
 
 **Tone contract:** every claim reads "your recordings suggest…" — never clinical, never
 diagnosis, never a threshold handed down from a guideline. Events ≠ arousals; pauses ≠ apneas;
@@ -86,72 +88,14 @@ collapses for light snorers). All thresholds not marked cited are APP CONVENTION
 | `exercise_evening` | `insight_rule_exercise_evening` | EXERCISE-logged night whose Garmin awake minutes exceed the personal band. HONEST LIMIT: the factor log records only the fact — no timing, no intensity — so the <1 h-before-bed mechanism is NOT tested; the rule tests association only. | Tonight's awake minutes + band | LOW | Stutz 2019 (Sports Medicine, evening-exercise context) |
 | `stress_high` | `insight_rule_stress_high` | STRESS ≥ 4 (self-log) night with rMSSD below the personal band AND Garmin awake minutes above it — both markers required. MODERATE at ≥3 stress-tagged nights in the window, else LOW. | Both z-scores + stress level | LOW / MODERATE at ≥3 nights | Kim & Dimsdale 2007 (Psychosomatic Medicine); Guo 2022 (wrist PPG context) |
 
-## Playbook — evidence-graded actions and N-of-1 experiments (schema v13)
+## Playbook & Escalation — REMOVED (consolidation 2026-11-22)
 
-Concrete, suggestive changes tied to what the rules found. Every action carries its evidence
-row in [EVIDENCE_BASE.md](EVIDENCE_BASE.md) (evidence key drift-tested), the metric that would
-verify it, and — when the app can honestly run the check — an N-of-1 experiment row
-(`sleep_experiment`, docs/DATA_MODEL.md §3.12). Copy keys are string-resource names
-(InsightsDocTest drift-tests them). Tone contract: **a suggestion, never a cure** — "try this
-for a week and watch your own number".
+The playbook (evidence-graded action catalog + N-of-1 experiments), the escalation card, and the machinery behind them — `Playbook.kt`, `EscalationRule.kt`, `ExperimentTracker.kt`, the `sleep_experiment` table (schema v13, dropped in migration 15→16) — were removed in task T7 (see [CONSOLIDATION_PLAN.md](CONSOLIDATION_PLAN.md)); the N-of-1 line is shelved in [NEXT_STEPS.md](NEXT_STEPS.md). Historical record, kept for the never-claims line below:
 
-**Ranking** (pure `Playbook.rank`, APP CONVENTION): rule confidence (MODERATE > LOW) × recency
-(related rule fired within the current 14-eligible-night window > not), actions whose related
-rule is dismissed drop out, context-only actions never rank. When no rule fired, the starter
-pair `fixed_wake` + `stimulus_control` leads.
+- **Playbook actions** carried evidence rows in [EVIDENCE_BASE.md](EVIDENCE_BASE.md), ranked by rule confidence × recency, with a never-list (no sleep restriction, no AHI/apnea/desaturation language, no cure claims) and experiment standards (≥ 7 usable phase nights, verdict = phase median beyond 2 robust SD, confound exclusion for foreign-factor nights, single ACTIVE row, optional A-B-A confirm).
+- **Escalation** was a pure rule (`EscalationRule.evaluate`) over the same eligible night set plus a one-time STOP-BANG-derived self-report (S/O/T questions, Chung 2012): acoustic arm = ≥ 3 consecutive eligible nights with snoreShare > 0.25 AND longest bout > 10 min (streak adjacency over the eligible sequence, not the calendar); copy contract "worth discussing with a clinician", evaluation never diagnosis.
 
-**Experiment standards** (values in [EVIDENCE_BASE.md](EVIDENCE_BASE.md) N-of-1 rows, never
-changed here): ≥ 7 usable phase nights to a verdict (WWC 2010 floor ≥ 5); verdict = phase
-median beyond 2 robust SD of the START baseline band (\|z\| > 2); verdict copy is "changed
-beyond your usual night-to-night variation" + direction, confidence LOW — **never "improved"**.
-Nights carrying a logged factor OTHER than the experiment's own are confound-excluded from the
-verdict (the excluded night ids are listed in `resultJson`). Exactly ONE experiment may be
-ACTIVE (tracker-enforced; the UI repeats it). After a change verdict, an optional A-B-A
-return-to-baseline phase may upgrade the verdict to MODERATE ("consistent with the change")
-or leave it LOW ("effect not confirmed"). Requires a READY baseline at start.
-
-| `stimulus_control` | Sleep quality | edinger_2021 | garmin_awake_min | yes | Awake > 20 min? Get up, dim light, return when sleepy. (AASM guideline, strong) |
-| `fixed_wake` | Sleep quality | windred_2024 | score | yes | Fix wake time ±30 min, all week. |
-| `morning_light` | Sleep quality | roenneberg_2012 | garmin_awake_min | yes | 10–30 min outdoor light within ~1 h of waking. |
-| `wind_down` | Sleep quality | edinger_2021 | garmin_awake_min | yes | 30–60 min dim, low-stimulation buffer before bed. |
-| `slow_breathing` | Sleep quality | balban_2023 | rmssd_ms | yes | 5 min slow breathing, ~6 breaths/min. (Balban 2023 RCT) |
-| `mindfulness` | Sleep quality | rusch_2019 | rmssd_ms | yes | Regular mindfulness practice. (Rusch 2019 meta) |
-| `bedroom_temp` | Sleep quality | lan_2017 | garmin_awake_min | yes | ~18–20 °C for most adults. |
-| `nap_limit` | Sleep quality | dutheil_2021 | garmin_awake_min | yes | Nap ≤ 20 min, end by 15:00; skip naps when sleep is already disturbed. |
-| `screens_optional` | Sleep quality | brosnan_2024 | garmin_awake_min | yes | Screen changes are OPTIONAL — weak evidence, never promised. |
-| `side_sleeping` | Snoring | ravesloot_2017 | snore_share | yes | Try side-sleeping for a week and watch your snore share. The app has NO position data — observe for yourself. |
-| `myofunctional` | Snoring | camacho_2015 | snore_share | yes | 5 min tongue/throat exercises daily, 8–12 weeks. |
-| `bed_elevation` | Snoring | souza_2017 | snore_share | yes | Raise the bed head 7.5–30°. |
-| `nasal_dilator` | Snoring | mazza_2019 | snore_share | yes | External nasal dilator for a week. |
-| `no_evening_alcohol` | Snoring | ebrahim_2013 | snore_share | yes | Skip evening alcohol for a week and watch your snore share. Own factor: ALCOHOL. |
-| `weight_context` | Snoring | peppard_2000 | snore_share | NO — context only | ~2.6% weight change went with roughly a 1% shift in breathing-related measures in cohort research. The app measures snoring, not weight. |
-
-**Playbook never-list** (drift-pinned by InsightsDocTest): no sleep restriction or
-sleep-consolidation suggestions (professional-guided only), no AHI, no apnea detection,
-no desaturation counting, no cure language — same line as the guardrails below and the
-NEVER-CLAIMS list in [EVIDENCE_BASE.md](EVIDENCE_BASE.md).
-
-## Escalation — when to talk to a clinician
-
-A pure rule over the SAME eligible night set the insights ran on
-(`EscalationRule.evaluate`), plus the user's once-collected, editable self-report. Either arm
-triggers the card:
-
-- **Acoustic arm** (APP CONVENTIONS — no literature threshold is encoded): ≥ 3 consecutive
-  eligible nights with snoreShare > 0.25 AND longest bout > 10 min. A night failing either
-  criterion (or missing values) breaks the streak. CONVENTION — streak adjacency runs over the
-  ELIGIBLE SEQUENCE, not the calendar: a night that never became eligible (grade C/D, version
-  mismatch, unmeasured) is simply absent and does NOT break the streak; only an eligible night
-  failing the acoustic criteria resets it.
-- **Self-report arm**: any YES among three STOP-BANG-derived screening questions (S: snoring
-  louder than talking or heard through closed doors; O: pauses or gasping witnessed during
-  sleep; T: daytime sleepiness most days) — collected once under the card, persisted in
-  DataStore, editable. Chung 2012 (Anesthesiology) is the screening-tool citation; the app
-  never computes a STOP-BANG score.
-
-Copy contract: "worth discussing with a clinician — snoring is common and usually harmless,
-but these signals warrant a professional opinion". Evaluation, never diagnosis: no condition
-is named, no test result is implied, the questions are screening context only.
+Still true: `InsightsDocTest` drift-tests the surviving rule catalog and copy keys; dismissed-rule persistence stays (guardrail 6 — `insights_dismissed_rules` in DataStore, re-shown from the insights screen). Any revival inherits the never-claims guardrails and the [EVIDENCE_BASE.md](EVIDENCE_BASE.md) evidence-key discipline.
 
 ## Guardrails — never-claims
 

@@ -79,8 +79,6 @@ class ClipStore(private val rootDir: File) {
 
     fun absolutePath(relativePath: String): File = File(rootDir, relativePath)
 
-    fun totalBytes(): Long = rootDir.walkBottomUp().filter { it.isFile }.sumOf { it.length() }
-
     fun deleteSessionClips(sessionId: Long) {
         sessionDir(sessionId).deleteRecursively()
     }

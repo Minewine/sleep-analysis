@@ -19,7 +19,6 @@ class NightSummaryTextTest {
         sessionId = 3,
         startedAt = t0,
         endedAt = t0 + 6 * 3_600_000 + 104_000,
-        status = "COMPLETED",
         timeZone = "Europe/Zurich",
         timeInBedSeconds = 25_303,
         snoreSeconds = snoreSeconds,
@@ -35,7 +34,6 @@ class NightSummaryTextTest {
         events = emptyList(),
         clips = emptyMap(),
         integrityNotes = emptyList(),
-        baseline = emptyList(),
         modelVersion = "energy-heuristic-v1-spectral",
         boutStats = BoutStats(
             burstCount = 220, boutCount = 118, longestBurstMs = 313_000, medianBurstMs = 8_500,

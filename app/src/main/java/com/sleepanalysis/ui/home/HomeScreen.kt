@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -59,20 +60,21 @@ import com.sleepanalysis.domain.policy.MissedNightResult
 import com.sleepanalysis.domain.report.CaptureStats
 import com.sleepanalysis.monitoring.service.MonitorState
 import com.sleepanalysis.monitoring.service.canStartNewSession
+import com.sleepanalysis.monitoring.service.clearsInterruptedBanner
 import com.sleepanalysis.ui.components.Formatting
 import com.sleepanalysis.ui.components.formatDateTime
 import com.sleepanalysis.ui.components.formatDuration
 import com.sleepanalysis.ui.components.formatMinutesOfDay
 import java.time.LocalDate
 import java.time.ZonedDateTime
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
 
 @Composable
 fun HomeScreen(
     onOpenReport: (Long) -> Unit,
     onOpenHistory: () -> Unit,
-    onOpenBaseline: () -> Unit,
     onOpenSettings: () -> Unit = {},
-    onOpenDailyLog: () -> Unit = {},
     viewModel: HomeViewModel = hiltViewModel(),
 ) {
     val state by viewModel.monitorState.collectAsStateWithLifecycle()
@@ -80,11 +82,7 @@ fun HomeScreen(
     val validityGrade by viewModel.latestValidityGrade.collectAsStateWithLifecycle()
     val preFlight by viewModel.preFlight.collectAsStateWithLifecycle()
     val interrupted by viewModel.interrupted.collectAsStateWithLifecycle()
-    val experimentChip by viewModel.experimentChip.collectAsStateWithLifecycle()
     val recordingEnabled by viewModel.recordingEnabled.collectAsStateWithLifecycle()
-    // scheduleEnabled is not rendered here, but this subscription is what keeps the ViewModel's
-    // WhileSubscribed flow reading preferences — shouldConfirmStopNow() reads its value.
-    val scheduleEnabled by viewModel.scheduleEnabled.collectAsStateWithLifecycle()
     val nextScheduledStart by viewModel.nextScheduledStart.collectAsStateWithLifecycle()
     val scheduleResolved by viewModel.scheduleResolved.collectAsStateWithLifecycle()
     val missedNight by viewModel.missedNight.collectAsStateWithLifecycle()
@@ -97,7 +95,6 @@ fun HomeScreen(
             if (event == Lifecycle.Event.ON_RESUME) {
                 viewModel.refreshPreFlight()
                 viewModel.refreshSchedule()
-                viewModel.refreshExperimentChip()
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -112,7 +109,7 @@ fun HomeScreen(
             viewModel.consumeFinished()
             onOpenReport(finished.sessionId)
         }
-        if (state is MonitorState.Recording) viewModel.clearInterrupted()
+        if (clearsInterruptedBanner(state)) viewModel.clearInterrupted()
     }
 
     // Permission-aware start: request what's missing, then start the service.
@@ -169,6 +166,7 @@ fun HomeScreen(
                     onFinalize = {
                         viewModel.finalizeInterrupted { sessionId -> onOpenReport(sessionId) }
                     },
+                    onResume = viewModel::resumeInterrupted,
                 )
             }
 
@@ -185,6 +183,7 @@ fun HomeScreen(
                 startEnabled = recordingEnabled &&
                     (preFlight?.storageOk ?: true) &&
                     canStartNewSession(state),
+                recordingEnabled = recordingEnabled,
             )
             val rowState = scheduleRowState(
                 scheduleResolved = scheduleResolved,
@@ -220,22 +219,13 @@ fun HomeScreen(
                 session = latest,
                 validityGrade = validityGrade,
                 statusLabel = viewModel::statusLabel,
-                experimentChip = experimentChip,
                 onOpen = onOpenReport,
             )
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                OutlinedButton(onClick = onOpenDailyLog, modifier = Modifier.weight(1f)) {
-                    Text(stringResource(R.string.factor_title))
-                }
-                OutlinedButton(onClick = onOpenSettings, modifier = Modifier.weight(1f)) {
-                    Text(stringResource(R.string.home_settings))
-                }
+            OutlinedButton(onClick = onOpenSettings, modifier = Modifier.fillMaxWidth()) {
+                Text(stringResource(R.string.home_settings))
             }
             OutlinedButton(onClick = onOpenHistory, modifier = Modifier.fillMaxWidth()) {
                 Text(stringResource(R.string.home_history))
-            }
-            OutlinedButton(onClick = onOpenBaseline, modifier = Modifier.fillMaxWidth()) {
-                Text(stringResource(R.string.home_baseline))
             }
             Text(
                 text = stringResource(R.string.report_disclaimer),
@@ -253,8 +243,9 @@ private fun StatusCard(
     onStart: () -> Unit,
     onStartNow: () -> Unit,
     onStop: () -> Unit,
-    shouldConfirmStop: () -> Boolean,
+    shouldConfirmStop: suspend () -> Boolean,
     startEnabled: Boolean,
+    recordingEnabled: Boolean,
 ) {
     val recording = state is MonitorState.Recording
     val delayed = state is MonitorState.Delayed
@@ -299,10 +290,13 @@ private fun StatusCard(
                     fontWeight = FontWeight.Bold,
                 )
             }
+            val scope = rememberCoroutineScope()
             Button(
                 onClick = {
                     if (!active) onStart()
-                    else if (recording && shouldConfirmStop()) confirmStop = true
+                    else if (recording) scope.launch {
+                        if (shouldConfirmStop()) confirmStop = true else onStop()
+                    }
                     else onStop()
                 },
                 modifier = Modifier.fillMaxWidth(),
@@ -321,7 +315,9 @@ private fun StatusCard(
                     Text(stringResource(R.string.home_start_capture_now))
                 }
             }
-            if (!active && !startEnabled) {
+            if (!active && !recordingEnabled) {
+                // Only for the master-switch-off case: the interrupted-night and low-storage
+                // cases have their own cards/hints, and Start is disabled for those too.
                 Text(
                     stringResource(R.string.home_recording_disabled_hint),
                     style = MaterialTheme.typography.bodySmall,
@@ -382,7 +378,7 @@ private fun ScheduleOffRow(onOpenSettings: () -> Unit) {
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
-            stringResource(R.string.home_schedule_off),
+            stringResource(R.string.settings_schedule_off),
             style = MaterialTheme.typography.bodyMedium,
             modifier = Modifier.weight(1f),
         )
@@ -393,7 +389,10 @@ private fun ScheduleOffRow(onOpenSettings: () -> Unit) {
 @Composable
 private fun MicIndicator(visible: Boolean) {
     // Visible microphone-active indication (docs/PRIVACY_AND_REGULATORY.md §6 requirement).
-    val description = stringResource(R.string.home_mic_indicator)
+    // State-dependent description: TalkBack must announce off as well as active.
+    val description =
+        if (visible) stringResource(R.string.home_mic_indicator)
+        else stringResource(R.string.home_mic_indicator_inactive)
     Box(
         modifier = Modifier
             .size(16.dp)
@@ -452,20 +451,14 @@ private fun formatStorage(freeMb: Long): String =
     if (freeMb < 0) "?" else if (freeMb >= 1024) "%.1f GB".format(freeMb / 1024f) else "$freeMb MB"
 
 @Composable
-private fun CheckRow(label: String, ok: Boolean) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(label, style = MaterialTheme.typography.bodyMedium)
+private fun CheckRow(label: String, ok: Boolean) =
+    com.sleepanalysis.ui.components.LabeledRow(label) {
         Icon(
             if (ok) Icons.Filled.Check else Icons.Filled.Close,
             contentDescription = null,
             tint = if (ok) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
         )
     }
-}
 
 /** Interrupted-night banner: clearly shows what happened and offers the saved data (P0 hardening). */
 @Composable
@@ -473,6 +466,7 @@ private fun InterruptedCard(
     startedAt: Long,
     savedEvents: Int,
     onFinalize: () -> Unit,
+    onResume: () -> Unit,
 ) {
     Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)) {
         Column(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -487,6 +481,10 @@ private fun InterruptedCard(
             )
             Button(onClick = onFinalize, modifier = Modifier.fillMaxWidth()) {
                 Text(stringResource(R.string.home_interrupted_action))
+            }
+            // Text button text is its accessible name (same as the finalize button above).
+            TextButton(onClick = onResume, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
+                Text(stringResource(R.string.home_interrupted_resume))
             }
         }
     }
@@ -578,7 +576,6 @@ private fun LastNightCard(
     session: SleepSessionEntity?,
     validityGrade: String?,
     statusLabel: (String) -> String,
-    experimentChip: HomeViewModel.ExperimentChip?,
     onOpen: (Long) -> Unit,
 ) {
     Card(onClick = { session?.let { onOpen(it.id) } }, enabled = session != null) {
@@ -631,25 +628,6 @@ private fun LastNightCard(
                         )
                     }
                 }
-            }
-            // Active N-of-1 experiment chip (docs/INSIGHTS.md §Playbook): honest day count,
-            // same instruction copy the Insights screen shows.
-            experimentChip?.let { chip ->
-                val instruction = com.sleepanalysis.ui.insights.playbookInstruction(chip.actionId) // cross-screen shared copy
-                Text(
-                    if (chip.confirming) {
-                        stringResource(
-                            R.string.experiment_confirm_chip,
-                            chip.usableNights,
-                            chip.plannedNights,
-                            instruction,
-                        )
-                    } else {
-                        stringResource(R.string.experiment_chip, chip.usableNights, chip.plannedNights, instruction)
-                    },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.primary,
-                )
             }
         }
     }

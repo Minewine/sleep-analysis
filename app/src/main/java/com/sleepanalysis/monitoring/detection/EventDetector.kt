@@ -4,8 +4,8 @@ import com.sleepanalysis.data.db.entity.EventType
 
 /**
  * Turns per-window detection booleans into discrete events: hysteresis (ENTER consecutive
- * active windows to open, EXIT consecutive quiet windows to close), minimum duration, and
- * merge of short gaps (docs/ARCHITECTURE.md §4, DetectorConfig).
+ * active windows to open, EXIT consecutive quiet windows to close), minimum duration, and a
+ * short-gap merge that ships disabled (mergeGapMs = 0; docs/ARCHITECTURE.md §4, DetectorConfig).
  *
  * Pure logic on timestamps — unit tested. Timestamps are window END times in ms.
  *

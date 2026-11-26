@@ -1,6 +1,7 @@
 # Functional specification
 
-**Status:** complete (2026-11-25) · 11 sections under [`docs/functional_spec/`](functional_spec/) · 388 requirement rows, 10 cross-cutting invariants, 109 consolidation candidates, 29 confirmed defects.
+**Status:** complete (2026-11-25) · 11 sections under [`docs/functional_spec/`](functional_spec/) · 388 requirement rows, ~~10~~ 9 active cross-cutting invariants (INV-03 retired), 109 consolidation candidates, 29 confirmed defects.
+**Post-consolidation (T7/T8, refreshed T9 2026-11-26):** the clinical-baseline, factor-log-screen and N-of-1 experiments verticals were removed (Room schema v14 → v16; migrations 14→15 and 15→16). Post-T7 unit-test baseline: `./gradlew :app:testDebugUnitTest` → 767 tests, 0 failures (83 classes). Mechanical evidence (kotlin-reference-scan.md, lint-summary.md) regenerated at /home/mick/sleep-local/spec-draft/evidence/ (the repository has no evidence directory). APK size: TBD in T10.
 
 ## Purpose
 
@@ -38,16 +39,16 @@ This specification says what SleepAnalysis does and how, precisely enough for tw
 
 | Section | File | One line |
 |---|---|---|
-| 0. Overview | [00-overview.md](functional_spec/00-overview.md) | Product boundary, module map (all 100 Kotlin files), end-to-end flows, the 10 invariants, platform/permissions, dependencies, documentation freshness, glossary |
+| 0. Overview | [00-overview.md](functional_spec/00-overview.md) | Product boundary, module map (all 96 Kotlin files after consolidation T7/T8), end-to-end flows, the invariants (INV-03 retired), platform/permissions, dependencies, documentation freshness, glossary |
 | 1. Recording controls | [01-recording-controls.md](functional_spec/01-recording-controls.md) | Service state machine, every start/stop command and gate, start delay, interruptions/resume, scheduling and alarms, the two switches and skip history, Home UI; includes the independent review verdict on the uncommitted schedule-row off-state change |
 | 2. Audio capture engine | [02-audio-capture.md](functional_spec/02-audio-capture.md) | Engine lifecycle/threading, capture-quality mechanisms (silenced-client, stall watchdog, thermal), capture_stats JSON v1→v6, WAV/clip integrity, measurement provenance, session-log format |
 | 3. Detection, clips and scoring | [03-detection-clips-scoring.md](functional_spec/03-detection-clips-scoring.md) | Hop-by-hop detection pipeline, shipped detector `energy-heuristic-v3-peakgate` gates, clip budgeting, noise floor, SnoreMath/SnoreScore formulas, fixture evaluation |
-| 4. Data layer | [04-data-layer.md](functional_spec/04-data-layer.md) | Room schema v14 in full, migration chain 1→14, SessionRepository and every DAO method with callers, write-only columns, retention worker, Hilt wiring, backup rules |
+| 4. Data layer | [04-data-layer.md](functional_spec/04-data-layer.md) | Room schema v16 (pre-consolidation v14 rows kept and annotated), migration chain 1→16, SessionRepository and every DAO method with callers, retention worker, Hilt wiring, backup rules |
 | 5. Report domain | [05-report-domain.md](functional_spec/05-report-domain.md) | Report assembly with exact denominators, snapshot schema v12, bursts/bouts, quiet gaps, validity grading A–D, daily factors, user labels, the unwired ClaimPolicy |
 | 6. Report UI | [06-report-ui.md](functional_spec/06-report-ui.md) | Refresh pipeline (HC sync, Garmin backfill + retry budgets, evening window), every card and control, clip playback, labeling, share text, session log viewer |
 | 7. Trends, insights, experiments | [07-trends-insights-experiments.md](functional_spec/07-trends-insights-experiments.md) | 7-night trend rows and missed-night synthesis, validity gating, personal baseline, SRI/social jetlag, rule catalog, playbook and N-of-1 lifecycle, escalation |
 | 8. Garmin and Health Connect | [08-garmin-health-connect.md](functional_spec/08-garmin-health-connect.md) | Key storage, single-host network posture and endpoints, parsers and exclusions, session linking, retry gate and import-date default, Health Connect import |
-| 9. App shell, settings, privacy, build | [09-app-shell-settings-privacy.md](functional_spec/09-app-shell-settings-privacy.md) | Navigation routes, onboarding disclaimer, history/baseline/factor-log screens, debug toggles, privacy rules in manifest and code, Gradle gates and CI |
+| 9. App shell, settings, privacy, build | [09-app-shell-settings-privacy.md](functional_spec/09-app-shell-settings-privacy.md) | Navigation routes, onboarding disclaimer, history screen (baseline/factor-log screens removed in consolidation T7 — rows annotated), debug toggles, privacy rules in manifest and code, Gradle gates and CI |
 | 10. Python tooling and CI | [10-python-tooling-ci.md](functional_spec/10-python-tooling-ci.md) | One block per tool, the fixture-format contract, app-side contracts each script depends on, duplication across scripts, CI Python job |
 | 11. Consolidation map | [11-consolidation-map.md](functional_spec/11-consolidation-map.md) | 109 candidates grouped by kind with merged evidence and reconciled risks, 29 confirmed defects, four-phase deletion order, false leads |
 
@@ -57,7 +58,7 @@ This specification says what SleepAnalysis does and how, precisely enough for tw
 |---|---|
 | INV-01 | Audio, clips, logs and the database stay on the device. The only network purpose is a user-triggered Garmin pull; no other host, no telemetry. Enforced by the `checkNetworkHosts`/`checkPermissionAllowlist` Gradle gates; the gate sees only literal hosts in Kotlin sources. |
 | INV-02 | Every measurement row carries provenance: source, method, type, unit, confidence, model version, isClinical. All phone rows are written through `MeasurementRecorder`; verification resolved that nothing writes the table outside it. |
-| INV-03 | The clinical baseline is immutable: insert and read only; SQL ABORT triggers on update/delete, created on database create and every open; only delete-all removes rows. No test pins it yet (an open decision in 0.9). |
+| INV-03 | **retired in consolidation T7 (migration 15→16 drops clinical_baseline and its immutability triggers)** — was: the clinical baseline is immutable: insert and read only; SQL ABORT triggers on update/delete, created on database create and every open; only delete-all removes rows. No test pinned it. Not counted among the active invariants. |
 | INV-04 | An interrupted night is never silently auto-recovered: capture resumes only via the explicit resume action; the night ends only via an explicit finalize. |
 | INV-05 | Absence is made visible, never silently dropped: interrupted card, missed-night banner, not-captured spans (skipped-hop and client-silenced), capture stall watchdog. |
 | INV-06 | Privacy basics: first-launch disclaimer gates the app, mic-active indicator, `allowBackup=false`, data-extraction rules, app-private storage only. |
@@ -85,4 +86,4 @@ The consolidation map was synthesised from the verified N.7 tables plus the evid
 duplicates across areas. Two known limits: status labels `device-verified` rest on the owner's
 own device observations and were not re-verified; reviewers spot-checked documentation rather
 than reading every doc end to end. Baselines at production time: `./gradlew :app:testDebugUnitTest`
-→ 821 tests, 0 failures; `uv run pytest -q` → 116 passed; `uv run ruff check .` → clean.
+→ 821 tests, 0 failures; `uv run pytest -q` → 116 passed; `uv run ruff check .` → clean. (Post-consolidation T7 baseline: 767 tests, 0 failures — see the Status line.)

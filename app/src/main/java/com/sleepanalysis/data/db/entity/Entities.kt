@@ -39,12 +39,8 @@ data class SleepSessionEntity(
     val endedAt: Long? = null,
     val status: String = SessionStatus.RECORDING,
     val timeZone: String,
-    val deviceModel: String,
-    val osVersion: String,
-    val appVersion: String,
     /** JSON payload v1 — see docs/DATA_MODEL.md §5.1. */
     val captureStats: String? = null,
-    val audioBytesTotal: Long = 0,
     /**
      * Short user note added after the night (schema v6) — e.g. "woke at 3am", "partner snoring".
      * User-entered context like daily factors: never a measurement, included in exports.
@@ -97,16 +93,13 @@ data class AcousticEventEntity(
      * is never changed.
      */
     val userLabel: String? = null,
-    /** When the user applied the label — dataset curation needs to distinguish label age. */
-    val labeledAt: Long? = null,
     /**
-     * The detection model's decision inputs as JSON (schema v5) — for energy-heuristic-v0:
+     * The detection model's decision inputs as JSON (schema v5) — for energy-heuristic-v3-peakgate:
      * enter_windows, snr_peak_db, snr_mean_db, low_band_ratio_peak, low_band_ratio_mean,
      * noise_floor_dbfs ([com.sleepanalysis.monitoring.detection.EventFeatures]). Null for rows
      * recorded before this existed. Debug/inspection only — never rendered as a measurement.
      */
     val featuresJson: String? = null,
-    val createdAt: Long = System.currentTimeMillis(),
 )
 
 @Entity(
@@ -145,7 +138,7 @@ data class AudioClipEntity(
 
 /**
  * Universal provenance-stamped metric row (docs/DATA_MODEL.md §3.2). Written only through
- * MeasurementRecorder; clinical values live in [ClinicalBaselineEntity] in Phase 1.
+ * MeasurementRecorder.
  */
 @Entity(
     tableName = "measurement",
@@ -178,29 +171,6 @@ data class MeasurementEntity(
     val periodEnd: Long? = null,
     val notes: String? = null,
     val createdAt: Long = System.currentTimeMillis(),
-)
-
-/**
- * One clinically measured study night (e.g. HUG PSG, January 2026). Immutable once saved:
- * no update/delete DAO methods exist and DB triggers abort UPDATE/DELETE
- * (docs/DATA_MODEL.md §4). Corrections are made by adding a superseding entry.
- */
-@Entity(tableName = "clinical_baseline")
-data class ClinicalBaselineEntity(
-    @PrimaryKey(autoGenerate = true) val id: Long = 0,
-    /** ISO yyyy-MM-dd. */
-    val studyDate: String,
-    val lab: String,
-    val studyType: String,
-    val nightLabel: String? = null,
-    val totalSleepTimeMinutes: Int? = null,
-    val sleepEfficiencyPercent: Double? = null,
-    val arousalIndexPerHour: Double? = null,
-    val n3Percent: Double? = null,
-    val ahiPerHour: Double? = null,
-    val notes: String? = null,
-    val sourceDocument: String? = null,
-    val enteredAt: Long = System.currentTimeMillis(),
 )
 
 /**
@@ -288,7 +258,6 @@ data class QuietGapEntity(
     val kind: String? = null,
     /** Mean window dBFS of the covering level buckets (null without evidence). */
     val meanDbfs: Double? = null,
-    val createdAt: Long = System.currentTimeMillis(),
 )
 
 /**
@@ -305,7 +274,6 @@ data class UserFactorEntity(
     val factorKey: String,
     val valueNum: Double? = null,
     val valueText: String? = null,
-    val recordedAt: Long = System.currentTimeMillis(),
 )
 
 /**
@@ -339,41 +307,6 @@ data class ReportSnapshotEntity(
     val scoreVersion: String? = null,
     /** Compact headline JSON (docs/DATA_MODEL.md §5.2, domain/report.ReportSnapshot). */
     val payload: String,
-)
-
-/** N-of-1 experiment lifecycle values stored in [SleepExperimentEntity.status] (docs/DATA_MODEL.md §3.12). */
-object ExperimentStatus {
-    const val ACTIVE = "ACTIVE"
-    const val DONE = "DONE"
-    const val ABANDONED = "ABANDONED"
-}
-
-/**
- * One N-of-1 experiment (schema v13, docs/DATA_MODEL.md §3.12): a playbook action tried for a
- * planned number of nights against the personal baseline captured at start. Exactly ONE row
- * may be ACTIVE — enforced in tracker logic, not SQL (the A-B-A confirm phase re-activates the
- * same row, so the single-ACTIVE invariant survives). Not session-bound: an experiment spans
- * many nights and outlives any of them (no FK, never CASCADE-deleted); delete-all purges it.
- */
-@Entity(tableName = "sleep_experiment", indices = [Index("status")])
-data class SleepExperimentEntity(
-    @PrimaryKey(autoGenerate = true) val id: Long = 0,
-    /** Insight rule that suggested the experiment ([InsightRules.RuleIds] id); null: user-started. */
-    val hypothesisRuleId: String? = null,
-    /** Playbook action tried (docs/INSIGHTS.md §Playbook); null: a free-form hypothesis. */
-    val playbookActionId: String? = null,
-    /** [PersonalBaseline.Metrics]-style verification metric the verdict tests. */
-    val metric: String,
-    val startedAt: Long,
-    val plannedNights: Int,
-    val status: String,
-    /** Baseline band captured at start ([ExperimentTracker.baselineJson]): {metric, median, mad, low, high}. */
-    val baselineStatsJson: String,
-    /** Phase verdict ([ExperimentTracker.verdictJson]); null until the phase reached its threshold. */
-    val resultJson: String? = null,
-    /** Optional A-B-A return-to-baseline phase ([ExperimentTracker.confirmPhaseJson]); null = none run. */
-    val confirmPhaseJson: String? = null,
-    val createdAt: Long = System.currentTimeMillis(),
 )
 
 /** Registry kinds stored in [ModelRegistryEntity.kind] (docs/DATA_MODEL.md §3.8). */
