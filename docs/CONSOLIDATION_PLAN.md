@@ -1,6 +1,7 @@
 # Consolidation plan — reduce app complexity and size
 
 **Status:** agreed plan (2026-11-26) · executed as separate tasks T1–T10, one branch-less sequence on `consolidate/2026-11-22` · verified baseline: 821 unit tests / 116 pytest / ruff clean.
+**Execution status:** T1–T10 executed in commit a48790e (2026-11-26); final counts **767 unit / 121 pytest** (per [docs/STATUS.md](STATUS.md)); migrations 14→15→16 applied, on-device validation still pending. The §6 appendix task prompts are archival (already executed); the T10 APK-size measurement was not recorded in-repo.
 **Authority:** every scope claim below traces to the verified functional specification
 ([docs/FUNCTIONAL_SPEC.md](FUNCTIONAL_SPEC.md), sections in [docs/functional_spec/](functional_spec/))
 and its consolidation map (section 11: 109 candidates, 29 defects, do-not-touch list).
@@ -44,11 +45,12 @@ Health Connect.
 
 Run these yourself before T1 and between tasks:
 
-0. **Commit the current state first** (the approved Home change + the spec must not tangle
+0. ~~**Commit the current state first** (the approved Home change + the spec must not tangle
    with refactor diffs):
    `git add -A && git commit -m "feat: home schedule-row off-state (approved review)"` — the
    working tree also contains the new spec; either include it in the same commit or a second
-   `docs:` commit.
+   `docs:` commit.~~ — executed (2026-11-26): the baseline was committed before T1; T1–T10
+   landed as commit a48790e.
 1. **Capture the size baseline:** `./gradlew :app:assembleDebug` and note the size and path of
    `app/build/outputs/apk/debug/app-debug.apk` (T10 compares against this).
 2. **Back up the phone data once before the first install of any refactored build:** run
@@ -98,6 +100,10 @@ Run these yourself before T1 and between tasks:
 Do not parallelise T6/T7/T8; run the tasks in order — each one's diff should be reviewable alone.
 
 ## 5. Task specifications
+
+**Archival (2026-11-26):** T1–T10 were executed in commit a48790e; the specifications below
+are the record of what was run, kept unmodified — the per-task evidence lives in the task
+reports and in [docs/STATUS.md](STATUS.md) §3/§5.
 
 ### T1 — Zero-risk deletions
 

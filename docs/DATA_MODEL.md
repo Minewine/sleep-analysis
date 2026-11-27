@@ -1,6 +1,6 @@
 # Data Model — SleepAnalysis
 
-Room/SQLite schema for the sleep intelligence platform. Design goals: **provenance on every measurement**, **immutable clinical data**, **long-lived analytics surviving heavy raw data**, and **no Tier-3 values ever stored** ([MEASUREMENT_RELIABILITY.md](MEASUREMENT_RELIABILITY.md)).
+Room/SQLite schema for the sleep intelligence platform. Design goals: **provenance on every measurement**, ~~**immutable clinical data**~~ (the clinical-baseline store was removed in the 2026-11-22 consolidation — goal retired), **long-lived analytics surviving heavy raw data**, and **no Tier-3 values ever stored** ([MEASUREMENT_RELIABILITY.md](MEASUREMENT_RELIABILITY.md)).
 
 Related: [Architecture](ARCHITECTURE.md) (provenance enforcement, §6) · [MVP scope](MVP_SCOPE.md) · [Privacy & regulatory](PRIVACY_AND_REGULATORY.md)
 
@@ -10,7 +10,6 @@ Related: [Architecture](ARCHITECTURE.md) (provenance enforcement, §6) · [MVP s
 
 ```mermaid
 erDiagram
-    CLINICAL_BASELINE ||--o{ MEASUREMENT : "metrics (clinical rows)"
     SLEEP_SESSION ||--o{ ACOUSTIC_EVENT : contains
     ACOUSTIC_EVENT ||--o| AUDIO_CLIP : "may have"
     SLEEP_SESSION ||--o{ MEASUREMENT : "produces (phone rows)"
@@ -20,7 +19,7 @@ erDiagram
     USER_FACTOR }o--|| MEASUREMENT : "mirrored into (user rows)"
 ```
 
-`REPORT` (§3.7, schema v12) and `MODEL_REGISTRY` (§3.8, schema v12) are implemented: finalize writes each night's headline snapshot and registers the detector/score versions that produced it. Everything else is implemented.
+`REPORT` (§3.7, schema v12) and `MODEL_REGISTRY` (§3.8, schema v12) are implemented: finalize writes each night's headline snapshot and registers the detector/score versions that produced it. Everything else is implemented. The `CLINICAL_BASELINE` entity was removed with its immutability triggers in migration 15→16 (2026-11-22 consolidation); clinical values are no longer stored on-device.
 
 Two write paths exist, both through `MeasurementRecorder` ([ARCHITECTURE.md](ARCHITECTURE.md) §6):
 
@@ -112,6 +111,7 @@ One row per metric value. This is the table all longitudinal analysis (Phase 4+)
 | Column | Type | Notes |
 |---|---|---|
 | `id` | Long PK | |
+| `createdAt` | Long (schema v1) | Write-time stamp — survived the v16 rebuild that stripped the write-only `createdAt` columns elsewhere (§2) |
 | `startedAt` / `endedAt` | Long, `endedAt` nullable | Null endedAt ⇒ in progress / interrupted |
 | `status` | TEXT enum | `COMPLETED` / `INTERRUPTED` / `RECOVERED` |
 | `timeZone` | TEXT | IANA id at session start |
@@ -217,9 +217,9 @@ nights ([NIGHT_REPORT.md](NIGHT_REPORT.md) §1).
 
 One row per contiguous stage span of a **linked** session: `(sessionId FK CASCADE, startMs, endMs, stage, source)` with a `(sessionId, startMs)` index. Populated by the Garmin import only when the dailySleep payload carries a `sleepLevels` timeline AND a time-overlapping session was identified (§5, §6), and by the Health Connect import from the wearable stage timeline over on-device IPC (user-triggered, docs/PRIVACY_AND_REGULATORY.md §3); each re-import replaces atomically. Device-reported context only (M13) — never compared to PSG stages; the night report uses it to say which stage the longest snore bout fell in. Stage labels are the vendor's own, canonicalized to DEEP/LIGHT/REM/AWAKE where known, unknown labels kept verbatim (HC: AWAKE_IN_BED folds to AWAKE; SLEEPING/OUT_OF_BED/UNKNOWN spans are skipped but accounted per type in the raw_payload summary row). `source` (schema v14) is provenance: `GARMIN` = stage spans derived from the Personal API night payload (estimate), `WEARABLE` = Health Connect stage timeline — both timelines can coexist on one session, so deletes/replaces are per-source. Session deletion removes the timeline (FK CASCADE); delete-all purges the table (all sources).
 
-### 3.12 `sleep_experiment` — REMOVED (migration 15→16, 2026-11-22 consolidation)
+### 3.12 `sleep_experiment` — REMOVED (migration 14→15, 2026-11-22 consolidation)
 
-The table and the machinery around it (`ExperimentTracker`, `Playbook`, `EscalationRule`) were dropped in task T7; the N-of-1 experiments line is shelved (NEXT_STEPS). Historical note: it stored one row per N-of-1 experiment with a single-ACTIVE-row invariant enforced in tracker logic, verdict math in the pure `ExperimentMath`.
+The table and the machinery around it (`ExperimentTracker`, `Playbook`, `EscalationRule`) were dropped in task T6; the N-of-1 experiments line is shelved (NEXT_STEPS). Historical note: it stored one row per N-of-1 experiment with a single-ACTIVE-row invariant enforced in tracker logic, verdict math in the pure `ExperimentMath`.
 
 ## 4. Clinical immutability — RETIRED (2026-11-22 consolidation)
 
@@ -254,7 +254,7 @@ Snore share and score (measurements and report) use **captured analysis time** �
 
 `saved_at_ms` stamps heartbeat writes (a RECOVERED finalize bounds the night by the last heartbeat) and `capture_started_at` records when audio capture actually began after the start delay — the health-warning gap check compares accounted windows (classified + thermally skipped) against that capture window, not tap-to-stop wall time. v2 adds `level_gate_skipped` (events the relative level gate rejected — kept for diagnostics, the events are still stored without clips) and `thermal_skipped_hops`: merged spans of `[start_epoch_ms, end_epoch_ms, hops]` recording which analysis hops thermal throttling skipped (within a span, every odd hop of the 0.5 s grid was unanalyzed), so per-hour detection coverage can be corrected in analysis. Spans are epoch-anchored and concatenated across START_STICKY restarts via the stats carry. **v6** adds `client_silenced_spans` — epoch spans where Android silenced this capture client (mic privacy toggle, a call, another app holding the mic: the OS delivers zeros without any error, P2-4) — and extends each `ambient_level_buckets` entry from `[startMs, endMs, meanDbfs]` to `[startMs, endMs, meanDbfs, coveredMs, varianceDb2]`: `coveredMs` is the sum of the windows actually folded into the bucket (a partly filled bucket no longer claims its whole 5-minute span as evidence — P3-16) and `varianceDb2` is the per-window dBFS variance (≈0 + a floor-level mean = digital silence from a silenced or dead mic, classified UNCAPTURED — never quiet). Pre-v6 rows parse with the legacy full-bucket coverage and no variance.
 
-### 5.2 Report `payload` (v1 — target shape for the deferred §3.7 snapshot)
+### 5.2 Report `payload` (v1 — the §3.7 snapshot, implemented at schema v12)
 
 ```json
 {
@@ -270,12 +270,11 @@ Snore share and score (measurements and report) use **captured analysis time** �
   "hourly": [{"hour_start": "23:00", "snore_minutes": 6.2, "noise_p95_dbfs": -31.5}],
   "top_clips": [{"event_id": 9182, "offset_ms": 9460000, "intensity_tier": "EPIC"}],
   "integrity_notes": ["Interrupted 03:12–03:40 (audio device change)"],
-  "baseline_context": [{"study_date": "2026-01-12", "metric": "AHI", "value": 17.6, "method": "CLINICAL_MEASURED"}],
   "disclaimer_key": "REPORT_FOOTER"
 }
 ```
 
-Every value carries (or inherits) `method` and `tier`; `ClaimPolicy` filtered what was allowed in.
+Every value carries (or inherits) `method` and `tier`; `ClaimPolicy` filtered what was allowed in. (The early sketch's `baseline_context` clinical rows never made it into the implemented snapshot — and since the `clinical_baseline` table was removed in the 2026-11-22 consolidation, there is no clinical side-by-side to carry.)
 
 ### 5.3 Night ↔ calendar-day anchoring
 
@@ -311,5 +310,5 @@ Deletion paths:
 - JSON payloads (`capture_stats`, report payload) carry `schema_version`; readers handle older versions defensively.
 - `measurement_type`/enum growth is additive; `ClaimPolicy` is the gate, so unknown types in the DB can never render in the UI.
 - GARMIN measurement rows carry `sessionId` when the import identified a time-overlapping session (schema v9); rows written before then have `NULL` and join by day window only.
-- Schema history: 1→16 via **fifteen** declared migrations, **fourteen** of which run SQL (v8 is declaration-only: `@ColumnInfo(defaultValue = "0")` on `sleep_session.resumedAfterInterruption`, matching the `DEFAULT 0` the column has carried since v7). Highlights: v9 `sleep_stage` (§3.10); v10 `quiet_gap` (§3.11); v11 `audio_clip.appliedGain`/`filePeakDbfs` (§3.5); v12 `report` (§3.7) + `model_registry` (§3.8); v13 `sleep_experiment` (§3.12, since removed); v14 `sleep_stage.source` (§3.10, backfilled `DEFAULT 'GARMIN'` so pre-v14 rows keep their truthful history); **v15** drops the `sleep_experiment` table (T7); **v16** drops the `clinical_baseline` table + its two immutability triggers and a bundle of write-only columns (`sleep_session` {deviceModel, osVersion, appVersion, audioBytesTotal}, `acoustic_event` {labeledAt, createdAt}, `quiet_gap` {createdAt}, `user_factor` {recordedAt}) via table rebuild (create new → copy → drop → rename), preserving surviving row data.
+- Schema history: 1→16 via **fifteen** declared migrations, **fourteen** of which run SQL (v8 is declaration-only: `@ColumnInfo(defaultValue = "0")` on `sleep_session.resumedAfterInterruption`, matching the `DEFAULT 0` the column has carried since v7). Highlights: v9 `sleep_stage` (§3.10); v10 `quiet_gap` (§3.11); v11 `audio_clip.appliedGain`/`filePeakDbfs` (§3.5); v12 `report` (§3.7) + `model_registry` (§3.8); v13 `sleep_experiment` (§3.12, since removed); v14 `sleep_stage.source` (§3.10, backfilled `DEFAULT 'GARMIN'` so pre-v14 rows keep their truthful history); **v15** drops the `sleep_experiment` table (T6); **v16** drops the `clinical_baseline` table + its two immutability triggers and a bundle of write-only columns (`sleep_session` {deviceModel, osVersion, appVersion, audioBytesTotal}, `acoustic_event` {labeledAt, createdAt}, `quiet_gap` {createdAt}, `user_factor` {recordedAt}) via table rebuild (create new → copy → drop → rename), preserving surviving row data.
 - Reprocessing (Phase 4+): re-running a newer model over stored clips writes **new** Measurement rows carrying the new `modelVersion` string (and a new `model_registry` window, opened at that finalize); old rows remain — provenance history is append-only.

@@ -10,7 +10,7 @@ Related: [Product vision](PRODUCT_VISION.md) · [MVP scope](MVP_SCOPE.md) (Phase
 
 | Phase | Theme | Effort (part-time) | Measurement tiers introduced |
 |---|---|---|---|
-| 1 | Sleep recorder + basic report | 4–8 weeks | M1–M4 (Tier 1), clinical baseline |
+| 1 | Sleep recorder + basic report | 4–8 weeks | M1–M4 (Tier 1); ~~clinical baseline~~ (removed in the 2026-11-22 consolidation) |
 | 2 | Acoustic intelligence | 3–6 weeks | M5–M6 (Tier 1), M7–M8 (Tier 2, toggle) |
 | 3 | Data platform | 4–8 weeks | M10–M13 (device-reported), factors, export |
 | 4 | Sleep intelligence | 4–6 weeks | Analysis over existing tiers only — no new claims |
@@ -18,7 +18,7 @@ Related: [Product vision](PRODUCT_VISION.md) · [MVP scope](MVP_SCOPE.md) (Phase
 
 ## Phase 1 — Sleep recorder + basic report
 
-**Goal:** a reliable nightly recorder and an honest morning report, with the clinical baseline stored immutably.
+**Goal:** a reliable nightly recorder and an honest morning report, ~~with the clinical baseline stored immutably~~ (removed in the 2026-11-22 consolidation).
 
 - Foreground-service audio capture, ring buffer, event clips only (no full-night audio)
 - Swappable snore detector *(shipped: `energy-heuristic-v3-peakgate` — energy/band heuristic + spectral flatness/harmonicity and breath-rhythm gates, plus a quiet-room peak gate; the YAMNet-mapped model is Phase 2)*, snore + loud-noise events (cough/speech classification arrives with the model)
@@ -53,18 +53,18 @@ Related: [Product vision](PRODUCT_VISION.md) · [MVP scope](MVP_SCOPE.md) (Phase
 
 ## Phase 3 — Data platform
 
-**Goal:** bring the other data layers in — wearables, factors, clinical comparison, export.
+**Goal:** bring the other data layers in — wearables, factors, export.
 
 - **Health Connect integration — first slice SHIPPED (2026-11-16):** on-device import of vendor sleep stages (M13, context-only) via `HealthConnectImportManager.importForDate`, landing as `sleep_stage` rows with GARMIN/WEARABLE source scoping (schema v14), plus the Settings card and report backfill. Still open here: sleep sessions (device-reported), nocturnal HR/HRV (M10/M11), vendor SpO₂ levels (M12); Health Connect is on-device IPC (no INTERNET)
 - **Garmin import — SHIPPED EARLY (first slice of this phase):** Personal API key in Android Keystore, on-demand pull of sleep/HRV/Body Battery/resting HR for one date, raw JSON in `raw_payload`, report labeled "Garmin estimate" (docs/GARMIN_INTEGRATION.md). Still open from this item: FIT/CSV file-import fallback
-- **Lifestyle factor logging UI:** weight, tirzepatide dose, alcohol, caffeine, exercise, stress, pain, notes ([DATA_MODEL.md](DATA_MODEL.md) §3.6)
-- **Clinical comparison view:** baseline metrics side by side with longitudinal trends under the §4 framing ("correlation and context — not equivalence")
+- **Lifestyle factor logging UI:** weight, tirzepatide dose, alcohol, caffeine, exercise, stress, pain, notes ([DATA_MODEL.md](DATA_MODEL.md) §3.6) — the standalone screen was removed in the 2026-11-22 consolidation (report-side factor editing remains)
+- ~~**Clinical comparison view:** baseline metrics side by side with longitudinal trends~~ — **removed in the 2026-11-22 consolidation** (the `clinical_baseline` data source was dropped in migration 15→16; the §4 framing stays)
 - **Export:** user-initiated local CSV/JSON (full provenance columns) + PDF morning/period report for clinician sharing; exports pass the same ClaimPolicy filter and embed disclaimers
 - **Scheduled start — SHIPPED EARLY (recording controls pass):** optional nightly schedule (off by default) with a bedtime notification-action start solving the Android 11+ while-in-use mic constraint (one tap = user interaction); exact alarms with an inexact ~10-minute fallback, auto-stop at the end time, skip-tonight, reboot re-arming; manual start remains the default
 
 **Effort:** 4–8 weeks.
 
-**Success criteria:** a wearable + factors timeline for 14+ consecutive nights; export opens correctly in Sheets/LibreOffice with provenance intact; comparison view copy passes the wording rules; network traffic still limited to the single Garmin host allowlist.
+**Success criteria:** a wearable + factors timeline for 14+ consecutive nights; export opens correctly in Sheets/LibreOffice with provenance intact; network traffic still limited to the single Garmin host allowlist.
 
 **Defers:** associations/insight ranking (Phase 4), any score combining phone + wearable data numerically.
 

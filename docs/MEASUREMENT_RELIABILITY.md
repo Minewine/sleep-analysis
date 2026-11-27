@@ -14,7 +14,7 @@ Related: [Product vision](PRODUCT_VISION.md) · [MVP scope](MVP_SCOPE.md) · [Pr
 | **Tier 2** | Experimental | Plausibly supported but under-validated for this device class; may be noisy or biased. | Shown **only** behind an explicit "experimental" toggle in Settings, always with an experimental badge and its disclaimer text. Never in headline scores, never in exports as a claimed result. |
 | **Tier 3** | Out of scope for claims | Phone cannot support it at claim-grade confidence, or it crosses the medical-device boundary. | **Never computed, never stored, never displayed.** No code path exists. |
 
-Clinical baseline values (PSG-derived) are not on this scale — they are clinically measured facts, stored read-only with their own provenance ([DATA_MODEL.md](DATA_MODEL.md) §ClinicalBaseline).
+Clinical baseline values (PSG-derived) are not on this scale — they are clinically measured facts, never phone-computed. (The read-only clinical-baseline storage this referred to — [DATA_MODEL.md](DATA_MODEL.md) §ClinicalBaseline — was removed in migration 15→16, 2026-11-22 consolidation.)
 
 ## 2. Classification table
 
@@ -51,7 +51,7 @@ Clinical baseline values (PSG-derived) are not on this scale — they are clinic
 ## 4. Cross-source comparison rules
 
 - Phone audio intensity is **dBFS** (digital full scale) — device- and distance-dependent. It is never compared numerically to clinical dB SPL or displayed with clinical units.
-- Clinical baseline and phone measurements may be displayed **side by side** (Phase 3+ clinical comparison view) under the framing: *"Your clinical study measured X on DATE. Phone monitoring tracks night-to-night trends, which are not the same kind of measurement."*
+- ~~Clinical baseline and phone measurements displayed **side by side** (Phase 3+ clinical comparison view)~~ — **removed 2026-11-22**: the `clinical_baseline` table was dropped (migration 15→16) and no clinical comparison view exists or is planned; the framing sentence is retired with it.
 - Vendor wearable estimates (stages, SpO₂) are context, not evidence; they render with their vendor disclaimer and never merge numerically into phone-derived aggregates.
 - Any cross-source view carries the standing caption: **"Correlation and context — not equivalence."**
 
@@ -67,7 +67,7 @@ Clinical baseline values (PSG-derived) are not on this scale — they are clinic
 
 - **Phase 1:** M1–M4 only, plus time-in-bed (session bounds). M5 arrives properly with movement in Phase 2. No Tier-2 indicators yet — experimental breathing indicators start in Phase 2 behind the toggle, once event classification is good enough to make them worth labeling.
 - **Phase 2:** M5–M6 (movement lands, sleep/wake estimate becomes Tier 1), M7–M8 launch as Tier 2 behind the experimental toggle.
-- **Phase 3:** M10–M13 and M18 via the Garmin Personal API (first slice; see [GARMIN_INTEGRATION.md](GARMIN_INTEGRATION.md)) and later Health Connect, all under device-reported rules; clinical comparison view with §4 framing.
+- **Phase 3:** M10–M13 and M18 via the Garmin Personal API (first slice; see [GARMIN_INTEGRATION.md](GARMIN_INTEGRATION.md)) and later Health Connect, all under device-reported rules. (The clinical comparison view was removed with the clinical-baseline table in the 2026-11-22 consolidation.)
 - **Phase 5:** only place where M7/M8 promotion (or M9 sonar) may be evaluated — through the validation plan below.
 - **All phases:** M14–M17 are never built. Requests to compute them are rejected by design review, not deferred.
 

@@ -1,7 +1,7 @@
-# 7. Trends, insights and experiments
+# 7. Trends, insights ~~and experiments~~ — the experiment/playbook/escalation vertical was removed in consolidation T6 (see the status note below)
 
 **Scope:** domain/insights/InsightRules.kt, domain/insights/PersonalBaseline.kt, domain/insights/SleepRegularity.kt, domain/insights/Playbook.kt, domain/insights/EscalationRule.kt, domain/experiments/ExperimentTracker.kt (ExperimentMath + tracker + JSON codecs), domain/report/TrendAssembler.kt, ui/trends/TrendsScreen.kt, ui/insights/InsightsScreen.kt, ui/insights/InsightsViewModel.kt, the repository builders in data/repo/SessionRepository.kt, the experiment DAO in data/db/dao/Daos.kt, the experiment entity in data/db/entity/Entities.kt, the insights prefs in data/prefs/UserPreferences.kt — and the matching tests.
-**Consolidation status (T9 refresh, 2026-11-26):** the playbook, escalation and N-of-1 experiment verticals were REMOVED in consolidation T7 (Playbook.kt, EscalationRule.kt, ExperimentTracker.kt, SleepExperimentDao/ExperimentStatus deleted; the sleep_experiment table dropped by migration 14→15; the playbook string catalog and the experiment chip removed). Rows and citations below are kept as history — removed symbols are cited without backticks. The trend rows (TRE-), eligibility gate and personal-baseline rows are unaffected and current.
+**Consolidation status (T9 refresh, 2026-11-26):** the playbook, escalation and N-of-1 experiment verticals were REMOVED in consolidation T6 (Playbook.kt, EscalationRule.kt, ExperimentTracker.kt, SleepExperimentDao/ExperimentStatus deleted; the sleep_experiment table dropped by migration 14→15; the playbook string catalog and the experiment chip removed). Rows and citations below are kept as history — removed symbols are cited without backticks. The trend rows (INS-), eligibility gate and personal-baseline rows are unaffected and current.
 
 **Requirement prefix:** INS — rows in N.3 are numbered INS-01, INS-02, …
 **Status values:** `tested` = a unit/instrumented test asserts it (cite it) · `device-verified` = evidence from a real night or device run exists (cite where) · `unverified` = implemented, no test and no device evidence · `not implemented` = designed or documented only.
@@ -14,9 +14,9 @@
 4. A personal baseline: robust median ± MAD bands per metric over the user's own eligible nights, shown with a COLLECTING / READY state. [INS-14..INS-18]
 5. Sleep regularity: SRI (0–100) and social jetlag (hours), both labeled approximations. [INS-19..INS-23]
 6. Up to 13 deterministic rule-based insights per night — 8 single-shot rules plus one baseline-excursion insight per metric (5 metrics) — each with confidence tier LOW or MODERATE, evidence night ids and machine-readable detail JSON — dismissible, re-showable. [INS-24..INS-33]
-7. A ranked playbook of evidence-graded actions (top 3; context-only extras). [INS-34..INS-36]
-8. N-of-1 experiments: start a 7-night experiment on an action, watch honest usable/excluded/missing counts, get an automatic verdict against the user's own start band, optionally confirm with an A-B-A return-to-baseline phase, keep or abandon. One ACTIVE at a time. [INS-37..INS-45]
-9. A clinician-escalation card over the same eligible nights: acoustic arm (3 consecutive snoring-heavy nights) plus a once-collected STOP-BANG-derived self-report. [INS-46..INS-48]
+7. ~~A ranked playbook of evidence-graded actions (top 3; context-only extras).~~ — removed in the 2026-11-22 consolidation (T6) [INS-34..INS-36]
+8. ~~N-of-1 experiments: start a 7-night experiment on an action, watch honest usable/excluded/missing counts, get an automatic verdict against the user's own start band, optionally confirm with an A-B-A return-to-baseline phase, keep or abandon. One ACTIVE at a time.~~ — removed in the 2026-11-22 consolidation (T6; the sleep_experiment table was dropped by migration 14→15) [INS-37..INS-45]
+9. ~~A clinician-escalation card over the same eligible nights: acoustic arm (3 consecutive snoring-heavy nights) plus a once-collected STOP-BANG-derived self-report.~~ — removed in the 2026-11-22 consolidation (T6) [INS-46..INS-48]
 
 ## N.2 How it works today
 
@@ -29,16 +29,16 @@
 | `PersonalBaseline` | `domain/insights/PersonalBaseline.kt` | Eligibility filter + per-metric robust bands (median ± 2·1.4826·MAD, floored) |
 | `SleepRegularity` | `domain/insights/SleepRegularity.kt` | SRI over 60 s epochs; social jetlag from weekend/weekday window midpoints |
 | `InsightRules` / `Insight` / `InsightsReport` | `domain/insights/InsightRules.kt` | 9 deterministic rules (R1–R9); LOW/MODERATE tiers only |
-| `Playbook` | domain/insights/Playbook.kt | 15-action catalog; ranking; own-factor keys; starter fallback |
-| `EscalationRule` | domain/insights/EscalationRule.kt | Acoustic streak + self-report arms |
-| `ExperimentMath` | domain/experiments/ExperimentTracker.kt | Pure phase partition, verdict z, A-B-A confirmation |
-| `ExperimentTracker` | domain/experiments/ExperimentTracker.kt | Persistence + status machine over the sleep_experiment table; JSON codecs |
-| `InsightsViewModel` | `ui/insights/InsightsViewModel.kt` | Loads report once; dismissal prefs; experiment + escalation actions |
-| `InsightsScreen` | `ui/insights/InsightsScreen.kt` | Cards: escalation, baseline, regularity, insights, experiment, playbook |
-| `SessionRepository` builders | `data/repo/SessionRepository.kt` | `buildTrends`, `buildInsights`, experimentPhaseNights, `currentModelVersions`, `nightRecordFor` |
-| SleepExperimentDao | `data/db/dao/Daos.kt` | `active`/`history`/`byId`/`insert`/`finish`/`beginConfirmPhase`/`finishConfirm`/`updateResult`/`abandon` |
-| `SleepExperimentEntity` / ExperimentStatus | `data/db/entity/Entities.kt` | `sleep_experiment` table (schema v13); status constants ACTIVE/DONE/ABANDONED |
-| UserPreferences keys | `data/prefs/UserPreferences.kt` | Dismissed rules + escalation self-report persistence |
+| ~~Playbook~~ | ~~domain/insights/Playbook.kt~~ | removed in consolidation T6 — 15-action catalog; ranking; own-factor keys; starter fallback (file deleted) |
+| ~~EscalationRule~~ | ~~domain/insights/EscalationRule.kt~~ | removed in consolidation T6 — acoustic streak + self-report arms (file deleted) |
+| ~~ExperimentMath~~ | ~~domain/experiments/ExperimentTracker.kt~~ | removed in consolidation T6 — pure phase partition, verdict z, A-B-A confirmation (file deleted) |
+| ~~ExperimentTracker~~ | ~~domain/experiments/ExperimentTracker.kt~~ | removed in consolidation T6 — persistence + status machine over the sleep_experiment table; JSON codecs (file deleted; table dropped by migration 14→15) |
+| `InsightsViewModel` | `ui/insights/InsightsViewModel.kt` | Loads report once; dismissal prefs (~~experiment + escalation actions~~ — removed in consolidation T6) |
+| `InsightsScreen` | `ui/insights/InsightsScreen.kt` | Cards: baseline, regularity, insights (~~escalation, experiment, playbook~~ cards — removed in consolidation T6) |
+| `SessionRepository` builders | `data/repo/SessionRepository.kt` | `buildTrends`, `buildInsights`, ~~experimentPhaseNights~~ (removed in consolidation T6), `currentModelVersions`, `nightRecordFor` |
+| ~~SleepExperimentDao~~ | ~~data/db/dao/Daos.kt~~ | removed in consolidation T6 — `active`/`history`/`byId`/`insert`/`finish`/`beginConfirmPhase`/`finishConfirm`/`updateResult`/`abandon` (DAO deleted; table dropped by migration 14→15) |
+| ~~`SleepExperimentEntity` / ExperimentStatus~~ | ~~data/db/entity/Entities.kt~~ | removed in consolidation T6 — `sleep_experiment` table (schema v13); status constants ACTIVE/DONE/ABANDONED (table dropped by migration 14→15) |
+| UserPreferences keys | `data/prefs/UserPreferences.kt` | Dismissed rules (~~escalation self-report persistence~~ — the escalation keys were removed in consolidation T6) |
 
 ### N.2.2 Flows
 
@@ -70,14 +70,14 @@
 
 ### N.2.3 State and stored data
 
-- **`sleep_experiment` table (schema v13)** — SleepExperimentEntity columns: `id`, `hypothesisRuleId`, `playbookActionId`, `metric`, `startedAt`, `plannedNights`, `status` (TEXT: ACTIVE / DONE / ABANDONED — plain constants, not a Room enum), `baselineStatsJson`, `resultJson`, `confirmPhaseJson`, `createdAt`. Index on `status`. No FK — outlives sessions.
+- **~~`sleep_experiment` table (schema v13)~~ — removed in consolidation T6 (table dropped by migration 14→15; the four bullets below are kept as history).** SleepExperimentEntity columns: `id`, `hypothesisRuleId`, `playbookActionId`, `metric`, `startedAt`, `plannedNights`, `status` (TEXT: ACTIVE / DONE / ABANDONED — plain constants, not a Room enum), `baselineStatsJson`, `resultJson`, `confirmPhaseJson`, `createdAt`. Index on `status`. No FK — outlives sessions.
 - **`baselineStatsJson`**: `{"metric","median","mad","low","high"}` (baseline band captured at start).
 - **`resultJson`** (`schema_version:1`): `change_detected`, `direction` (UP/DOWN/null), `confidence` (LOW/MODERATE), `phase_median`, `robust_z`, `phase_nights`, `planned_nights`, `used_night_ids`, `excluded_night_ids`, `kept`; after a confirm phase also `confirmed`, `confirm_median`, `confirm_returned_to_band`.
 - **`confirmPhaseJson`** (`schema_version:1`): `phase:"CONFIRM"`, `started_at`; finalized adds `phase2_median`, `returned_to_band`, `confirmed`, `confidence`.
 - **Status machine**: ACTIVE → DONE (finish, guarded status='ACTIVE') → ACTIVE again (beginConfirmPhase, guarded status='DONE') → DONE (finishConfirm, guarded status='ACTIVE' — an ABANDONED row can never be resurrected by an in-flight finalize); ABANDONED from ACTIVE or DONE via abandon (WHERE status != 'ABANDONED'), terminal.
-- **DataStore keys** (UserPreferences): `insights_dismissed_rules` (string set of rule ids), `escalation_self_report_answered`, `escalation_snoring_loud`, `escalation_witnessed_pauses`, `escalation_daytime_sleepiness`.
+- **DataStore keys** (UserPreferences): `insights_dismissed_rules` (string set of rule ids); ~~`escalation_self_report_answered`, `escalation_snoring_loud`, `escalation_witnessed_pauses`, `escalation_daytime_sleepiness`~~ — removed in consolidation T6.
 - **Insight detailJson** (per-rule keys): hand-built compact JSON, stable key order (rule-specific keys listed in the rule KDocs); shown expanded, never rendered as a measurement.
-- Trend rows are computed, not persisted; the persisted inputs are the `measurement`, `acoustic_event`, `audio_clip`, `quiet_gap`, session and `sleep_experiment` rows (see sections 4–6).
+- Trend rows are computed, not persisted; the persisted inputs are the `measurement`, `acoustic_event`, `audio_clip`, `quiet_gap` and session rows (see sections 4–6; the `sleep_experiment` input was removed in consolidation T6 — table dropped by migration 14→15).
 
 ## N.3 Requirements
 
@@ -165,15 +165,15 @@
 | `SleepRegularity.MIN_SRI_DAYS` | 5 | `domain/insights/SleepRegularity.kt` · `SleepRegularity` | Valid days before an SRI exists |
 | `SleepRegularity.SOCIAL_JETLAG_FLAG_HOURS` | 1.0 | `domain/insights/SleepRegularity.kt` · `SleepRegularity` | SJL soft-flag threshold (CONVENTION) |
 | `SleepRegularity.MIN_SJL_PER_GROUP` | 2 | `domain/insights/SleepRegularity.kt` · `SleepRegularity` | Weekend / weekday midpoints each before SJL exists |
-| `ExperimentMath.DEFAULT_PLANNED_NIGHTS` | 7 | domain/experiments/ExperimentTracker.kt · ExperimentMath | Default phase length |
-| `ExperimentMath.MIN_PHASE_NIGHTS` | 5 | domain/experiments/ExperimentTracker.kt · ExperimentMath | WWC 2010 usable-nights floor (verdict and insert clamp) |
-| `ExperimentMath.VERDICT_ROBUST_Z` | 2.0 | domain/experiments/ExperimentTracker.kt · ExperimentMath | Verdict trigger, strict |z| > 2 |
-| `ExperimentMath.MAX_PLANNED_NIGHTS` | 30 | domain/experiments/ExperimentTracker.kt · ExperimentMath | Upper clamp on a planned phase |
-| `EscalationRule.SNORE_SHARE_TRIGGER` | 0.25 | domain/insights/EscalationRule.kt · EscalationRule | Acoustic arm share trigger, strict > |
-| `EscalationRule.LONGEST_BOUT_TRIGGER_MS` | 600000 | domain/insights/EscalationRule.kt · EscalationRule | Acoustic arm bout trigger, strict > (10 min) |
-| `EscalationRule.CONSECUTIVE_NIGHTS` | 3 | domain/insights/EscalationRule.kt · EscalationRule | Consecutive qualifying eligible nights needed |
+| ~~`ExperimentMath.DEFAULT_PLANNED_NIGHTS`~~ | 7 | ~~domain/experiments/ExperimentTracker.kt · ExperimentMath~~ | removed in consolidation T6 — was the default phase length |
+| ~~`ExperimentMath.MIN_PHASE_NIGHTS`~~ | 5 | ~~domain/experiments/ExperimentTracker.kt · ExperimentMath~~ | removed in consolidation T6 — was the WWC 2010 usable-nights floor (verdict and insert clamp) |
+| ~~`ExperimentMath.VERDICT_ROBUST_Z`~~ | 2.0 | ~~domain/experiments/ExperimentTracker.kt · ExperimentMath~~ | removed in consolidation T6 — was the verdict trigger, strict \|z\| > 2 |
+| ~~`ExperimentMath.MAX_PLANNED_NIGHTS`~~ | 30 | ~~domain/experiments/ExperimentTracker.kt · ExperimentMath~~ | removed in consolidation T6 — was the upper clamp on a planned phase |
+| ~~`EscalationRule.SNORE_SHARE_TRIGGER`~~ | 0.25 | ~~domain/insights/EscalationRule.kt · EscalationRule~~ | removed in consolidation T6 — was the acoustic arm share trigger, strict > |
+| ~~`EscalationRule.LONGEST_BOUT_TRIGGER_MS`~~ | 600000 | ~~domain/insights/EscalationRule.kt · EscalationRule~~ | removed in consolidation T6 — was the acoustic arm bout trigger, strict > (10 min) |
+| ~~`EscalationRule.CONSECUTIVE_NIGHTS`~~ | 3 | ~~domain/insights/EscalationRule.kt · EscalationRule~~ | removed in consolidation T6 — was: consecutive qualifying eligible nights needed |
 | `TrendAssembler.MISSED_SESSION_ID` | -1 | `domain/report/TrendAssembler.kt` · `TrendAssembler` | Sentinel session id of synthetic missed rows |
-| `assemble(maxNights)` / `buildInsights(maxNights)` / `experimentPhaseNights(maxNights)` | 7 / 14 / 60 | `domain/report/TrendAssembler.kt` · `assemble`; `data/repo/SessionRepository.kt` · `buildInsights`, experimentPhaseNights | Trend span / insights window / phase-night cap |
+| `assemble(maxNights)` / `buildInsights(maxNights)` / ~~experimentPhaseNights(maxNights)~~ | 7 / 14 / ~~60~~ | `domain/report/TrendAssembler.kt` · `assemble`; `data/repo/SessionRepository.kt` · `buildInsights`, ~~experimentPhaseNights~~ | Trend span / insights window / ~~phase-night cap~~ (experimentPhaseNights removed in consolidation T6) |
 
 ## N.5 Failure handling and edge cases
 
@@ -194,7 +194,7 @@
 
 ## N.6 Contract boundaries — what a refactor must not break
 
-- **Persisted formats**: `sleep_experiment` table and column names (schema v13, `status` TEXT with ACTIVE/DONE/ABANDONED); `baselineStatsJson`, `resultJson` (schema_version 1, all keys listed in N.2.3), `confirmPhaseJson` key names; DataStore keys `insights_dismissed_rules`, `escalation_self_report_answered`, `escalation_snoring_loud`, `escalation_witnessed_pauses`, `escalation_daytime_sleepiness`; the insight detailJson key names (rule ids and copyKey strings are drift-tested against docs/INSIGHTS.md and strings.xml by `InsightsDocTest`).
+- **Persisted formats**: ~~`sleep_experiment` table and column names (schema v13, `status` TEXT with ACTIVE/DONE/ABANDONED); `baselineStatsJson`, `resultJson` (schema_version 1, all keys listed in N.2.3), `confirmPhaseJson` key names~~ (removed in consolidation T6 — the table was dropped by migration 14→15, `AppDatabase.MIGRATION_14_15`); DataStore keys `insights_dismissed_rules` (~~`escalation_self_report_answered`, `escalation_snoring_loud`, `escalation_witnessed_pauses`, `escalation_daytime_sleepiness`~~ — removed in consolidation T6); the insight detailJson key names (rule ids and copyKey strings are drift-tested against docs/INSIGHTS.md and strings.xml by `InsightsDocTest`).
 - **Version strings stored with data**: the event / SNORE_SCORE `modelVersion` values feed the eligibility comparison and the trend flags — a refactor must keep comparing against the registry's current DETECTOR/SCORE versions, including the null-matches-null rule.
 - **Platform contracts**: none introduced here (no manifest entries, permissions or notifications).
 - **Cross-area interfaces**: validity grading (see section 5) supplies NIGHT_VALIDITY grades — eligibility is grade A / B here; experiment table persistence and DAO guards (section 4); report numbers and SnoreMath bout/union math (sections 5–6); MissedNightPolicy shares the missed-night semantics with the Home banner (section 3); DailyFactor keys (factor logging area) feed the confound exclusion; ui/home/HomeViewModel reads ExperimentTracker.activeExperiment + progress for the Home chip.
@@ -216,8 +216,8 @@ Cross-area notes (non-normative): the eligibility predicate (grade A/B + version
 
 ## N.8 Open questions for the owner
 
-- **Defect — mislabeled confirm-phase rejection**: domain/experiments/ExperimentTracker.kt · startConfirmPhase reuses StartResult.Reason.NO_BASELINE_BAND for the "row is not DONE-with-change" case (a missing row id returns ACTIVE_EXISTS instead — ExperimentTracker.startConfirmPhase resolves byId first); StartErrorText in ui/insights/InsightsScreen.kt renders it as the "no baseline band" copy. Actual behaviour: a confirm tap on a non-DONE/no-change row shows a misleading band message. Fix should add a dedicated reason/copy.
-- **Tracker glue has no unit test**: domain/experiments/ExperimentTracker.kt · startExperiment, `refreshActiveVerdict`, `startConfirmPhase`, `abandon`, `progress` and the transactional single-ACTIVE invariant are only exercised via the ExperimentMath codec tests and the DAO guards — the status-machine wiring (INS-41..INS-43, INS-45) is `unverified`. An instrumented or Robolectric test for the tracker would close the biggest test gap in this area.
+- ~~**Defect — mislabeled confirm-phase rejection**: domain/experiments/ExperimentTracker.kt · startConfirmPhase reuses StartResult.Reason.NO_BASELINE_BAND for the "row is not DONE-with-change" case (a missing row id returns ACTIVE_EXISTS instead — ExperimentTracker.startConfirmPhase resolves byId first); StartErrorText in ui/insights/InsightsScreen.kt renders it as the "no baseline band" copy. Actual behaviour: a confirm tap on a non-DONE/no-change row shows a misleading band message. Fix should add a dedicated reason/copy.~~ — resolved by removal: ExperimentTracker and the experiment cards were deleted in consolidation T6; the defect died with them.
+- ~~**Tracker glue has no unit test**: domain/experiments/ExperimentTracker.kt · startExperiment, `refreshActiveVerdict`, `startConfirmPhase`, `abandon`, `progress` and the transactional single-ACTIVE invariant are only exercised via the ExperimentMath codec tests and the DAO guards — the status-machine wiring (INS-41..INS-43, INS-45) is `unverified`. An instrumented or Robolectric test for the tracker would close the biggest test gap in this area.~~ — resolved by removal: the tracker glue was deleted in consolidation T6, closing the gap by removing the code it covered.
 - **Dogfood checklist items unchecked**: the trend missed-row / skip-suppression checks in `docs/DOGFOOD_CHECKLIST.md` are still unticked, so INS-09..INS-15 are test-pinned but not yet device-verified on the real phone.
 - **Keep-or-drop**: MetricBand.isOutside in domain/insights/PersonalBaseline.kt — its KDoc claims a "display contract" no UI fulfils; either render the ±2σ band edges from it or delete it.
 - UNVERIFIED: whether any UI test exercises the TrendsScreen / InsightsScreen composables — none was found under app/src/test or app/src/androidTest, so all UI-only rows are marked `unverified` by absence of search results, not by exhaustive proof.

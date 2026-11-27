@@ -10,7 +10,7 @@ Related: [Measurement reliability](MEASUREMENT_RELIABILITY.md) (binding tiers) �
 
 ## 1. Phase 1 goal
 
-> Start monitoring before sleep, stop it in the morning, and read a clear, honest report: how long the session ran, how much snoring was detected, which acoustic events occurred — with clips to verify, and your clinical baseline stored safely alongside.
+> Start monitoring before sleep, stop it in the morning, and read a clear, honest report: how long the session ran, how much snoring was detected, which acoustic events occurred — with clips to verify, and ~~your clinical baseline stored safely alongside~~ (the clinical-baseline store was removed in the 2026-11-22 consolidation).
 
 Nothing in Phase 1 makes breathing or sleep-stage claims. Phase 1 measures what a phone microphone measures, reliably.
 
@@ -24,8 +24,8 @@ Nothing in Phase 1 makes breathing or sleep-stage claims. Phase 1 measures what 
 | F4 | **Basic snoring detection (swappable model)** | On-device TFLite classifier v0 (YAMNet-class model mapped to app taxonomy: snore / cough / speech / other-noise / silence). Events smoothed and de-duplicated (hysteresis, min duration, gap merge). Model loaded via ModelRegistry — swapping the model later must not require touching detection or storage code |
 | F5 | **Night timeline + clip playback** | Horizontal night timeline colored by event type; tap an event to play its clip; label events (correct / not-a-snore) — labels are stored for future calibration, not used to alter scores in Phase 1 |
 | F6 | **Morning report** | Session duration (time in bed), snoring summary (total time, % of night, count, intensity-tier breakdown, 0–100 snore score), acoustic event counts, top clips, per-hour chart, session-integrity notes (interruptions, dropouts). **No breathing estimates, no sleep/wake estimate beyond time-in-bed** |
-| F7 | **Clinical baseline entry (read-only)** | Structured form for each HUG study night: date, lab, total sleep time, sleep efficiency, arousal index, N3 %, AHI, notes. Stored **immutable** ([DATA_MODEL.md](DATA_MODEL.md) §4). Displayed in a Baseline screen and cited in the report header as context. No comparison logic in Phase 1 |
-| F8 | **Disclaimers everywhere** | First-run full text, report footer, baseline screen note, copy rules per [MEASUREMENT_RELIABILITY.md](MEASUREMENT_RELIABILITY.md) and [PRIVACY_AND_REGULATORY.md](PRIVACY_AND_REGULATORY.md) |
+| F7 | ~~**Clinical baseline entry (read-only)**~~ — removed in the 2026-11-22 consolidation (table, repository, screen and immutability triggers dropped in migration 15→16) | ~~Structured form for each HUG study night: date, lab, total sleep time, sleep efficiency, arousal index, N3 %, AHI, notes. Stored **immutable** ([DATA_MODEL.md](DATA_MODEL.md) §4). Displayed in a Baseline screen and cited in the report header as context. No comparison logic in Phase 1~~ |
+| F8 | **Disclaimers everywhere** | First-run full text, report footer, ~~baseline screen note~~ (removed in the 2026-11-22 consolidation), copy rules per [MEASUREMENT_RELIABILITY.md](MEASUREMENT_RELIABILITY.md) and [PRIVACY_AND_REGULATORY.md](PRIVACY_AND_REGULATORY.md) |
 | F9 | **Data controls** | Per-night delete (cascades events + clips), delete-all, retention defaults applied by a daily worker (clips 7 days, sessions/events 90 days; measurements persist — see data model) |
 | F10 | **Privacy posture** | No `INTERNET` permission, `allowBackup=false`, no analytics, no crash-reporting SDK. Enforced by lint + CI |
 
@@ -38,7 +38,7 @@ Nothing in Phase 1 makes breathing or sleep-stage claims. Phase 1 measures what 
 - **Under-mattress / accelerometer movement** — Phase 2.
 - **Wearable sync, Health Connect, Garmin import** — Phase 3.
 - **Lifestyle factor logging** — Phase 3.
-- **Trends, correlations, clinical comparison views** — Phase 3+.
+- **Trends, correlations** — Phase 3+. *(The clinical comparison views were removed in the 2026-11-22 consolidation along with the clinical-baseline table.)*
 - **Export (CSV/PDF)** — Phase 3.
 - **Scheduled auto-start, smart alarm, anti-snoring cues** — Phase 3+. *(Update: scheduled auto-start is now shipped as the one-tap bedtime-notification flow in the recording-controls pass — optional and off by default; smart alarm and anti-snoring cues remain out of scope.)*
 - **Any networking, accounts, cloud** — no phase has a need; see privacy doc.
@@ -50,7 +50,7 @@ Nothing in Phase 1 makes breathing or sleep-stage claims. Phase 1 measures what 
 - **A3** An 8-hour session completes without crash on reference devices; report renders from DB in < 1 s cold.
 - **A4** Snoring events carry type, start/end, duration, peak/mean intensity (dBFS), confidence, model id/version, and (for top events) a playable clip.
 - **A5** Timeline playback works with screen off-then-on, after process death, and in Doze.
-- **A6** Clinical baseline entries cannot be edited or deleted from the UI after save (except delete-all), and their provenance (source = clinical, method = clinically measured, entered date) is visible.
+- **A6** ~~Clinical baseline entries cannot be edited or deleted from the UI after save (except delete-all), and their provenance (source = clinical, method = clinically measured, entered date) is visible.~~ — removed in the 2026-11-22 consolidation (the clinical-baseline vertical was dropped; see the amendment above).
 - **A7** Delete-night and delete-all remove DB rows **and** clip files, verified by a storage probe.
 - **A8** Installed APK does not request `INTERNET` (CI check); clip files live only in app-private storage.
 
@@ -74,7 +74,7 @@ Nothing in Phase 1 makes breathing or sleep-stage claims. Phase 1 measures what 
 | M2 | 2–3 | TFLite v0 via ModelRegistry + FeatureExtractor + EventDetector + fixture eval harness |
 | M3 | 3–4 | Clips, batched DB writes, crash recovery, pre-flight checks, thermal throttling |
 | M4 | 4–5 | Timeline + clip player + user labels; morning report v1 |
-| M5 | 5–6 | Clinical baseline entry (immutable), history list, settings, retention worker, delete-all |
+| M5 | 5–6 | ~~Clinical baseline entry (immutable)~~ (removed in the 2026-11-22 consolidation), history list, settings, retention worker, delete-all |
 | M6 | 6–8 | Disclaimer copy pass, 30-night dogfood, quality-gate review, release build (sideload) |
 
 ## 7. Definition of done (Phase 1)
