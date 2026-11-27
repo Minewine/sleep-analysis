@@ -1,6 +1,7 @@
 package com.sleepanalysis.monitoring.detection
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -21,8 +22,21 @@ class EventDetectorTest {
     private val merging = EventDetector(mergeGapMs = 2_000L)
 
     // Fixed synthetic window values: dbfs -15 over floor -40 => SNR 25 dB.
-    private fun features(ts: Long, dbfs: Double = -15.0, ratio: Double = 0.8, floor: Double = -40.0) =
-        AudioFeatures(windowDbfs = dbfs, noiseFloorDbfs = floor, lowBandRatio = ratio, timestampMs = ts)
+    private fun features(
+        ts: Long,
+        dbfs: Double = -15.0,
+        ratio: Double = 0.8,
+        floor: Double = -40.0,
+        flatness: Double? = null,
+        harmonic: Double? = null,
+    ) = AudioFeatures(
+        windowDbfs = dbfs,
+        noiseFloorDbfs = floor,
+        lowBandRatio = ratio,
+        timestampMs = ts,
+        spectralFlatness = flatness,
+        harmonicRatio = harmonic,
+    )
 
     private fun result(snore: Boolean, loud: Boolean = true, confidence: Double = if (snore) 0.8 else 0.0) =
         DetectionResult(snore = snore, loudAcousticEvent = loud, confidence = confidence)
@@ -73,6 +87,41 @@ class EventDetectorTest {
         // JSON round-trips with the documented keys.
         val parsed = EventFeatures.fromJson(f.toJson())!!
         assertEquals(f, parsed)
+    }
+
+    @Test
+    fun `spectral features persist into event features json`() {
+        val det = EventDetector()
+        val out = mutableListOf<EventDetector.EventDraft>()
+        (snore(4) + quiet(4)).forEachIndexed { i, (sn, loud) ->
+            val ts = 1000L + i * 500L
+            out += det.update(
+                timestampMs = ts,
+                features = AudioFeatures(
+                    windowDbfs = -15.0,
+                    noiseFloorDbfs = -40.0,
+                    lowBandRatio = 0.8,
+                    timestampMs = ts,
+                    spectralFlatness = 0.42,
+                    harmonicRatio = 0.77,
+                ),
+                result = result(sn, loud),
+            )
+        }
+        val f = (out + det.flush()).single().features
+        assertEquals(0.42, f.spectralFlatnessMean!!, 0.0001)
+        assertEquals(0.77, f.harmonicRatioMean!!, 0.0001)
+        assertEquals(f, EventFeatures.fromJson(f.toJson())!!)
+    }
+
+    @Test
+    fun `legacy rows without spectral keys parse to null means`() {
+        val legacy = EventFeatures.fromJson(
+            """{"enter_windows":2,"snr_peak_db":25.0,"snr_mean_db":25.0,""" +
+                """"low_band_ratio_peak":0.8,"low_band_ratio_mean":0.8,"noise_floor_dbfs":-40.0}"""
+        )!!
+        assertNull(legacy.spectralFlatnessMean)
+        assertNull(legacy.harmonicRatioMean)
     }
 
     @Test
@@ -287,6 +336,60 @@ class EventDetectorTest {
         val events = feedLevels(detector, levels = List(4) { -50.0 }, floor = -45.0)
         assertEquals(1, events.size)
         assertEquals("OTHER_NOISE", events.single().type)
+    }
+
+    // --- Ultra-quiet-room peak tier (DetectorConfig.QUIET_ROOM_*, v3) ------------------
+    // Dogfood night 2026-11-11 (session 13): ambient median −83 dBFS. Steady breathing trains
+    // (peaks −39.6…−54.3, means −46…−54) cleared the −60 mean gate and shipped as SNORE — 47%
+    // of the night's snore minutes from 2.6% of events. Real snores that night peaked
+    // −16.3…−34.9 dBFS.
+
+    @Test
+    fun `dead-quiet room - breathing train under the absolute peak gate is downgraded`() {
+        // 100 s of breathing-level windows over a −83 floor: the MEAN (−47.5) clears the mean
+        // gate (threshold −60), so the downgrade comes from the peak tier alone — the event's
+        // peak (−40.0) sits at or below the −38 absolute line.
+        val levels = List(200) { listOf(-40.0, -54.0, -46.0, -50.0)[it % 4] }
+        val events = feedLevels(detector, levels = levels, floor = -83.0)
+        assertEquals(1, events.size)
+        assertEquals("OTHER_NOISE", events.single().type)
+        assertEquals(-40.0, events.single().peakDbfs, 0.0001)
+        // Mean over the 199 accumulated windows (window 0 only primes the enter hysteresis):
+        // full 200-window sum −9500, minus the priming −40.
+        assertEquals(-9460.0 / 199, events.single().meanDbfs, 0.0001)
+        // The mean gate really did pass: the event clears max(floor + 10, −60) with 12.5 dB.
+        assertTrue(events.single().meanDbfs >= DetectorConfig.gateThresholdDbfs(-83.0))
+    }
+
+    @Test
+    fun `dead-quiet room - real snore train above the absolute peak gate stays SNORE`() {
+        // Same room, same length: peaks −33…−16 burst above the −38 line — snoring, not rumble.
+        val levels = List(100) { if (it % 2 == 0) -33.0 else -16.0 }
+        val events = feedLevels(detector, levels = levels, floor = -83.0)
+        assertEquals(1, events.size)
+        assertEquals("SNORE", events.single().type)
+        assertEquals(-16.0, events.single().peakDbfs, 0.0001)
+    }
+
+    @Test
+    fun `quiet-room peak gate boundary - at or below −38 downgrades, −33 stays`() {
+        // Calibration points: the false side peaks −39.6…−54.3, the real side −16.3…−34.9;
+        // −38.0 is drawn inside the gray zone with at-or-below downgrading.
+        val atGate = feedLevels(detector, levels = List(4) { -38.0 }, floor = -83.0)
+        assertEquals("OTHER_NOISE", atGate.single().type)
+        val stays = feedLevels(detector, levels = List(4) { -33.0 }, floor = -83.0)
+        assertEquals("SNORE", stays.single().type)
+    }
+
+    @Test
+    fun `normal rooms keep the mean-only gate - the peak tier never arms`() {
+        // A −45 dBFS peak in a −70 dBFS room is 25 dB over the floor — possibly a distant real
+        // snore (night 1: −58 dBFS peaks). The peak gate is OFF above −80 floor, so the event
+        // is judged by the mean gate alone and stays SNORE: no absolute cutoff eats it.
+        val events = feedLevels(detector, levels = List(4) { -45.0 }, floor = -70.0)
+        assertEquals(1, events.size)
+        assertEquals("SNORE", events.single().type)
+        assertEquals(-45.0, events.single().peakDbfs, 0.0001)
     }
 
     // --- Burst-level events (shipped default: MERGE_GAP_MS = 0) ------------------------
@@ -533,6 +636,35 @@ class EventDetectorTest {
         assertEquals(0.8, merged.confidence, 0.0001)
     }
 
+    @Test
+    fun `merged draft folds spectral means window-count-weighted across fragments`() {
+        // Same geometry as the test above; spectral values ride on the active windows so the
+        // fold's flatSum/flatCount/harmSum path is exercised: 3 active windows per fragment,
+        // flatness 0.5 then 0.7 → mean 0.6; harmonic 0.6 then 0.8 → mean 0.7.
+        var ts = 1000L
+        repeat(4) {
+            merging.update(ts, features(ts, dbfs = -30.0, flatness = 0.5, harmonic = 0.6), result(snore = true))
+            ts += 500
+        }
+        repeat(4) {
+            merging.update(ts, features(ts, dbfs = -90.0), result(snore = false))
+            ts += 500
+        }
+        repeat(4) {
+            merging.update(ts, features(ts, dbfs = -10.0, flatness = 0.7, harmonic = 0.8), result(snore = true))
+            ts += 500
+        }
+        repeat(4) {
+            merging.update(ts, features(ts, dbfs = -90.0), result(snore = false))
+            ts += 500
+        }
+        val events = merging.flush()
+        assertEquals(1, events.size)
+        val merged = events.single()
+        assertEquals(0.6, merged.features.spectralFlatnessMean!!, 0.0001)
+        assertEquals(0.7, merged.features.harmonicRatioMean!!, 0.0001)
+    }
+
     // --- Non-mergeable successor while a final is still held (deferOrFold) -------------
 
     @Test
@@ -625,6 +757,43 @@ class EventDetectorTest {
         assertEquals("OTHER_NOISE", held.type)
         assertEquals(0L, held.startMs)
         assertEquals(2500L, held.endMs)
+    }
+
+    // isIdle(): the pre-spectral level gate (AudioEngine/SpectralGatePolicy) consults it so a
+    // machine in progress always receives computed spectral features.
+
+    @Test
+    fun `isIdle true before any window and after reset`() {
+        assertTrue(detector.isIdle())
+        feed(detector, pattern = snore(2) + quiet(1)) // machine pending/active
+        assertFalse(detector.isIdle())
+        detector.reset()
+        assertTrue(detector.isIdle())
+    }
+
+    @Test
+    fun `isIdle false while pending and while active and while hysteresis closes`() {
+        feed(detector, pattern = snore(1)) // pending: an event is being entered
+        assertFalse(detector.isIdle())
+        feed(detector, pattern = snore(1), startTsMs = 1500) // active
+        assertFalse(detector.isIdle())
+        feed(detector, pattern = quiet(3), startTsMs = 2000) // hysteresis: 3 of 4 quiet windows
+        assertFalse(detector.isIdle())
+    }
+
+    @Test
+    fun `isIdle stays false while a deferred final is held and clears on expiry and flush`() {
+        feed(detector, pattern = snore(4) + quiet(4)) // closes at ts 4500; draft held
+        assertFalse(detector.isIdle())
+        // Expiry: the merge window (mergeGap + windowMs = 1 s) closes past endMs 2500 with both
+        // machines idle — the first stamp past 3500 emits the held final.
+        feed(detector, pattern = quiet(1), startTsMs = 5000)
+        assertTrue(detector.isIdle())
+        // Held again, then cleared by flush (session end).
+        feed(detector, pattern = snore(4) + quiet(4), startTsMs = 6000)
+        assertFalse(detector.isIdle())
+        detector.flush()
+        assertTrue(detector.isIdle())
     }
 
     private fun snore(n: Int, loud: Boolean = true) = List(n) { true to loud }

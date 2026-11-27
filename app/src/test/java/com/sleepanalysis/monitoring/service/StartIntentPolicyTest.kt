@@ -1,6 +1,8 @@
 package com.sleepanalysis.monitoring.service
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -54,5 +56,32 @@ class StartIntentPolicyTest {
     fun `resume without an open session is stale regardless of the switch`() {
         assertEquals(ResumeDecision.STALE, resumeDecision(openSessionId = 0L, recordingEnabled = true))
         assertEquals(ResumeDecision.STALE, resumeDecision(openSessionId = -1L, recordingEnabled = false))
+    }
+
+    @Test
+    fun `start-now action is a distinct user-driven command`() {
+        assertEquals(StartCommand.START_NOW_SKIP_DELAY, startCommandFor(MonitorService.ACTION_START_NOW))
+    }
+
+    @Test
+    fun `start-now only skips while the state is Delayed`() {
+        // The tap is the mic-access path, but there must be a pending wait to skip: a tap in
+        // any other state promotes-and-stops (never captures).
+        assertTrue(canSkipStartDelay(MonitorState.Delayed(7L, startedAt = 0L, captureStartsAtMs = 60_000L)))
+        assertFalse(canSkipStartDelay(MonitorState.Idle))
+        assertFalse(canSkipStartDelay(MonitorState.Recording(7L, startedAt = 0L)))
+        assertFalse(canSkipStartDelay(MonitorState.Finished(7L)))
+        assertFalse(canSkipStartDelay(MonitorState.Interrupted(7L, startedAt = 0L)))
+    }
+
+    @Test
+    fun `a new start is refused while an interrupted night awaits its decision (P2-1)`() {
+        // Home Start and the bedtime-notification Start action must not silently finalize the
+        // interrupted night RECOVERED behind the user's back: the banner stays the re-entry
+        // point until Resume/Finalize is chosen.
+        assertFalse(canStartNewSession(MonitorState.Interrupted(7L, startedAt = 0L)))
+        assertTrue(canStartNewSession(MonitorState.Idle))
+        assertTrue(canStartNewSession(MonitorState.Finished(7L)))
+        assertTrue(canStartNewSession(MonitorState.StartError("storage")))
     }
 }

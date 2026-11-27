@@ -10,11 +10,15 @@ import com.sleepanalysis.monitoring.detection.DetectorConfig
  *  1. Relative level gate: events quieter than the rolling noise floor + [gateMarginDb] sit at
  *     or under the ambient bed (unaudible, unverifiable by clip playback) and never get a clip.
  *     [DetectorConfig.MIN_GATE_DBFS] caps how low the threshold falls, so mic-self-noise junk
- *     in a dead-quiet room is still gated. During the first [settlingMinutes] after capture
- *     begins the margin is stricter by [settlingExtraDb] — bedtime noise is the night's loudest
- *     ambient period, and the start delay only removes most of it. The window anchors to the
- *     engine's capture start, so it also re-arms for the first 30 min after a START_STICKY
- *     resume — deliberate: the device was just handled and is running hot.
+ *     in a dead-quiet room is still gated — and in rooms THAT quiet (mean floor at or below
+ *     [DetectorConfig.QUIET_ROOM_FLOOR_DBFS]) the event's PEAK must additionally clear
+ *     [DetectorConfig.QUIET_ROOM_PEAK_DBFS], mirroring the event label downgrade exactly so a
+ *     downgraded breathing train neither stays SNORE nor persists a clip (session 13). During
+ *     the first [settlingMinutes] after capture begins the margin is stricter by
+ *     [settlingExtraDb] — bedtime noise is the night's loudest ambient period, and the start
+ *     delay only removes most of it. The window anchors to the engine's capture start, so it
+ *     also re-arms for the first 30 min after a START_STICKY resume — deliberate: the device
+ *     was just handled and is running hot.
  *  2. Loudness reserve: a first-come-first-served budget starves exactly the events worth
  *     hearing (night 3's loudest snore, peak −16.6 dBFS, missed its clip because the hour's 8
  *     were already spent). Events whose PEAK clears [DetectorConfig.LOUD_CLIP_PEAK_DBFS]
@@ -102,13 +106,17 @@ class ClipPolicy(
             eventStartEpochMs < captureStartEpochMs + settlingMinutes * 60_000L
         val margin = gateMarginDb + if (settling) settlingExtraDb else 0.0
         val threshold = DetectorConfig.gateThresholdDbfs(noiseFloorDbfs, margin, gateHardFloorDbfs)
+        // Same ultra-quiet-room peak tier the event label gate applies — a breathing train
+        // downgraded to OTHER_NOISE at finalization must not persist a clip through this path.
+        val quietRoomPeakGate = DetectorConfig.quietRoomPeakGateDbfs(noiseFloorDbfs)
         val lastWriteEndMs = lastWriteEndMsByType[type]
         val lastWritePeakDbfs = lastWritePeakDbfsByType[type]
         val inCooldown = lastWriteEndMs != null &&
             eventStartEpochMs < lastWriteEndMs + boutCooldownMs
         val upgrade = lastWritePeakDbfs != null && peakDbfs >= lastWritePeakDbfs + upgradeDb
         return when {
-            meanDbfs < threshold -> Decision.SKIP_LEVEL
+            meanDbfs < threshold || (quietRoomPeakGate != null && peakDbfs <= quietRoomPeakGate) ->
+                Decision.SKIP_LEVEL
             peakDbfs >= loudClipPeakDbfs && loudWritten < loudReservePerNight ->
                 Decision.WRITE_LOUD_RESERVE
             inCooldown && !upgrade -> Decision.SKIP_COOLDOWN

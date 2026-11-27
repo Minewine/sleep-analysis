@@ -17,7 +17,9 @@ class NightStatsMergeTest {
         bytes: Long = 512,
         thermal: Int = 1,
         levelGateSkipped: Int = 0,
+        spectralSkipped: Long = 0,
         spans: List<SkippedHopSpan> = emptyList(),
+        clientSilenced: List<com.sleepanalysis.domain.report.ClientSilencedSpan> = emptyList(),
     ) = AudioEngine.NightStats(
         windowsProcessed = windows,
         windowsSkipped = skipped,
@@ -27,7 +29,9 @@ class NightStatsMergeTest {
         clipBytesTotal = bytes,
         thermalThrottleEvents = thermal,
         levelGateSkipped = levelGateSkipped,
+        spectralSkipped = spectralSkipped,
         skippedHopSpans = spans,
+        clientSilencedSpans = clientSilenced,
     )
 
     @Test
@@ -135,6 +139,26 @@ class NightStatsMergeTest {
         assertNull(parsed.windowsProcessed)
     }
     @Test
+    fun `capture stats writes schema v6 and round-trips spectral_skipped`() {
+        val json = captureStatsJson(stats(spectralSkipped = 12_345), clipCountOverride = 3)
+        assertTrue(json.contains("\"schema_version\":6"))
+        assertTrue(json.contains("\"spectral_skipped\":12345"))
+        assertEquals(12_345L, CaptureStats.parse(json)!!.spectralSkipped)
+        // v3-era JSON (no spectral_skipped) parses with a null — readers tolerate its absence.
+        val legacy = CaptureStats.parse(
+            """{"schema_version":3,"windows_processed":10,"level_gate_skipped":2}""",
+        )!!
+        assertNull(legacy.spectralSkipped)
+    }
+
+    @Test
+    fun `StatsCarry carries spectral_skipped across restarts`() {
+        val json = """{"schema_version":4,"windows_processed":54000,"spectral_skipped":30000}"""
+        val merged = stats(spectralSkipped = 7).withCarry(StatsCarry.from(CaptureStats.parse(json)))
+        assertEquals(30_007L, merged.spectralSkipped)
+    }
+
+    @Test
     fun `capture stats v3 round-trips ambient level buckets`() {
         val stats = AudioEngine.NightStats(
             windowsProcessed = 100, windowsSkipped = 2,
@@ -148,7 +172,7 @@ class NightStatsMergeTest {
             ),
         )
         val json = captureStatsJson(stats, clipCountOverride = 3)
-        assertTrue(json.contains("\"schema_version\":3"))
+        assertTrue(json.contains("\"schema_version\":6"))
         assertTrue(json.contains("ambient_level_buckets"))
         val parsed = com.sleepanalysis.domain.report.CaptureStats.parse(json)!!
         assertEquals(2, parsed.ambientBuckets.size)
@@ -160,5 +184,71 @@ class NightStatsMergeTest {
                 "\"clip_count\":1,\"thermal_throttle_events\":0,\"level_gate_skipped\":0}",
         )!!
         assertTrue(legacy.ambientBuckets.isEmpty())
+    }
+
+    @Test
+    fun `capture stats v6 round-trips client-silenced spans and bucket coverage`() {
+        val stats = AudioEngine.NightStats(
+            windowsProcessed = 100, windowsSkipped = 2,
+            ambientDbfsMedian = -83.0, ambientDbfsP95 = -40.0,
+            clipCount = 3, clipBytesTotal = 96_000, thermalThrottleEvents = 0,
+            ambientBuckets = listOf(
+                com.sleepanalysis.domain.report.AmbientLevelBucket(
+                    0L, 300_000L, -100.0, coveredMs = 299_500L, dbfsVariance = 0.0,
+                ),
+            ),
+            clientSilencedSpans = listOf(
+                com.sleepanalysis.domain.report.ClientSilencedSpan(1_000, 61_000),
+            ),
+        )
+        val json = captureStatsJson(stats, clipCountOverride = 3)
+        assertTrue(json.contains("\"schema_version\":6"))
+        assertTrue(json.contains("client_silenced_spans"))
+        val parsed = com.sleepanalysis.domain.report.CaptureStats.parse(json)!!
+        assertEquals(
+            listOf(com.sleepanalysis.domain.report.ClientSilencedSpan(1_000, 61_000)),
+            parsed.clientSilencedSpans,
+        )
+        assertEquals(299_500L, parsed.ambientBuckets[0].coveredMs)
+        assertEquals(0.0, parsed.ambientBuckets[0].dbfsVariance!!, 0.0)
+    }
+
+    @Test
+    fun `legacy v5 bucket arrays parse with full-bucket coverage and no variance`() {
+        val parsed = com.sleepanalysis.domain.report.CaptureStats.parse(
+            """{"schema_version":5,"windows_processed":10,"ambient_level_buckets":[[0,300000,-84.5]]}""",
+        )!!
+        assertEquals(300_000L, parsed.ambientBuckets[0].coveredMs) // legacy full-bucket claim
+        assertNull(parsed.ambientBuckets[0].dbfsVariance)
+        assertTrue(parsed.clientSilencedSpans.isEmpty())
+    }
+
+    @Test
+    fun `withCarry concatenates and sorts client-silenced spans`() {
+        val merged = stats(
+            clientSilenced = listOf(com.sleepanalysis.domain.report.ClientSilencedSpan(6_000, 7_000)),
+        ).withCarry(
+            StatsCarry(
+                windowsProcessed = 10, windowsSkipped = 0, thermalThrottleEvents = 0,
+                clientSilencedSpans = listOf(com.sleepanalysis.domain.report.ClientSilencedSpan(100, 200)),
+            ),
+        )
+        assertEquals(
+            listOf(
+                com.sleepanalysis.domain.report.ClientSilencedSpan(100, 200),
+                com.sleepanalysis.domain.report.ClientSilencedSpan(6_000, 7_000),
+            ),
+            merged.clientSilencedSpans,
+        )
+    }
+
+    @Test
+    fun `StatsCarry carries client-silenced spans from parsed stats`() {
+        val json = """{"schema_version":6,"windows_processed":54000,"client_silenced_spans":[[1000,61000]]}"""
+        val carry = StatsCarry.from(CaptureStats.parse(json))!!
+        assertEquals(
+            listOf(com.sleepanalysis.domain.report.ClientSilencedSpan(1_000, 61_000)),
+            carry.clientSilencedSpans,
+        )
     }
 }

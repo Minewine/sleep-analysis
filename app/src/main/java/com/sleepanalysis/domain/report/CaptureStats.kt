@@ -19,11 +19,31 @@ data class SkippedHopSpan(
  * One mean-window-dBFS level bucket of the capture (schema v3 capture_stats): the cheap
  * per-window level summary that lets an event-free gap be classified "quiet sleep" (windows
  * processed, level at the ambient bed) vs "no capture" (no buckets — process death).
+ *
+ * Schema v6 adds the bucket's honest evidence extent and dispersion: [coveredMs] is the sum
+ * of the windows actually folded into the bucket (a partly filled bucket must not claim its
+ * whole span as capture evidence — P3-16), and [dbfsVariance] is the per-window dBFS variance
+ * — a silenced client delivers exact zeros (constant level), which [dbfsVariance] ≈ 0 and a
+ * floor-level [meanDbfs] expose as digital silence, not a quiet bedroom (P2-4). Both are null
+ * for pre-v6 rows, where the writer could not report them.
  */
 data class AmbientLevelBucket(
     val startMs: Long,
     val endMs: Long,
     val meanDbfs: Double,
+    val coveredMs: Long? = null,
+    val dbfsVariance: Double? = null,
+)
+
+/**
+ * One span during which Android reported this capture client as SILENCED
+ * ([AudioRecordingConfiguration.isClientSilenced] — mic privacy toggle, a phone call, another
+ * app holding the mic): the OS delivered zeros without any error, so the span was never heard.
+ * Schema v6 capture_stats.
+ */
+data class ClientSilencedSpan(
+    val startEpochMs: Long,
+    val endEpochMs: Long,
 )
 
 /**
@@ -40,6 +60,8 @@ data class CaptureStats(
     val clipCount: Int?,
     val thermalThrottleEvents: Int?,
     val levelGateSkipped: Int? = null,
+    /** Analyzed windows whose spectral compute the pre-spectral level gate skipped (schema v4). */
+    val spectralSkipped: Long? = null,
     val skippedHopSpans: List<SkippedHopSpan> = emptyList(),
     /** When this stats object was written — heartbeat progress carries a live timestamp. */
     val savedAtMs: Long? = null,
@@ -47,17 +69,28 @@ data class CaptureStats(
     val captureStartMs: Long? = null,
     /** Mean window dBFS per 5-minute epoch bucket (schema v3); empty for older rows. */
     val ambientBuckets: List<AmbientLevelBucket> = emptyList(),
+    /** Spans where the OS silenced this capture client — the mic delivered zeros (schema v6). */
+    val clientSilencedSpans: List<ClientSilencedSpan> = emptyList(),
 ) {
     /**
-     * Mic-live capture time in ms: every 0.5 s analysis hop the engine processed or
-     * thermally skipped, summed across all engines of the session (the heartbeat carry makes
-     * the counters cumulative). Excludes the start delay, process-death gaps and
-     * pre/post-capture wall time — the denominator snore share and score are meant to use
-     * (docs/DATA_MODEL.md §5.1). Null when the session has no capture stats; 0 when stats
-     * exist but nothing was processed.
+     * Mic-live capture time in ms: every 0.5 s analysis hop the engine classified
+     * ([windowsProcessed]) or thermally skipped ([windowsSkipped]) — the counters are
+     * disjoint since stats schema v5, so each captured hop counts exactly once — summed
+     * across all engines of the session (the heartbeat carry makes the counters cumulative).
+     * Excludes the start delay, process-death gaps and pre/post-capture wall time — the
+     * denominator snore share and score are meant to use (docs/DATA_MODEL.md §5.1). Null
+     * when the session has no capture stats; 0 when stats exist but nothing was captured.
      */
     fun capturedAnalysisMs(hopMs: Long = HOP_MS): Long? =
         windowsProcessed?.let { processed -> (processed + (windowsSkipped ?: 0L)) * hopMs }
+
+    /**
+     * True when at least one analysis window was processed — the minimum evidence a
+     * share/score/snore-time row requires (P2-7). A stop during the start delay leaves the
+     * empty stats stub (no windows field): nothing was measured, and zeros would be
+     * fabricated data.
+     */
+    fun anyProcessedWindows(): Boolean = (windowsProcessed ?: 0L) > 0L
 
     companion object {
         /** The analysis hop grid (DetectorConfig.HOP_MS); duplicated here to keep domain pure. */
@@ -75,10 +108,12 @@ data class CaptureStats(
                 clipCount = o.optIntOrNull("clip_count"),
                 thermalThrottleEvents = o.optIntOrNull("thermal_throttle_events"),
                 levelGateSkipped = o.optIntOrNull("level_gate_skipped"),
+                spectralSkipped = o.optLongOrNull("spectral_skipped"),
                 skippedHopSpans = o.optJSONArrayOrNull("thermal_skipped_hops")?.toSpans() ?: emptyList(),
                 savedAtMs = o.optLongOrNull("saved_at_ms"),
                 captureStartMs = o.optLongOrNull("capture_started_at"),
                 ambientBuckets = o.optJSONArrayOrNull("ambient_level_buckets")?.toBuckets() ?: emptyList(),
+                clientSilencedSpans = o.optJSONArrayOrNull("client_silenced_spans")?.toSilencedSpans() ?: emptyList(),
             )
         }.getOrNull()
 
@@ -86,8 +121,25 @@ data class CaptureStats(
             (0 until length()).mapNotNull { i ->
                 val a = optJSONArray(i) ?: return@mapNotNull null
                 if (a.length() < 3) return@mapNotNull null
-                val bucket = AmbientLevelBucket(a.optLong(0), a.optLong(1), a.optDouble(2))
+                val bucket = AmbientLevelBucket(
+                    startMs = a.optLong(0),
+                    endMs = a.optLong(1),
+                    meanDbfs = a.optDouble(2),
+                    // v6 rows carry the real covered extent; pre-v6 writers claimed the whole
+                    // bucket span — keep that legacy claim so old nights classify as before.
+                    coveredMs = if (a.length() >= 4 && a.optLong(3) > 0) a.optLong(3) else a.optLong(1) - a.optLong(0),
+                    dbfsVariance = if (a.length() >= 5 && !a.optDouble(4).isNaN()) a.optDouble(4) else null,
+                )
                 if (bucket.endMs <= bucket.startMs || bucket.meanDbfs.isNaN()) null else bucket
+            }
+
+        private fun JSONArray.toSilencedSpans(): List<ClientSilencedSpan> =
+            (0 until length()).mapNotNull { i ->
+                val a = optJSONArray(i) ?: return@mapNotNull null
+                if (a.length() < 2) return@mapNotNull null
+                val span = ClientSilencedSpan(startEpochMs = a.optLong(0), endEpochMs = a.optLong(1))
+                // Non-numeric entries opt* to 0: degenerate spans are payload garbage, drop them.
+                if (span.endEpochMs <= span.startEpochMs) null else span
             }
 
         private fun JSONArray.toSpans(): List<SkippedHopSpan> =

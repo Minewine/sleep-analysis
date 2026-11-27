@@ -8,6 +8,7 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.media.AudioManager
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
@@ -16,7 +17,6 @@ import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
-import com.sleepanalysis.MainActivity
 import com.sleepanalysis.R
 import com.sleepanalysis.data.db.entity.SessionStatus
 import com.sleepanalysis.data.logs.SessionLogger
@@ -100,12 +100,19 @@ class MonitorService : Service() {
     /** Cumulative counters from heartbeat-saved stats of earlier engines of this session. */
     @Volatile private var statsCarry: StatsCarry? = null
 
+    /**
+     * The pending delayed-capture wait, and the [beginRecording] existing-session argument it
+     * captured — "start now" during the delay cancels the wait and re-enters capture with the
+     * same session identity (null unless a sticky resume armed the delay).
+     */
+    private var delayJob: kotlinx.coroutines.Job? = null
+    private var delayedExistingSessionId: Long? = null
+
     @Volatile private var activeSessionId = -1L
     @Volatile private var sessionStartEpochMs = 0L
 
     /** When audio capture actually began (after the start delay) — persisted via capture stats. */
     @Volatile private var captureStartAtMs = 0L
-    @Volatile private var activeModelVersion = SessionRepository.MODEL_VERSION
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -123,6 +130,7 @@ class MonitorService : Service() {
                 existingSessionId = null,
                 source = intent?.getStringExtra(EXTRA_START_SOURCE) ?: SOURCE_MANUAL,
             )
+            StartCommand.START_NOW_SKIP_DELAY -> serviceScope.launch { skipStartDelay() }
             StartCommand.RESUME_OPEN_SESSION -> serviceScope.launch { resumeInterruptedSession() }
             StartCommand.SURFACE_INTERRUPTED -> serviceScope.launch { surfaceInterruptionOrStop() }
         }
@@ -138,6 +146,12 @@ class MonitorService : Service() {
         unregisterThermalListener()
         releaseWakeLock()
         serviceScope.cancel()
+        // The holder is a process-wide singleton: leave Idle, not a stale Recording/Delayed
+        // that would block future starts in this process. A Finished state is kept — the UI
+        // still needs it to navigate to the report (a scheduled end while backgrounded).
+        // The open session row is surfaced by HomeViewModel's init from the DB, not from
+        // holder state.
+        if (stateHolder.state.value !is MonitorState.Finished) stateHolder.set(MonitorState.Idle)
         super.onDestroy()
     }
 
@@ -202,14 +216,29 @@ class MonitorService : Service() {
                         stopSelf()
                         return@withLock
                     }
-                    if (existingSessionId == null) {
-                        // Never allow two open sessions: finalize anything stale from a killed process.
-                        val stale = sessionRepository.finalizeOpenAsRecovered()
-                        if (stale > 0) logger.log(-1L, "stale_session_finalized", "count=$stale")
+                    if (existingSessionId == null && sessionRepository.findOpenSession() != null) {
+                        // P2-1: an open session means the Resume/Finalize decision is pending —
+                        // possibly in a fresh process whose in-memory state is Idle (an
+                        // alarm-fired bedtime notification Start after process death). A new
+                        // Start must never silently finalize the open night RECOVERED; refuse,
+                        // surface the interruption, and leave the banner/notification as the
+                        // re-entry point. (The UI disables Start via canStartNewSession.)
+                        val open = sessionRepository.findOpenSession()!!
+                        logger.log(open.id, "start_blocked_interrupted", "openSession=${open.id}")
+                        stateHolder.set(MonitorState.Interrupted(open.id, open.startedAt))
+                        stopForegroundStop()
+                        stopSelf()
+                        return@withLock
                     }
                     val sessionId = existingSessionId ?: sessionRepository.startSession()
                     val session = sessionRepository.session(sessionId)
                     if (session == null) {
+                        if (existingSessionId == null) {
+                            // compensate: the row we just inserted must not stay open
+                            runCatching {
+                                sessionRepository.finalizeSession(sessionId, SessionStatus.INTERRUPTED, null)
+                            }
+                        }
                         stateHolder.set(MonitorState.StartError(getString(R.string.service_error_session_missing)))
                         stopForegroundStop()
                         stopSelf()
@@ -228,7 +257,7 @@ class MonitorService : Service() {
                     sessionStartEpochMs = session.startedAt
                     // Resuming after process death: carry the counters the heartbeat persisted for
                     // earlier engines of this session, and count already-saved clips against the
-                    // per-night clip cap (otherwise a resumed engine gets a fresh 50-clip budget).
+                    // per-night clip cap (otherwise a resumed engine gets a fresh clip budget).
                     statsCarry = if (existingSessionId != null) {
                         StatsCarry.from(CaptureStats.parse(session.captureStats))
                     } else {
@@ -240,6 +269,7 @@ class MonitorService : Service() {
                         sessionRepository.markResumedAfterInterruption(sessionId)
                         logger.log(sessionId, "session_resumed", "after=process_death")
                     }
+                    val delayMinutes = prefs.startDelayMinutesNow()
                     acquireWakeLock()
                     registerThermalListener()
                     logger.log(
@@ -254,7 +284,6 @@ class MonitorService : Service() {
                     // begin at the tap, but audio capture waits so falling-asleep noise stays out
                     // of events and clips. The wait runs OUTSIDE the begin/end mutex so Stop,
                     // the scheduled end, and finalize remain responsive during it.
-                    val delayMinutes = prefs.startDelayMinutesNow()
                     val captureStartAt = StartDelayPolicy.captureStartAtMs(delayMinutes, session.startedAt)
                     val remainingMs = captureStartAt - System.currentTimeMillis()
                     if (remainingMs > 0) {
@@ -262,7 +291,7 @@ class MonitorService : Service() {
                         stateHolder.set(MonitorState.Delayed(sessionId, session.startedAt, captureStartAt))
                         updateDelayNotification(captureStartAt)
                         val existing = existingSessionId
-                        serviceScope.launch {
+                        delayExistingSession(existing, sessionId) {
                             delay(remainingMs)
                             beginCapture(existing, sessionId, captureStartAt)
                         }
@@ -302,8 +331,6 @@ class MonitorService : Service() {
             stopSelf()
             return
         }
-        val debugEnter1 = prefs.debugEnterWindows1Now()
-        activeModelVersion = if (debugEnter1) "${SessionRepository.MODEL_VERSION}+dbg1" else SessionRepository.MODEL_VERSION
         val initialClipCount = if (existingSessionId != null) {
             sessionRepository.clipCountForSession(sessionId)
         } else {
@@ -315,9 +342,13 @@ class MonitorService : Service() {
             clipStore = clipStore,
             listener = engineListener,
             config = AudioEngine.Config(
-                enterWindows = if (debugEnter1) 1 else com.sleepanalysis.monitoring.detection.DetectorConfig.ENTER_WINDOWS,
+                enterWindows = com.sleepanalysis.monitoring.detection.DetectorConfig.ENTER_WINDOWS,
                 initialClipCount = initialClipCount,
             ),
+            // Silenced-client detection (P2-4): the callback records spans where the OS
+            // silenced the mic (privacy toggle, call, another app) — delivered as zeros,
+            // which must never read as a quiet night.
+            audioManager = getSystemService(AudioManager::class.java),
         )
         // Visible to the capture thread before the first samples arrive (see field docs).
         engine = newEngine
@@ -327,7 +358,7 @@ class MonitorService : Service() {
         // not re-broadcast the current status — a phone already ≥ MODERATE would record
         // unthrottled until the next status change. Apply it to the fresh engine now.
         applyCurrentThermalStatusToEngine()
-        logger.log(sessionId, "detector_config", "enterWindows=${if (debugEnter1) 1 else 2} model=$activeModelVersion")
+        logger.log(sessionId, "detector_config", "enterWindows=${com.sleepanalysis.monitoring.detection.DetectorConfig.ENTER_WINDOWS} model=${SessionRepository.MODEL_VERSION}")
         startHeartbeat()
         stateHolder.set(MonitorState.Recording(sessionId, session.startedAt))
         updateChronometer(session.startedAt)
@@ -347,6 +378,73 @@ class MonitorService : Service() {
                 return@withLock
             }
             beginCaptureLocked(existingSessionId, sessionId, expectedCaptureStartAt)
+        }
+    }
+
+    /** Arms the pending delayed-capture wait so [skipStartDelay] can find and cancel it. */
+    private fun delayExistingSession(existingSessionId: Long?, sessionId: Long, wait: suspend () -> Unit) {
+        delayedExistingSessionId = existingSessionId
+        delayJob = serviceScope.launch {
+            wait()
+            delayJob = null
+        }
+    }
+
+    /**
+     * The user tapped "start capture now" during the start delay: cancel the pending wait and
+     * begin capture immediately, stamping the capture window at the TAP — the delay's planned
+     * capture start is obsolete and capture stats must describe reality. The state decides the
+     * response: Recording/Starting (a tap racing natural expiry, or a double-tap) only logs —
+     * a lingering tap must never stop the service under a live engine, and the service is
+     * already foreground there so no promotion is owed; Idle/Finished/StartError/Interrupted
+     * (tap after a stop during the delay) promotes first — the startForegroundService
+     * delivery is still owed its startForeground — then stands down crash-safely. A
+     * concurrent finalize under the mutex aborts in [beginCaptureLocked] as with natural
+     * expiry.
+     */
+    private suspend fun skipStartDelay() {
+        val preLock = stateHolder.state.value
+        if (preLock is MonitorState.Recording || preLock is MonitorState.Starting) {
+            logger.log(activeSessionId, "start_delay_skip_ignored", "state=${preLock::class.simpleName}")
+            return
+        }
+        beginEndMutex.withLock {
+            val current = stateHolder.state.value
+            if (current is MonitorState.Recording || current is MonitorState.Starting) {
+                logger.log(activeSessionId, "start_delay_skip_ignored", "state=${current::class.simpleName}")
+                return@withLock
+            }
+            // Promotion decided against the re-checked state (closes the preLock race):
+            // Delayed is already foreground with the countdown notification — re-promoting
+            // would re-post a fresh chronometer-anchored notification. Every other state still
+            // owes the startForegroundService delivery, including the bail path below.
+            if (shouldPromoteOnSkip(current)) startInForeground(System.currentTimeMillis())
+            if (!canSkipStartDelay(current)) {
+                logger.log(activeSessionId, "start_delay_skip_ignored", "state=${current::class.simpleName}")
+                stopForegroundStop()
+                stopSelf()
+                return@withLock
+            }
+            val delayed = current as MonitorState.Delayed
+            delayJob?.cancel()
+            delayJob = null
+            val captureStartAt = System.currentTimeMillis()
+            logger.log(
+                delayed.sessionId,
+                "start_delay_skipped",
+                "planned=${delayed.captureStartsAtMs} actual=$captureStartAt",
+            )
+            try {
+                beginCaptureLocked(delayedExistingSessionId, delayed.sessionId, captureStartAt)
+            } catch (t: Throwable) {
+                // Same failure surface as the natural-expiry path's caller (beginRecording):
+                // an engine init throw during the skip must not strand a Delayed state with a
+                // stale countdown notification and no way out.
+                logger.log(delayed.sessionId, "start_delay_skip_failed", "${t.javaClass.simpleName}: ${t.message}")
+                stateHolder.set(MonitorState.StartError(t.message ?: "Failed to start recording"))
+                stopForegroundStop()
+                stopSelf()
+            }
         }
     }
 
@@ -414,18 +512,33 @@ class MonitorService : Service() {
      *
      * The sticky restart of a previously-foreground service is delivered with
      * startForegroundService() semantics, so the service MUST call startForeground() before it
-     * stops ("did not then call startForeground" crash on API 26+): [startInForeground] runs
-     * first, and [stopForegroundStop] removes the FGS notification again before [stopSelf] —
-     * the high-priority interrupted notification (id 1043) survives as the user-facing signal.
+     * stops ("did not then call startForeground" crash on API 26+). The promotion is therefore
+     * KEPT — but best-effort: a background restart can also be REFUSED the promotion
+     * (ForegroundServiceStartNotAllowedException on API 31+, the Android 14+ microphone
+     * while-in-use check), and the old order — promote first — let that throw swallow the
+     * interrupted notification and the stop via the coroutine crash handler.
+     * [InterruptionStopSequence] runs the contract: notification (id 1043) first, promotion
+     * in runCatching, stop in finally — the high-priority interrupted notification survives
+     * as the user-facing signal either way.
      */
     private suspend fun surfaceInterruptionOrStop() {
-        startInForeground(System.currentTimeMillis())
         val open = sessionRepository.findOpenSession()
-        if (open != null && activeSessionId < 0) {
-            InterruptedNotification.show(this)
-        }
-        stopForegroundStop()
-        stopSelf()
+        InterruptionStopSequence.run(
+            showInterruptedNotification = {
+                if (open != null && activeSessionId < 0) {
+                    InterruptedNotification.show(this)
+                }
+            },
+            promoteToForeground = { startInForeground(System.currentTimeMillis()) },
+            onPromotionFailure = { t ->
+                logger.log(activeSessionId, "interrupted_fg_promotion_failed", "${t.javaClass.simpleName}: ${t.message}")
+                Log.e(TAG, "interrupted-night foreground promotion failed; notification 1043 already posted", t)
+            },
+            stop = {
+                stopForegroundStop()
+                stopSelf()
+            },
+        )
     }
 
     /**
@@ -493,7 +606,7 @@ class MonitorService : Service() {
                         clipSizeBytes = clipSizeBytes,
                         appliedGain = appliedGain,
                         filePeakDbfs = filePeakDbfs,
-                        modelVersion = activeModelVersion,
+                        modelVersion = SessionRepository.MODEL_VERSION,
                     )
                 }.onFailure {
                     logger.log(sessionId, "event_persist_failed", "${it.javaClass.simpleName}: ${it.message}")
@@ -503,7 +616,7 @@ class MonitorService : Service() {
 
         override fun onCaptureError(throwable: Throwable) {
             logger.log(activeSessionId, "capture_error", "${throwable.javaClass.simpleName}: ${throwable.message}")
-            serviceScope.launch { endRecording(SessionStatus.INTERRUPTED) }
+            serviceScope.launch { endRecording(SessionStatus.INTERRUPTED, source = SOURCE_CAPTURE_ERROR) }
         }
 
         override fun onLog(event: String, detail: String) {
@@ -559,16 +672,6 @@ class MonitorService : Service() {
         }
     }
 
-    /**
-     * Content intent for the monitoring notifications: tapping reopens the app. Built with the
-     * same immutable pattern as [com.sleepanalysis.monitoring.schedule.BedtimeNotification].
-     */
-    private fun openAppPendingIntent(): PendingIntent = PendingIntent.getActivity(
-        this, 0,
-        Intent(this, MainActivity::class.java),
-        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-    )
-
     private fun buildDelayNotification(captureStartsAtMs: Long): Notification {
         val stopIntent = PendingIntent.getService(
             this, 0,
@@ -582,7 +685,7 @@ class MonitorService : Service() {
             .setSmallIcon(R.drawable.ic_mic)
             .setContentTitle(getString(R.string.notif_delay_title))
             .setContentText(getString(R.string.notif_delay_text, startsAt))
-            .setContentIntent(openAppPendingIntent())
+            .setContentIntent(AppNotifications.openAppPendingIntent(this))
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setUsesChronometer(true)
@@ -603,7 +706,7 @@ class MonitorService : Service() {
             .setSmallIcon(R.drawable.ic_mic)
             .setContentTitle(getString(R.string.notif_recording_title))
             .setContentText(getString(R.string.notif_recording_text))
-            .setContentIntent(openAppPendingIntent())
+            .setContentIntent(AppNotifications.openAppPendingIntent(this))
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setUsesChronometer(true)
@@ -735,6 +838,9 @@ class MonitorService : Service() {
         const val ACTION_START = "com.sleepanalysis.action.START"
         const val ACTION_STOP = "com.sleepanalysis.action.STOP"
 
+        /** Skip the remaining start delay and begin capture now (Home "start now"; user-tap path). */
+        const val ACTION_START_NOW = "com.sleepanalysis.action.START_NOW"
+
         /** Resume the open interrupted session (interrupted-notification action; user-tap path). */
         const val ACTION_RESUME = "com.sleepanalysis.action.RESUME"
 
@@ -744,12 +850,20 @@ class MonitorService : Service() {
         const val SOURCE_MANUAL = "manual"
         const val SOURCE_SCHEDULE = "schedule"
         const val SOURCE_RESUMED = "resumed"
+        const val SOURCE_CAPTURE_ERROR = "capture_error"
 
-        fun start(context: Context, source: String = SOURCE_MANUAL) {
-            val intent = Intent(context, MonitorService::class.java)
-                .setAction(ACTION_START)
-                .putExtra(EXTRA_START_SOURCE, source)
-            ContextCompat.startForegroundService(context, intent)
+        fun start(context: Context) {
+            ContextCompat.startForegroundService(
+                context,
+                Intent(context, MonitorService::class.java).setAction(ACTION_START),
+            )
+        }
+
+        fun startNow(context: Context) {
+            ContextCompat.startForegroundService(
+                context,
+                Intent(context, MonitorService::class.java).setAction(ACTION_START_NOW),
+            )
         }
 
         fun stop(context: Context, source: String = SOURCE_MANUAL) {
@@ -757,6 +871,14 @@ class MonitorService : Service() {
                 Intent(context, MonitorService::class.java)
                     .setAction(ACTION_STOP)
                     .putExtra(EXTRA_STOP_SOURCE, source)
+            )
+        }
+
+        /** Resumes the open interrupted session (user-tap path — the mic-access path). */
+        fun resume(context: Context) {
+            ContextCompat.startForegroundService(
+                context,
+                Intent(context, MonitorService::class.java).setAction(ACTION_RESUME),
             )
         }
     }

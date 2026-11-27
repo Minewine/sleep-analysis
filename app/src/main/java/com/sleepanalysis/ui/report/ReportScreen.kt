@@ -58,11 +58,13 @@ import com.sleepanalysis.ui.components.formatDuration
 fun ReportScreen(
     onBack: () -> Unit,
     onOpenSessionLog: () -> Unit = {},
+    onLabelClips: () -> Unit = {},
     viewModel: ReportViewModel = hiltViewModel(),
 ) {
     val report by viewModel.report.collectAsStateWithLifecycle()
     val playingEventId by viewModel.playingEventId.collectAsStateWithLifecycle()
     val garminImportState by viewModel.garminImportState.collectAsStateWithLifecycle()
+    val refreshState by viewModel.refreshState.collectAsStateWithLifecycle()
     val clipQuality by viewModel.clipQuality.collectAsStateWithLifecycle()
     var selectedEventId by remember { mutableStateOf<Long?>(null) }
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -76,6 +78,10 @@ fun ReportScreen(
                 }
             },
             actions = {
+                // Bulk labeling for the night's clips (docs/EVAL_RUNBOOK.md step 1).
+                TextButton(onClick = onLabelClips) {
+                    Text(stringResource(R.string.labeling_open))
+                }
                 report?.let { r ->
                     IconButton(onClick = {
                         viewModel.buildShareText()?.let { text ->
@@ -120,6 +126,17 @@ fun ReportScreen(
                 }
             }
             item { TldrCard(report = r) }
+            item {
+                RefreshReportCard(
+                    refresh = refreshState,
+                    garminStatus = r.garminStatus,
+                    hasStageTimeline = r.stageSource != null,
+                    garminStageMinutes = r.garminStageMinutes,
+                    importRunning = garminImportState
+                        is com.sleepanalysis.data.garmin.GarminImportManager.GarminImportState.Importing,
+                    onRefresh = viewModel::refreshMorningReport,
+                )
+            }
             item { QualityBannersCard(report = r, clipQuality = clipQuality) }
             item { DisclaimerCard() }
             item {
@@ -157,6 +174,8 @@ fun ReportScreen(
             item {
                 MorningNotesCard(
                     saved = r.morningNotes,
+                    factors = morningFactorsUiState(r.dailyFactors),
+                    onSaveFactors = viewModel::saveMorningFactors,
                     onSave = viewModel::saveMorningNotes,
                 )
             }
@@ -194,13 +213,35 @@ fun ReportScreen(
                         )
                     } else {
                         r.loudestEpisodes.forEach { ep ->
+                            val head = ep.events.first()
                             LoudEpisodeRow(
                                 episode = ep,
                                 playing = ep.clip?.eventId != null && ep.clip.eventId == playingEventId,
                                 onPlay = { ep.clip?.let(viewModel::playClip) },
                                 onStop = viewModel::stopPlayback,
-                                onSelect = { selectedEventId = ep.events.first().id },
+                                onSelect = {
+                                    // Expand in place; tapping the open episode collapses it.
+                                    selectedEventId = if (selectedEventId == head.id) null else head.id
+                                },
                             )
+                            if (selectedEventId == head.id) {
+                                // The row's own detail/labeling card — directly beneath the row
+                                // so it is never rendered off-screen.
+                                val selected = r.events.firstOrNull { it.id == head.id } ?: head
+                                SelectedEventCard(
+                                    selected = selected,
+                                    playing = selected.id == playingEventId,
+                                    hasClip = r.clips.containsKey(selected.id),
+                                    onPlay = { sel -> r.clips[sel.id]?.let(viewModel::playClip) },
+                                    onStop = viewModel::stopPlayback,
+                                    onLabel = { label ->
+                                        viewModel.labelEvent(
+                                            selected.id,
+                                            if (selected.userLabel == label.name) null else label,
+                                        )
+                                    },
+                                )
+                            }
                         }
                     }
                 }
@@ -231,7 +272,11 @@ fun ReportScreen(
 
             item {
                 val selected = r.events.firstOrNull { it.id == selectedEventId }
-                SelectedEventCard(
+                // Episode selections expand inline under their row; this card is the detail
+                // surface for TIMELINE selections only — never both at once.
+                val shownInEpisode = selected != null &&
+                    r.loudestEpisodes.any { it.events.first().id == selected.id }
+                if (selected != null && !shownInEpisode) SelectedEventCard(
                     selected = selected,
                     playing = selected != null && selected.id == playingEventId,
                     hasClip = selected != null && r.clips.containsKey(selected.id),
@@ -270,34 +315,27 @@ fun ReportScreen(
             }
 
             item {
-                Text(stringResource(R.string.report_baseline_section), style = MaterialTheme.typography.titleSmall)
-                Text(
-                    stringResource(R.string.report_baseline_note),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            if (r.baseline.isEmpty()) {
-                item { Text(stringResource(R.string.baseline_empty), color = MaterialTheme.colorScheme.onSurfaceVariant) }
-            } else {
-                items(r.baseline.size) { index ->
-                    BaselineSummaryRow(r.baseline[index])
-                }
-            }
-
-            item {
                 GarminCard(
                     metrics = r.garmin,
                     snoreSeconds = r.snoreSeconds,
                     sleep = r.garminSleep,
-                    longestBoutStage = r.longestBoutStage,
-                    snoreMinutesByStage = r.snoreMinutesByStage,
                     garminStageMinutes = r.garminStageMinutes,
+                    hasStageTimeline = r.longestBoutStage != null || r.snoreMinutesByStage.isNotEmpty(),
                     garminSleepScore = r.garminSleepScore,
                     captureWindowStartMs = r.captureWindowStartMs ?: r.startedAt,
                     captureWindowEndMs = r.endedAt,
                     importState = garminImportState,
                     onImport = viewModel::importGarminForThisNight,
+                )
+            }
+
+            // The stage timeline section, provenance-labeled (Health Connect or Garmin) —
+            // independent of the Garmin card's link status (renders empty when no timeline).
+            item {
+                StageTimelineCard(
+                    longestBoutStage = r.longestBoutStage,
+                    snoreMinutesByStage = r.snoreMinutesByStage,
+                    stageSource = r.stageSource,
                 )
             }
 
@@ -323,6 +361,7 @@ private fun TldrCard(report: com.sleepanalysis.domain.report.MorningReport) {
                 style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.SemiBold,
             )
+            ValidityBadge(validity = report.validity)
             val captureStart = report.captureWindowStartMs ?: report.startedAt
             val captured = (report.endedAt - captureStart).coerceAtLeast(0)
             val shareText = String.format(java.util.Locale.US, "%.0f%%", report.snoreSharePercent)
@@ -335,6 +374,26 @@ private fun TldrCard(report: com.sleepanalysis.domain.report.MorningReport) {
                 ),
                 style = MaterialTheme.typography.bodyLarge,
             )
+            // Coverage-normalized Garmin share (LINKED nights with a real overlap only — no
+            // fake 100% when the windows don't overlap): snoring as a share of the part of
+            // Garmin's sleep window the capture actually covers, honest when capture started
+            // late. The stored share above must keep its finalize-time denominator.
+            if (report.garminStatus == com.sleepanalysis.domain.report.GarminLinkStatus.LINKED) {
+                report.garminSleep?.let { sleep ->
+                    com.sleepanalysis.domain.report.ReportAssembler
+                        .garminNormalizedSharePercent(report.snoreSeconds, sleep.overlapWithCaptureMs)
+                        ?.let { normalized ->
+                            Text(
+                                stringResource(
+                                    R.string.report_tldr_garmin_normalized,
+                                    String.format(java.util.Locale.US, "%.1f", normalized),
+                                ),
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                }
+            }
             report.boutStats?.let {
                 Text(
                     stringResource(
@@ -346,23 +405,39 @@ private fun TldrCard(report: com.sleepanalysis.domain.report.MorningReport) {
                     style = MaterialTheme.typography.bodyLarge,
                 )
             }
-            if (report.quietGaps.isNotEmpty()) {
+            // Only verifiable quiet counts as "quiet stretches" (P2-5); hours the mic never
+            // heard get their own line, so an unheard night never reads as a quiet one.
+            val gapTotals = com.sleepanalysis.domain.report.QuietStretchTotals.of(report.quietGaps)
+            if (gapTotals.quietCount > 0) {
                 Text(
                     stringResource(
                         R.string.report_tldr_quiet,
-                        report.quietGaps.size,
-                        formatDuration(report.quietGaps.sumOf { it.durationMs }),
+                        gapTotals.quietCount,
+                        formatDuration(gapTotals.quietTotalMs),
+                    ),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            if (gapTotals.uncapturedCount > 0) {
+                Text(
+                    stringResource(
+                        R.string.report_tldr_not_captured,
+                        gapTotals.uncapturedCount,
+                        formatDuration(gapTotals.uncapturedTotalMs),
                     ),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
             report.previousNight?.let { prev ->
-                if (prev.sameDetectorVersion && prev.snoreSeconds != null) {
-                    val delta = report.snoreSeconds - prev.snoreSeconds
+                val comparison = com.sleepanalysis.domain.report.NightSummaryText
+                    .previousNightComparison(report)!!
+                if (comparison.compared) {
+                    val delta = comparison.deltaSeconds
                     val sign = if (delta > 0) "+" else if (delta < 0) "−" else ""
                     val deltaText = sign + formatDuration(kotlin.math.abs(delta) * 1000)
-                    val scoreLine = if (prev.sameScoreFormula && prev.snoreScore != null) {
+                    val scoreLine = if (comparison.scoreComparable) {
                         "${report.snoreScore} vs ${prev.snoreScore}"
                     } else {
                         stringResource(R.string.report_tldr_prev_score_nc, "${report.snoreScore}")
@@ -370,7 +445,7 @@ private fun TldrCard(report: com.sleepanalysis.domain.report.MorningReport) {
                     Text(
                         stringResource(
                             R.string.report_tldr_prev,
-                            formatDuration(prev.snoreSeconds * 1000),
+                            formatDuration(prev.snoreSeconds!! * 1000), // non-null when compared
                             deltaText,
                             scoreLine,
                         ),
@@ -387,6 +462,101 @@ private fun TldrCard(report: com.sleepanalysis.domain.report.MorningReport) {
             }
         }
     }
+}
+
+/**
+ * The night validity badge (docs/NIGHT_REPORT.md): the stored A–D grade over capture integrity
+ * with the reasons expandable below it — the primary "can I trust this night?" surface. It
+ * supersedes the capture-health warning role for the TL;DR; the quality banners below keep the
+ * live clip scan and linkage evidence the finalize-time row cannot see. Suggestive tone only —
+ * the grade says how well the night was captured, never anything clinical.
+ */
+@Composable
+private fun ValidityBadge(validity: com.sleepanalysis.domain.validity.NightValidity.Result?) {
+    if (validity == null) return
+    var expanded by remember { mutableStateOf(false) }
+    Column(
+        Modifier.fillMaxWidth().clickable { expanded = !expanded },
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                validity.grade,
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold,
+                color = if (validity.grade == "D") {
+                    MaterialTheme.colorScheme.error
+                } else {
+                    MaterialTheme.colorScheme.primary
+                },
+            )
+            Column {
+                Text(
+                    stringResource(validitySummary(validity.grade)),
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    stringResource(R.string.validity_expand_hint),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        if (expanded) {
+            validity.reasons.forEach { reason ->
+                Column {
+                    Text(
+                        validityReasonText(reason.id) ?: reason.id,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    Text(
+                        reason.detail,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            if (validity.reasons.isEmpty()) {
+                Text(
+                    stringResource(R.string.validity_summary_a),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+}
+
+/** Grade → one-line summary (suggestive, never clinical). */
+private fun validitySummary(grade: String): Int = when (grade) {
+    "A" -> R.string.validity_summary_a
+    "B" -> R.string.validity_summary_b
+    "C" -> R.string.validity_summary_c
+    else -> R.string.validity_summary_d
+}
+
+/** Reason id → localized text; null renders the raw id (future-proof against version drift). */
+@Composable
+private fun validityReasonText(id: String): String? = when (id) {
+    "stats_missing" -> stringResource(R.string.validity_reason_stats_missing)
+    "capture_failed" -> stringResource(R.string.validity_reason_capture_failed)
+    "capture_gaps" -> stringResource(R.string.validity_reason_capture_gaps)
+    "capture_gaps_severe" -> stringResource(R.string.validity_reason_capture_gaps_severe)
+    "thermal_throttle" -> stringResource(R.string.validity_reason_thermal_throttle)
+    "unexplained_gap" -> stringResource(R.string.validity_reason_unexplained_gap)
+    "clipped_clips" -> stringResource(R.string.validity_reason_clipped_clips)
+    "ambient_noise_high" -> stringResource(R.string.validity_reason_ambient_noise_high)
+    "session_interrupted" -> stringResource(R.string.validity_reason_session_interrupted)
+    "low_snore_signal" -> stringResource(R.string.validity_reason_low_snore_signal)
+    "garmin_stale" -> stringResource(R.string.validity_reason_garmin_stale)
+    "garmin_no_overlap" -> stringResource(R.string.report_garmin_no_overlap)
+    "garmin_stage_mismatch" -> stringResource(R.string.validity_reason_garmin_stage_mismatch)
+    "garmin_tst_mismatch" -> stringResource(R.string.validity_reason_garmin_tst_mismatch)
+    "garmin_span_overlap" -> stringResource(R.string.validity_reason_garmin_span_overlap)
+    "garmin_implausible" -> stringResource(R.string.validity_reason_garmin_implausible)
+    "garmin_spo2_distrust" -> stringResource(R.string.validity_reason_garmin_spo2_distrust)
+    else -> null
 }
 
 /**
@@ -552,17 +722,10 @@ private fun ClipLabelChips(
     current: String?,
     onLabel: (Long, com.sleepanalysis.domain.labels.EventUserLabel) -> Unit,
 ) {
-    androidx.compose.foundation.layout.FlowRow(
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        com.sleepanalysis.domain.labels.EventUserLabel.entries.forEach { label ->
-            FilterChip(
-                selected = current == label.name,
-                onClick = { onLabel(eventId, label) },
-                label = { Text(label.label) },
-            )
-        }
-    }
+    com.sleepanalysis.ui.components.EventLabelChips(
+        isSelected = { it.name == current },
+        onLabel = { onLabel(eventId, it) },
+    )
 }
 
 @Composable
@@ -578,14 +741,23 @@ private fun DisclaimerCard() {
 
 /** Observability for the night (docs/NEXT_STEPS.md P0): why a night looks the way it does. */
 
-/** Morning notes: short user context typed (or dictated via the keyboard) after the night. */
+/** Morning notes: short user context typed (or dictated via the keyboard) after the night, plus
+ *  the night's 1–5 rating and quick tags — self-logged factors on the session's factor day. */
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 private fun MorningNotesCard(
     saved: String?,
+    factors: MorningFactorsUiState,
+    onSaveFactors: (Int?, Set<com.sleepanalysis.domain.factors.DailyFactor>) -> Unit,
     onSave: (String) -> Unit,
 ) {
     var editing by remember { mutableStateOf(saved.isNullOrBlank()) }
     var draft by remember(saved) { mutableStateOf(saved.orEmpty()) }
+    // Chip drafts re-seed whenever the saved factors change (Save → reload() re-derives the
+    // state from the rows), so the chips always reflect what is stored; tapping the selected
+    // chip clears it again.
+    var ratingDraft by remember(factors) { mutableStateOf(factors.rating) }
+    var tagsDraft by remember(factors) { mutableStateOf(factors.tags) }
 
     Card {
         Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -594,6 +766,44 @@ private fun MorningNotesCard(
                 style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.SemiBold,
             )
+            Text(
+                stringResource(R.string.report_morning_rating),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                (1..5).forEach { level ->
+                    FilterChip(
+                        selected = ratingDraft == level,
+                        onClick = { ratingDraft = if (ratingDraft == level) null else level },
+                        label = { Text("$level") },
+                    )
+                }
+                Text(
+                    ratingDraft?.let { "$it / 5" } ?: "—",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Text(
+                stringResource(R.string.report_morning_tags),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            androidx.compose.foundation.layout.FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                MORNING_TAGS.forEach { tag ->
+                    FilterChip(
+                        selected = tag in tagsDraft,
+                        onClick = {
+                            tagsDraft = if (tag in tagsDraft) tagsDraft - tag else tagsDraft + tag
+                        },
+                        label = { Text(tag.label) },
+                    )
+                }
+            }
+            Button(onClick = { onSaveFactors(ratingDraft, tagsDraft) }) {
+                Text(stringResource(R.string.report_morning_save))
+            }
             if (editing) {
                 OutlinedTextField(
                     value = draft,
@@ -608,12 +818,15 @@ private fun MorningNotesCard(
                         editing = false
                     }) { Text(stringResource(R.string.report_notes_save)) }
                     OutlinedButton(onClick = {
+                        // Cancel reverts to the saved note — with none saved there is
+                        // nothing to revert to and the editor stays open (rendering a null
+                        // saved note below was the morning crash of the 2026-11-23 report).
                         draft = saved.orEmpty()
-                        editing = false
+                        editing = notesCancelReturnsToEdit(saved)
                     }) { Text(stringResource(R.string.report_notes_cancel)) }
                 }
             } else {
-                Text(saved!!, style = MaterialTheme.typography.bodyMedium)
+                saved?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
                 TextButton(onClick = { editing = true }, contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp)) {
                     Text(stringResource(R.string.report_notes_edit))
                 }
@@ -977,17 +1190,10 @@ private fun SelectedEventCard(
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                androidx.compose.foundation.layout.FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    com.sleepanalysis.domain.labels.EventUserLabel.entries.forEach { label ->
-                        FilterChip(
-                            selected = selected.userLabel == label.name,
-                            onClick = { onLabel(label) },
-                            label = { Text(label.label) },
-                        )
-                    }
-                }
+                com.sleepanalysis.ui.components.EventLabelChips(
+                    isSelected = { selected.userLabel == it.name },
+                    onLabel = onLabel,
+                )
             }
         }
     }
@@ -1027,37 +1233,6 @@ private fun EventRow(
 }
 
 @Composable
-private fun BaselineSummaryRow(baseline: com.sleepanalysis.data.db.entity.ClinicalBaselineEntity) {
-    Card {
-        Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text(
-                baseline.studyDate + " · " + baseline.lab +
-                    (baseline.nightLabel?.let { " · $it" } ?: ""),
-                style = MaterialTheme.typography.bodyMedium,
-                fontWeight = FontWeight.SemiBold,
-            )
-            val metrics = buildList {
-                baseline.ahiPerHour?.let { add("AHI $it/h") }
-                baseline.totalSleepTimeMinutes?.let { add("TST ${it / 60}h ${it % 60}m") }
-                baseline.sleepEfficiencyPercent?.let { add("Eff ${it}%") }
-                baseline.arousalIndexPerHour?.let { add("Arousal ${it}/h") }
-                baseline.n3Percent?.let { add("N3 ${it}%") }
-            }
-            Text(
-                metrics.joinToString(" · ").ifEmpty { baseline.notes ?: "" },
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Text(
-                stringResource(R.string.baseline_clinically_measured) + " (" + baseline.studyType + ")",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.primary,
-            )
-        }
-    }
-}
-
-@Composable
 private fun eventTypeLabel(type: String): String = when (type) {
     EventType.SNORE -> "Snoring"
     EventType.COUGH -> "Cough"
@@ -1067,15 +1242,92 @@ private fun eventTypeLabel(type: String): String = when (type) {
     else -> "Sound"
 }
 
-/** Garmin device-reported metrics — always labeled "Garmin estimate", never clinical (M10–M13, M18). */
+/**
+ * "Generate morning report" row at the top of the Morning Summary (docs/NIGHT_REPORT.md §2):
+ * one tap pulls this night's Garmin + Health Connect data (gated like the silent backfills,
+ * skipped when already present) and updates the report in place. The status line comes from
+ * the VM's pure mapping — running phases while busy, otherwise the last attempt's outcome,
+ * including the distinct "stage timeline not available yet" line; no line before any attempt.
+ */
+@Composable
+private fun RefreshReportCard(
+    refresh: RefreshState,
+    garminStatus: com.sleepanalysis.domain.report.GarminLinkStatus,
+    hasStageTimeline: Boolean,
+    garminStageMinutes: Map<String, Long>,
+    importRunning: Boolean,
+    onRefresh: () -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        OutlinedButton(
+            onClick = onRefresh,
+            enabled = refresh.phase == RefreshPhase.IDLE && !importRunning,
+        ) {
+            Text(stringResource(R.string.report_garmin_refresh))
+        }
+        when (
+            refreshStatusLine(
+                refresh.phase,
+                garminStatus,
+                refresh.completedAtMs,
+                hasStageTimeline,
+                garminStageMinutes,
+                refresh.garminBudgetBlocked,
+            )
+        ) {
+            RefreshStatusLine.SYNCING -> Text(
+                stringResource(R.string.report_garmin_refresh_syncing),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            RefreshStatusLine.UPDATING -> Text(
+                stringResource(R.string.report_garmin_refresh_updating),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            RefreshStatusLine.NOT_AVAILABLE -> Text(
+                stringResource(R.string.report_garmin_refresh_not_available),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            RefreshStatusLine.RETRY_BLOCKED -> Text(
+                stringResource(R.string.report_garmin_refresh_retry_blocked),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            RefreshStatusLine.STAGES_PENDING -> Text(
+                stringResource(R.string.report_garmin_refresh_stages_pending),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            RefreshStatusLine.INCLUDED -> {
+                val at = refresh.completedAtMs
+                if (at != null) {
+                    Text(
+                        stringResource(R.string.report_garmin_refresh_included, Formatting.time(at)),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                }
+            }
+            RefreshStatusLine.NONE -> {}
+        }
+    }
+}
+
+/**
+ * Garmin device-reported metrics — always labeled "Garmin estimate", never clinical
+ * (M10–M13, M18). The stage timeline (bout stage + per-stage snoring minutes) lives in
+ * [StageTimelineCard] below — it renders with or without a Garmin link; this card keeps the
+ * Garmin-owned vendor totals and flags a missing timeline for its totals-only line.
+ */
 @Composable
 private fun GarminCard(
     metrics: List<com.sleepanalysis.domain.report.GarminMetric>,
     snoreSeconds: Long,
     sleep: com.sleepanalysis.domain.report.GarminSleepSummary?,
-    longestBoutStage: com.sleepanalysis.domain.report.BoutStage?,
-    snoreMinutesByStage: List<com.sleepanalysis.domain.report.StageSnoreMinutes>,
     garminStageMinutes: Map<String, Long>,
+    hasStageTimeline: Boolean,
     garminSleepScore: Double?,
     captureWindowStartMs: Long,
     captureWindowEndMs: Long,
@@ -1134,6 +1386,22 @@ private fun GarminCard(
                         color = MaterialTheme.colorScheme.error,
                     )
                 }
+                // Validator warnings for THIS import (stale/implausible/mismatch —
+                // GarminValidators): live from the import state; the persistent ones ride on
+                // the night's validity grade above.
+                (importState as? com.sleepanalysis.data.garmin.GarminImportManager.GarminImportState.Success)
+                    ?.warnings?.takeIf { it.isNotEmpty() }
+                    ?.let { warnings ->
+                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            warnings.forEach { warning ->
+                                Text(
+                                    garminWarningText(warning.id),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                    }
                 // Headline vendor number + where the worst stretch fell (timeline when stored).
                 (sleep.sleepScore ?: garminSleepScore)?.let {
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
@@ -1158,17 +1426,9 @@ private fun GarminCard(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                if (snoreMinutesByStage.isNotEmpty()) {
-                    // Timeline available: snoring minutes per vendor stage.
-                    Text(
-                        snoreMinutesByStage.joinToString(" · ") {
-                            String.format(java.util.Locale.US, "%s %dm", it.stage, it.snoreMinutes)
-                        },
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                } else if (garminStageMinutes.isNotEmpty()) {
-                    // Totals only (no sleepLevels timeline): the totals-level comparison.
+                if (garminStageMinutes.isNotEmpty() && !hasStageTimeline) {
+                    // Totals only (no sleepLevels timeline stored): the totals-level
+                    // comparison; with a timeline the section below shows the per-stage view.
                     Text(
                         stringResource(
                             R.string.report_garmin_snore_vs_stages,
@@ -1178,25 +1438,14 @@ private fun GarminCard(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                longestBoutStage?.let { bs ->
+                if (garminStageMinutes.isNotEmpty()) {
+                    // The stage footnote: vendor stages are estimates — agreement with
+                    // sleep-lab stages is fair-to-moderate in the literature (κ 0.21–0.54,
+                    // cited in docs, not here). The timeline section below carries its own
+                    // provenance-labeled footnote.
                     Text(
-                        stringResource(
-                            R.string.report_garmin_bout_stage,
-                            bs.stage,
-                            String.format(java.util.Locale.US, "%.0f", bs.coveredFraction * 100),
-                        ),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                if (snoreMinutesByStage.isNotEmpty()) {
-                    Text(
-                        snoreMinutesByStage.joinToString(" · ") {
-                            String.format(
-                                java.util.Locale.US, "%s %dm", it.stage, it.snoreMinutes,
-                            )
-                        },
-                        style = MaterialTheme.typography.bodySmall,
+                        stringResource(R.string.report_garmin_stages_estimate),
+                        style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
@@ -1225,6 +1474,12 @@ private fun GarminCard(
             when (val s = importState) {
                 is com.sleepanalysis.data.garmin.GarminImportManager.GarminImportState.Importing ->
                     Text(stringResource(R.string.settings_import_running, s.date), style = MaterialTheme.typography.bodySmall)
+                is com.sleepanalysis.data.garmin.GarminImportManager.GarminImportState.NotReady ->
+                    Text(
+                        stringResource(R.string.settings_import_not_ready),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
                 is com.sleepanalysis.data.garmin.GarminImportManager.GarminImportState.Error ->
                     Text(s.message, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
                 is com.sleepanalysis.data.garmin.GarminImportManager.GarminImportState.Success ->
@@ -1240,6 +1495,80 @@ private fun GarminCard(
             }
         }
     }
+}
+
+/**
+ * The night's stage timeline section — longest-bout stage + snoring minutes per stage —
+ * independent of the Garmin card's link status: the rows come from whichever vendor import
+ * wrote them (Health Connect or Garmin), and [stageSource] labels which (rendered empty
+ * when the night has no timeline). The vendor stage TOTALS (garminStageMinutes) stay in
+ * the Garmin card — measurement rows, not the timeline.
+ */
+@Composable
+private fun StageTimelineCard(
+    longestBoutStage: com.sleepanalysis.domain.report.BoutStage?,
+    snoreMinutesByStage: List<com.sleepanalysis.domain.report.StageSnoreMinutes>,
+    stageSource: String?,
+) {
+    if (longestBoutStage == null && snoreMinutesByStage.isEmpty()) return
+    val fromHealthConnect =
+        stageSource == com.sleepanalysis.domain.report.ReportAssembler.STAGE_SOURCE_WEARABLE
+    Card {
+        Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(
+                stringResource(
+                    if (fromHealthConnect) R.string.report_stage_timeline_hc
+                    else R.string.report_stage_timeline_garmin,
+                ),
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+            )
+            if (snoreMinutesByStage.isNotEmpty()) {
+                // Timeline available: snoring minutes per vendor stage.
+                Text(
+                    snoreMinutesByStage.joinToString(" · ") {
+                        String.format(java.util.Locale.US, "%s %dm", it.stage, it.snoreMinutes)
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            longestBoutStage?.let { bs ->
+                Text(
+                    stringResource(
+                        R.string.report_garmin_bout_stage,
+                        bs.stage,
+                        String.format(java.util.Locale.US, "%.0f", bs.coveredFraction * 100),
+                    ),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            // The stage footnote, labeled by provenance: Health Connect rows carry their own
+            // wording, Garmin rows keep the watch-estimate caveat.
+            Text(
+                stringResource(
+                    if (fromHealthConnect) R.string.report_hc_stages
+                    else R.string.report_garmin_stages_estimate,
+                ),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+/** Garmin validator warning id → localized text; unknown ids render raw (version drift safety). */
+@Composable
+private fun garminWarningText(id: String): String = when (id) {
+    "garmin_stale" -> stringResource(R.string.report_garmin_warning_stale)
+    "garmin_no_overlap" -> stringResource(R.string.report_garmin_warning_no_overlap)
+    "garmin_stage_mismatch" -> stringResource(R.string.report_garmin_warning_stage_mismatch)
+    "garmin_tst_mismatch" -> stringResource(R.string.report_garmin_warning_tst_mismatch)
+    "garmin_span_overlap" -> stringResource(R.string.report_garmin_warning_span_overlap)
+    "garmin_implausible" -> stringResource(R.string.report_garmin_warning_implausible)
+    "garmin_spo2_distrust" -> stringResource(R.string.report_garmin_warning_spo2_distrust)
+    else -> id
 }
 
 private fun garminMetricLabel(type: String): String = when (type) {
@@ -1303,6 +1632,9 @@ private fun DailyFactorsCard(factors: List<com.sleepanalysis.domain.report.Facto
                         )
                     }
                     factor.factorKey == com.sleepanalysis.domain.factors.DailyFactor.STRESS.key -> {
+                        Text("$label: ${factor.valueNum?.toInt()} / 5", style = MaterialTheme.typography.bodyMedium)
+                    }
+                    factor.factorKey == com.sleepanalysis.domain.factors.DailyFactor.MORNING_RATING.key -> {
                         Text("$label: ${factor.valueNum?.toInt()} / 5", style = MaterialTheme.typography.bodyMedium)
                     }
                     else -> Text(label, style = MaterialTheme.typography.bodyMedium)

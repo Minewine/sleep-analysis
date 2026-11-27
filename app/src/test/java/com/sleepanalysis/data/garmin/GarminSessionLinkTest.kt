@@ -12,7 +12,7 @@ class GarminSessionLinkTest {
     private fun session(id: Long, start: Long, end: Long?, status: String = SessionStatus.COMPLETED) =
         SleepSessionEntity(
             id = id, startedAt = start, endedAt = end, status = status,
-            timeZone = "Europe/Zurich", deviceModel = "Test", osVersion = "30", appVersion = "0.1.0",
+            timeZone = "Europe/Zurich", 
         )
 
     @Test

@@ -47,6 +47,33 @@ fun canBeginCaptureAfterDelay(
         current.sessionId == sessionId &&
         current.captureStartsAtMs == expectedCaptureStartAtMs
 
+/**
+ * Pure guard for the "start capture now" tap during the start delay: there must be something
+ * to skip — a Delayed state. A stop/finalize during the delay (Finished/Idle) or a start error
+ * leaves nothing; the tap then promotes-to-foreground-and-stops (never starts capture). The
+ * tap is a user interaction (the mic-access path), and the session to capture into comes from
+ * the state itself.
+ */
+fun canSkipStartDelay(current: MonitorState): Boolean = current is MonitorState.Delayed
+
+/**
+ * Pure guard for a NEW-session start (Home Start button, bedtime-notification Start action)
+ * given the visible state (P2-1): while an interrupted night awaits the user's explicit
+ * Resume/Finalize decision, Start is disabled — the interrupted banner and notification stay
+ * the re-entry point, never a silent finalize-as-RECOVERED behind a new night. The service
+ * additionally refuses on the DB's open session: a fresh process (alarm-fired bedtime
+ * notification) starts with [MonitorState.Idle] even when a night is open.
+ */
+fun canStartNewSession(current: MonitorState): Boolean = current !is MonitorState.Interrupted
+
+/**
+ * Pure guard for clearing the interrupted-night banner: the banner is obsolete once the
+ * service is actually capturing (Recording) or about to capture after a resume-with-delay
+ * (Delayed) — both prove the open session was resumed and no longer needs the banner.
+ */
+fun clearsInterruptedBanner(state: MonitorState): Boolean =
+    state is MonitorState.Recording || state is MonitorState.Delayed
+
 @Singleton
 class MonitorStateHolder @Inject constructor() {
     private val _state = MutableStateFlow<MonitorState>(MonitorState.Idle)

@@ -15,19 +15,26 @@ import androidx.lifecycle.viewModelScope
 import com.sleepanalysis.data.db.entity.SleepSessionEntity
 import com.sleepanalysis.data.prefs.UserPreferences
 import com.sleepanalysis.data.repo.SessionRepository
+import com.sleepanalysis.domain.policy.MissedNightPolicy
+import com.sleepanalysis.domain.policy.MissedNightResult
+import com.sleepanalysis.domain.policy.NightStopPolicy
 import com.sleepanalysis.monitoring.schedule.RecordingScheduler
+import com.sleepanalysis.monitoring.schedule.ScheduleTimes
 import com.sleepanalysis.monitoring.service.InterruptedNotification
 import com.sleepanalysis.monitoring.service.MonitorService
 import com.sleepanalysis.monitoring.service.MonitorState
 import com.sleepanalysis.monitoring.service.MonitorStateHolder
+import com.sleepanalysis.monitoring.service.clearsInterruptedBanner
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
+import java.time.LocalDate
 import java.time.ZonedDateTime
 import javax.inject.Inject
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -40,7 +47,6 @@ data class PreFlightChecklist(
     val freeStorageMb: Long,
 ) {
     val storageOk: Boolean get() = freeStorageMb >= 500
-    val allClear: Boolean get() = micGranted && notificationsGranted && batteryExempt && storageOk
 }
 
 /**
@@ -66,21 +72,57 @@ class HomeViewModel @Inject constructor(
     val monitorState: StateFlow<MonitorState> = stateHolder.state
 
     // Recording controls (design: recording controls): the start button gates on the master
-    // switch; the schedule row shows the next armed bedtime start.
+    // switch; the schedule row shows the next armed bedtime start, or an explicit off-state
+    // while the schedule is off.
     val recordingEnabled: StateFlow<Boolean> = prefs.recordingEnabled
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), true)
 
-    val scheduleEnabled: StateFlow<Boolean> = prefs.scheduleEnabled
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
-
     private val _nextScheduledStart = MutableStateFlow<ZonedDateTime?>(null)
     val nextScheduledStart: StateFlow<ZonedDateTime?> = _nextScheduledStart.asStateFlow()
+
+    /** Flips true on the first schedule read: until then the Home schedule row stays hidden. */
+    private val _scheduleResolved = MutableStateFlow(false)
+    val scheduleResolved: StateFlow<Boolean> = _scheduleResolved.asStateFlow()
 
     val sessions: StateFlow<List<SleepSessionEntity>> = sessionRepository.observeSessions()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     val latestSession: StateFlow<SleepSessionEntity?> = sessions
         .map { it.firstOrNull() }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    /**
+     * Was the night before today recorded, skipped, or missed (MissedNightPolicy)? Null when
+     * there is nothing to say: no session history at all (the last-night card's empty state
+     * speaks), or a session is open — the recording status and the interrupted banner own
+     * that story. Recomputed whenever sessions or the skip history change.
+     */
+    val missedNight: StateFlow<MissedNightResult?> = combine(
+        sessions,
+        prefs.scheduleSkipHistoryDays,
+    ) { allSessions, skippedDays ->
+        when {
+            allSessions.isEmpty() || allSessions.any { it.endedAt == null } -> null
+            else -> MissedNightPolicy.evaluate(
+                allSessions,
+                // P2-6: "today" anchors in the most recent session's zone — the same zone its
+                // wake date uses — never the device zone (travel consistency).
+                LocalDate.now(MissedNightPolicy.todayZone(allSessions)).toEpochDay(),
+                skippedDays,
+                hasCaptureEvidence = { session ->
+                    com.sleepanalysis.domain.report.CaptureStats.parse(session.captureStats)
+                        ?.anyProcessedWindows() == true
+                },
+            )
+        }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    /**
+     * The last night's stored validity grade letter (A–D, domain/validity.NightValidity) for
+     * the Home card — read from the NIGHT_VALIDITY row, null when the night predates it.
+     */
+    val latestValidityGrade: StateFlow<String?> = latestSession
+        .map { session -> session?.let { sessionRepository.validityGradeFor(it.id) } }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
     private val _preFlight = MutableStateFlow<PreFlightChecklist?>(null)
@@ -93,30 +135,23 @@ class HomeViewModel @Inject constructor(
     val interrupted: StateFlow<InterruptedSummary?> = _interrupted.asStateFlow()
 
     init {
-        // Safety net for process recreation: the open session row is ground truth. If the live
-        // service is already Recording (same process, or sticky restart got here first), keep
-        // that state; otherwise surface the night as INTERRUPTED — never silently auto-recover.
+        // Safety net for the fresh-process case (process death, then the user opens the app):
+        // the holder starts Idle there even though a session row is still open. Surface the
+        // open night from the DB into the banner — never silently auto-recover. Skip when the
+        // service is already active: its holder state (Recording/Delayed/Interrupted) owns
+        // the story, and clearInterrupted/finalizeInterrupted handle it from there.
         viewModelScope.launch {
-            if (stateHolder.state.value is MonitorState.Idle) {
-                val open = sessionRepository.findOpenSession()
-                // Re-check after the suspend DB read: a service restart (scheduled or sticky)
-                // may have begun recording while we read — its state must never be clobbered
-                // with `Interrupted`.
-                if (open != null && stateHolder.state.value is MonitorState.Idle) {
-                    stateHolder.set(MonitorState.Interrupted(open.id, open.startedAt))
-                    _interrupted.value = InterruptedSummary(
-                        sessionId = open.id,
-                        startedAt = open.startedAt,
-                        savedEvents = sessionRepository.savedEventCountForSession(open.id),
-                    )
-                }
-            }
+            val current = stateHolder.state.value
+            if (current is MonitorState.Recording || current is MonitorState.Starting ||
+                current is MonitorState.Delayed || current is MonitorState.Interrupted
+            ) return@launch
+            val open = sessionRepository.findOpenSession() ?: return@launch
+            _interrupted.value = InterruptedSummary(
+                sessionId = open.id,
+                startedAt = open.startedAt,
+                savedEvents = sessionRepository.savedEventCountForSession(open.id),
+            )
         }
-        refreshPreFlight()
-        refreshSchedule()
-        // Self-heal the nightly alarms on app open: force-stop and package updates cancel
-        // them, and nothing else re-arms until the next settings change or boot.
-        viewModelScope.launch { scheduler.arm() }
     }
 
     /** Recomputed on every Home resume so permission/whitelist changes are reflected. */
@@ -140,15 +175,19 @@ class HomeViewModel @Inject constructor(
     /** Recomputed on Home resume alongside the pre-flight checks (next armed bedtime start). */
     fun refreshSchedule() {
         viewModelScope.launch {
+            // Re-arm before reading: an exact-alarm permission granted while away is only
+            // picked up on the next ON_RESUME — without this the read can report a stale
+            // (unarmed) schedule.
+            scheduler.arm()
             _nextScheduledStart.value = scheduler.nextStartOrNull(ZonedDateTime.now())
+            _scheduleResolved.value = true
         }
     }
 
     /** Marks tonight's scheduled start as skipped for one night and re-arms the alarms. */
     fun skipTonight() {
         viewModelScope.launch {
-            scheduler.skipNextStart()
-            _nextScheduledStart.value = scheduler.nextStartOrNull(ZonedDateTime.now())
+            _nextScheduledStart.value = scheduler.skipTonight()
         }
     }
 
@@ -156,8 +195,34 @@ class HomeViewModel @Inject constructor(
         MonitorService.start(appContext)
     }
 
+    /** Skips the remaining start delay and begins audio capture immediately (Home "start now"). */
+    fun startCaptureNow() {
+        MonitorService.startNow(appContext)
+    }
+
+    /**
+     * Whether a stop tap should ask for confirmation first: a manual stop before tonight's
+     * scheduled end is how nights get cut short (2026-11-08: a 04:13 stop while the watch
+     * showed sleep until 06:41). Pure decision in [NightStopPolicy]; the tap-time evaluation
+     * (not composition time) is why this is a function, not a state read.
+     */
+    suspend fun shouldConfirmStopNow(): Boolean {
+        // One refreshed read of BOTH schedule inputs (map defect D-15): the old code read
+        // StateFlow values nobody subscribed to, so the end time was stuck at 06:30 and a
+        // user-changed end was ignored in both directions.
+        val now = ZonedDateTime.now()
+        val (scheduleEnabled, scheduleEndMinutes) = prefs.scheduleStopInputsNow()
+        val nextEnd = ScheduleTimes.nextOccurrence(now, scheduleEndMinutes)
+        return NightStopPolicy.shouldConfirmStop(now, scheduleEnabled, nextEnd)
+    }
+
     fun stopRecording() {
         MonitorService.stop(appContext)
+    }
+
+    /** Resumes the open interrupted session (interrupted-night banner action). */
+    fun resumeInterrupted() {
+        MonitorService.resume(appContext)
     }
 
     fun consumeFinished() {
@@ -168,7 +233,7 @@ class HomeViewModel @Inject constructor(
 
     /** The service resumed the interrupted session — the banner is obsolete. */
     fun clearInterrupted() {
-        if (stateHolder.state.value is MonitorState.Recording) {
+        if (clearsInterruptedBanner(stateHolder.state.value)) {
             _interrupted.value = null
         }
     }

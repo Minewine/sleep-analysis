@@ -19,8 +19,8 @@ import kotlin.math.pow
  * ~16 000 x 203 ≈ 3.2M multiply-adds, comfortably within the 500 ms hop budget but NOT
  * "microseconds"; it must stay per-window, never per-hop or per-sample. On the audio capture
  * thread use [Workspace.compute], which allocates nothing in steady state — the allocating
- * [compute] shortcut below creates ~0.75 MB of garbage per window and is meant for tests and
- * offline tools only.
+ * one-shot `compute` shortcut (test source set, same package) creates ~0.75 MB of garbage per
+ * window and is meant for tests and offline tools only.
  */
 object SpectralFeatures {
 
@@ -77,8 +77,8 @@ object SpectralFeatures {
      * window (Hann + frame + per-frame FFT arrays x 31 + the mean-removed copy) into the
      * allocator, which is exactly what this class avoids.
      *
-     * Not thread-safe by design: one workspace per capture stream (AudioEngine / ReplayEngine
-     * each own one), used only from the stream's own thread.
+     * Not thread-safe by design: one workspace per capture stream (AudioEngine and the
+     * test-side replay engine each own one), used only from the stream's own thread.
      *
      * ALIASING (see [Result.melBands]): the returned result's `melBands` array aliases this
      * workspace's internal buffer and is overwritten by the next [compute] call — copy it if a
@@ -170,27 +170,6 @@ object SpectralFeatures {
             )
         }
     }
-
-    /**
-     * Convenience wrapper creating a throwaway [Workspace] per call — deterministic and
-     * correct, but allocates every scratch buffer fresh; tests and offline tools only (the
-     * capture path holds one [Workspace] per stream and calls [Workspace.compute]).
-     *
-     * @param samples PCM window (any length >= [frameSize]; shorter input yields neutral
-     *        zeros — the live pipeline always passes a full 1 s window).
-     * @param sampleRate analysis sample rate.
-     * @param frameSize FFT size, must be a power of two and <= sampleRate.
-     * @param hopSize frame advance in samples (1..frameSize).
-     * @param bandCount mel filters (1..64).
-     * @throws IllegalArgumentException on out-of-range configuration.
-     */
-    fun compute(
-        samples: ShortArray,
-        sampleRate: Int,
-        frameSize: Int = 1024,
-        hopSize: Int = 512,
-        bandCount: Int = 16,
-    ): Result = Workspace(sampleRate, frameSize, hopSize, bandCount).compute(samples)
 
     /** Geometric/arithmetic mean over the bins covering [FLATNESS_MIN_HZ, FLATNESS_MAX_HZ]. */
     private fun flatness(power: DoubleArray, sampleRate: Int, frameSize: Int): Double {

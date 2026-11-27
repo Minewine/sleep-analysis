@@ -37,3 +37,7 @@ analysis/chart_*.png
 *.db-shm
 *.preferences_pb
 session_*.log
+
+# Personal notes: clinical values, dogfood night narratives, calibration records.
+# Anything identifying stays here, never committed (user directive 2026-11-12).
+local/

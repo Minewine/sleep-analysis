@@ -35,7 +35,6 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
@@ -44,8 +43,7 @@ class OnboardingViewModel @Inject constructor(
     private val prefs: UserPreferences,
 ) : ViewModel() {
 
-    val accepted: StateFlow<Boolean> = prefs.disclaimerAcceptedAt
-        .map { it != null }
+    val accepted: StateFlow<Boolean> = prefs.disclaimerAccepted
         .stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
     fun accept() {

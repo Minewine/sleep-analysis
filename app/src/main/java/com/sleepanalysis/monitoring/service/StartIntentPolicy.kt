@@ -21,6 +21,9 @@ internal enum class StartCommand {
     /** Finalize the running session with COMPLETED. */
     STOP,
 
+    /** Skip the remaining start delay and begin capture immediately (Home "start now" tap). */
+    START_NOW_SKIP_DELAY,
+
     /**
      * Null intent (START_STICKY restart after process death) or an unrecognized action:
      * surface the interruption if a session is open, otherwise stop — never start capture.
@@ -30,6 +33,7 @@ internal enum class StartCommand {
 
 internal fun startCommandFor(intentAction: String?): StartCommand = when (intentAction) {
     MonitorService.ACTION_START -> StartCommand.START_NEW_SESSION
+    MonitorService.ACTION_START_NOW -> StartCommand.START_NOW_SKIP_DELAY
     MonitorService.ACTION_RESUME -> StartCommand.RESUME_OPEN_SESSION
     MonitorService.ACTION_STOP -> StartCommand.STOP
     else -> StartCommand.SURFACE_INTERRUPTED
@@ -53,6 +57,14 @@ internal enum class ResumeDecision {
     /** The open session is gone (already finalized elsewhere): the notification is stale — cancel it. */
     STALE,
 }
+
+/**
+ * Whether the "start capture now" tap still owes a foreground promotion: Recording/Starting
+ * and Delayed are already foreground (re-promoting re-posts a fresh chronometer-anchored
+ * notification), the other states promote first so the startForegroundService delivery is
+ * paid before standing down.
+ */
+fun shouldPromoteOnSkip(state: MonitorState): Boolean = state !is MonitorState.Delayed
 
 internal fun resumeDecision(openSessionId: Long, recordingEnabled: Boolean): ResumeDecision = when {
     openSessionId <= 0L -> ResumeDecision.STALE

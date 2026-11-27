@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.util.Log
 import com.sleepanalysis.data.prefs.UserPreferences
+import com.sleepanalysis.data.repo.SessionRepository
 import com.sleepanalysis.monitoring.service.MonitorState
 import com.sleepanalysis.monitoring.service.MonitorStateHolder
 import dagger.hilt.android.AndroidEntryPoint
@@ -21,7 +22,8 @@ import kotlinx.coroutines.launch
  * NEVER starts MonitorService directly: on Android 11+ a background-started microphone
  * foreground service gets no while-in-use mic access. Instead the high-priority bedtime
  * notification is posted — the user tap is the user-interaction exemption (see
- * [BedtimeNotification]). Always re-arms the schedule at the end of the run.
+ * [BedtimeNotification]). The notification is suppressed while an interrupted night is open
+ * (P2-1). Always re-arms the schedule at the end of the run.
  */
 @AndroidEntryPoint
 class ScheduledStartReceiver : BroadcastReceiver() {
@@ -29,27 +31,45 @@ class ScheduledStartReceiver : BroadcastReceiver() {
     @Inject lateinit var prefs: UserPreferences
     @Inject lateinit var stateHolder: MonitorStateHolder
     @Inject lateinit var scheduler: RecordingScheduler
+    @Inject lateinit var sessionRepository: SessionRepository
 
     override fun onReceive(context: Context, intent: Intent) {
         val pendingResult = goAsync()
         CoroutineScope(SupervisorJob() + Dispatchers.Default).launch {
             try {
                 if (intent.action == ACTION_SKIP) {
-                    val day = intent.getLongExtra(EXTRA_OCCURRENCE_EPOCH_DAY, -1L).takeIf { it >= 0 }
+                    val occurrenceDay = intent.getLongExtra(EXTRA_OCCURRENCE_EPOCH_DAY, -1L).takeIf { it >= 0 }
                         ?: fallbackOccurrenceDay()
-                    prefs.setScheduleSkipEpochDay(day)
+                    // P2-6: store the skip as the night's INTENDED WAKE date (the wake date a
+                    // post-midnight start shares with its occurrence day) — the banner, trends
+                    // and the scheduler's own filter all key that date.
+                    val startOccurrence = java.time.LocalDate.ofEpochDay(occurrenceDay)
+                        .atTime(java.time.LocalTime.ofSecondOfDay(prefs.scheduleStartMinutesNow() * 60L))
+                        .atZone(java.time.ZoneId.systemDefault())
+                    prefs.setScheduleSkipEpochDay(
+                        ScheduleTimes.intendedWakeDay(startOccurrence, prefs.scheduleEndMinutesNow()),
+                    )
                     BedtimeNotification.cancel(context)
                 } else {
                     val occurrenceDay = intent.getLongExtra(EXTRA_OCCURRENCE_EPOCH_DAY, -1L).takeIf { it >= 0 }
                         ?: fallbackOccurrenceDay()
                     val state = stateHolder.state.value
+                    // P2-6: the skip marker keys the intended WAKE date of tonight's start.
+                    val startOccurrence = java.time.LocalDate.ofEpochDay(occurrenceDay)
+                        .atTime(java.time.LocalTime.ofSecondOfDay(prefs.scheduleStartMinutesNow() * 60L))
+                        .atZone(java.time.ZoneId.systemDefault())
                     val post = SchedulePolicy.shouldPostBedtimeNotification(
                         recordingEnabled = prefs.recordingEnabledNow(),
                         scheduleEnabled = prefs.scheduleEnabledNow(),
-                        skipSet = occurrenceDay == prefs.scheduleSkipEpochDayNow(),
+                        skipSet = ScheduleTimes.intendedWakeDay(startOccurrence, prefs.scheduleEndMinutesNow()) ==
+                            prefs.scheduleSkipEpochDayNow(),
                         alreadyRecording = state is MonitorState.Recording ||
                             state is MonitorState.Starting ||
                             state is MonitorState.Delayed,
+                        // P2-1: an open night means the Resume/Finalize decision is pending —
+                        // its interrupted notification stays the re-entry point, and a bedtime
+                        // Start must never silently finalize it behind a new session.
+                        hasOpenSession = sessionRepository.findOpenSession() != null,
                     )
                     if (post) BedtimeNotification.show(context, occurrenceDay)
                 }

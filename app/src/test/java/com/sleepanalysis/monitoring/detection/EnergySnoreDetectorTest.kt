@@ -156,45 +156,6 @@ class EnergySnoreDetectorTest {
     }
 
     @Test
-    fun `rhythm disabled via config accepts a marginal window without history`() {
-        val rhythmOff = EnergySnoreDetector(
-            EnergySnoreDetector.DetectorConfigValues(rhythmEnabled = false),
-        )
-        val result = rhythmOff.classify(snoreLike(dbfs = -28.0, timestampMs = 0L))
-        assertTrue(result.snore)
-    }
-
-    @Test
-    fun `spectral gating disabled via config restores v0 behavior for spectral-bearing features`() {
-        val gatingOff = EnergySnoreDetector(
-            EnergySnoreDetector.DetectorConfigValues(spectralGatingEnabled = false),
-        )
-        val result = gatingOff.classify(
-            features(dbfs = -15.0, lowBandRatio = 0.8, spectralFlatness = 0.9, harmonicRatio = 0.1),
-        )
-        assertTrue(result.snore)
-    }
-
-    @Test
-    fun `spectral gating disabled scores passing windows on the exact v0 confidence scale`() {
-        // The A/B arm must not silently inherit the blended v1 weights: same spectral-bearing
-        // features, gating off -> 0.5 + 0.3*snrMargin + 0.2*bandMargin (no flatness term).
-        val gatingOff = EnergySnoreDetector(
-            EnergySnoreDetector.DetectorConfigValues(spectralGatingEnabled = false),
-        )
-        val result = gatingOff.classify(
-            features(dbfs = -15.0, lowBandRatio = 0.8, timestampMs = 0L, spectralFlatness = 0.2, harmonicRatio = 0.7),
-        )
-        assertTrue(result.snore)
-        assertEquals(
-            0.5 + 0.3 * (((25.0 - 8.0) / 12.0).coerceIn(0.0, 1.0)) +
-                0.2 * (((0.8 - 0.55) / 0.45).coerceIn(0.0, 1.0)),
-            result.confidence,
-            1e-9,
-        )
-    }
-
-    @Test
     fun `blended confidence matches the documented v1 formula exactly`() {
         // snr 20, band 0.8, flatness 0.2: 0.5 + 0.25*snrMargin + 0.15*bandMargin + 0.10*flatnessMargin.
         val result = detector.classify(snoreLike(dbfs = -20.0, timestampMs = 0L))

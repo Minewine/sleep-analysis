@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -23,6 +24,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -54,29 +56,36 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.sleepanalysis.R
 import com.sleepanalysis.data.db.entity.SleepSessionEntity
+import com.sleepanalysis.domain.policy.MissedNightResult
+import com.sleepanalysis.domain.report.CaptureStats
 import com.sleepanalysis.monitoring.service.MonitorState
+import com.sleepanalysis.monitoring.service.canStartNewSession
+import com.sleepanalysis.monitoring.service.clearsInterruptedBanner
+import com.sleepanalysis.ui.components.Formatting
 import com.sleepanalysis.ui.components.formatDateTime
 import com.sleepanalysis.ui.components.formatDuration
 import com.sleepanalysis.ui.components.formatMinutesOfDay
 import java.time.LocalDate
 import java.time.ZonedDateTime
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
 
 @Composable
 fun HomeScreen(
     onOpenReport: (Long) -> Unit,
     onOpenHistory: () -> Unit,
-    onOpenBaseline: () -> Unit,
     onOpenSettings: () -> Unit = {},
-    onOpenDailyLog: () -> Unit = {},
     viewModel: HomeViewModel = hiltViewModel(),
 ) {
     val state by viewModel.monitorState.collectAsStateWithLifecycle()
     val latest by viewModel.latestSession.collectAsStateWithLifecycle()
+    val validityGrade by viewModel.latestValidityGrade.collectAsStateWithLifecycle()
     val preFlight by viewModel.preFlight.collectAsStateWithLifecycle()
     val interrupted by viewModel.interrupted.collectAsStateWithLifecycle()
     val recordingEnabled by viewModel.recordingEnabled.collectAsStateWithLifecycle()
-    val scheduleEnabled by viewModel.scheduleEnabled.collectAsStateWithLifecycle()
     val nextScheduledStart by viewModel.nextScheduledStart.collectAsStateWithLifecycle()
+    val scheduleResolved by viewModel.scheduleResolved.collectAsStateWithLifecycle()
+    val missedNight by viewModel.missedNight.collectAsStateWithLifecycle()
     val context = LocalContext.current
 
     // Re-run the pre-flight checks whenever Home becomes visible.
@@ -100,7 +109,7 @@ fun HomeScreen(
             viewModel.consumeFinished()
             onOpenReport(finished.sessionId)
         }
-        if (state is MonitorState.Recording) viewModel.clearInterrupted()
+        if (clearsInterruptedBanner(state)) viewModel.clearInterrupted()
     }
 
     // Permission-aware start: request what's missing, then start the service.
@@ -157,20 +166,34 @@ fun HomeScreen(
                     onFinalize = {
                         viewModel.finalizeInterrupted { sessionId -> onOpenReport(sessionId) }
                     },
+                    onResume = viewModel::resumeInterrupted,
                 )
             }
 
             StatusCard(
                 state = state,
                 onStart = ::onStartClick,
+                onStartNow = viewModel::startCaptureNow,
                 onStop = viewModel::stopRecording,
+                shouldConfirmStop = viewModel::shouldConfirmStopNow,
                 // Start also gates on the storage pre-flight: below ~500 MB MonitorService bails
                 // out before capture. Stop stays enabled for an active session (StatusCard).
-                startEnabled = recordingEnabled && (preFlight?.storageOk ?: true),
+                // P2-1: Start is disabled while an interrupted night awaits its Resume/Finalize
+                // decision — starting a new night must never silently finalize it RECOVERED.
+                startEnabled = recordingEnabled &&
+                    (preFlight?.storageOk ?: true) &&
+                    canStartNewSession(state),
+                recordingEnabled = recordingEnabled,
             )
-            val nextStart = nextScheduledStart
-            if (scheduleEnabled && recordingEnabled && nextStart != null) {
-                ScheduleRow(nextStart = nextStart, onSkip = viewModel::skipTonight)
+            val rowState = scheduleRowState(
+                scheduleResolved = scheduleResolved,
+                recordingEnabled = recordingEnabled,
+                armedStart = nextScheduledStart,
+            )
+            when (rowState) {
+                ScheduleRowState.Hidden -> Unit
+                ScheduleRowState.Off -> ScheduleOffRow(onOpenSettings = onOpenSettings)
+                is ScheduleRowState.Armed -> ScheduleRow(nextStart = rowState.nextStart, onSkip = viewModel::skipTonight)
             }
             (state as? MonitorState.StartError)?.let {
                 Text(
@@ -190,24 +213,19 @@ fun HomeScreen(
                 },
             )
 
+            MissedNightBanner(missedNight)
+
             LastNightCard(
                 session = latest,
+                validityGrade = validityGrade,
                 statusLabel = viewModel::statusLabel,
                 onOpen = onOpenReport,
             )
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                OutlinedButton(onClick = onOpenDailyLog, modifier = Modifier.weight(1f)) {
-                    Text(stringResource(R.string.factor_title))
-                }
-                OutlinedButton(onClick = onOpenSettings, modifier = Modifier.weight(1f)) {
-                    Text(stringResource(R.string.home_settings))
-                }
+            OutlinedButton(onClick = onOpenSettings, modifier = Modifier.fillMaxWidth()) {
+                Text(stringResource(R.string.home_settings))
             }
             OutlinedButton(onClick = onOpenHistory, modifier = Modifier.fillMaxWidth()) {
                 Text(stringResource(R.string.home_history))
-            }
-            OutlinedButton(onClick = onOpenBaseline, modifier = Modifier.fillMaxWidth()) {
-                Text(stringResource(R.string.home_baseline))
             }
             Text(
                 text = stringResource(R.string.report_disclaimer),
@@ -223,12 +241,18 @@ fun HomeScreen(
 private fun StatusCard(
     state: MonitorState,
     onStart: () -> Unit,
+    onStartNow: () -> Unit,
     onStop: () -> Unit,
+    shouldConfirmStop: suspend () -> Boolean,
     startEnabled: Boolean,
+    recordingEnabled: Boolean,
 ) {
     val recording = state is MonitorState.Recording
     val delayed = state is MonitorState.Delayed
     val active = recording || delayed
+    // Evaluated at TAP time (a 23:00 tap confirms, a 07:00 tap doesn't) — never at composition.
+    // Saveable: the dialog must survive rotation mid-decision.
+    var confirmStop by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(false) }
     // Ticks once per second so the elapsed readout is live while recording (and the countdown
     // live during the start delay).
     var nowTick by remember { mutableStateOf(System.currentTimeMillis()) }
@@ -266,8 +290,15 @@ private fun StatusCard(
                     fontWeight = FontWeight.Bold,
                 )
             }
+            val scope = rememberCoroutineScope()
             Button(
-                onClick = if (active) onStop else onStart,
+                onClick = {
+                    if (!active) onStart()
+                    else if (recording) scope.launch {
+                        if (shouldConfirmStop()) confirmStop = true else onStop()
+                    }
+                    else onStop()
+                },
                 modifier = Modifier.fillMaxWidth(),
                 enabled = active || startEnabled,
             ) {
@@ -276,7 +307,17 @@ private fun StatusCard(
                     else stringResource(R.string.home_start_recording)
                 )
             }
-            if (!active && !startEnabled) {
+            if (delayed) {
+                // Start-delay skip: capture begins at the tap (the wait was armed on purpose —
+                // this only ends it early). Not gated on the master switch, same as the
+                // natural delay expiry it replaces mid-flight: the mic session is already open.
+                OutlinedButton(onClick = onStartNow, modifier = Modifier.fillMaxWidth()) {
+                    Text(stringResource(R.string.home_start_capture_now))
+                }
+            }
+            if (!active && !recordingEnabled) {
+                // Only for the master-switch-off case: the interrupted-night and low-storage
+                // cases have their own cards/hints, and Start is disabled for those too.
                 Text(
                     stringResource(R.string.home_recording_disabled_hint),
                     style = MaterialTheme.typography.bodySmall,
@@ -284,6 +325,24 @@ private fun StatusCard(
                 )
             }
         }
+    }
+    if (confirmStop) {
+        AlertDialog(
+            onDismissRequest = { confirmStop = false },
+            title = { Text(stringResource(R.string.home_stop_confirm_title)) },
+            text = { Text(stringResource(R.string.home_stop_confirm_text)) },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmStop = false
+                    onStop()
+                }) { Text(stringResource(R.string.home_stop_confirm_ok)) }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmStop = false }) {
+                    Text(stringResource(R.string.home_stop_confirm_cancel))
+                }
+            },
+        )
     }
 }
 
@@ -310,10 +369,30 @@ private fun ScheduleRow(nextStart: ZonedDateTime, onSkip: () -> Unit) {
     }
 }
 
+/** Schedule row's off-state: says so, and offers the shortcut to Settings (design: recording controls). */
+@Composable
+private fun ScheduleOffRow(onOpenSettings: () -> Unit) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            stringResource(R.string.settings_schedule_off),
+            style = MaterialTheme.typography.bodyMedium,
+            modifier = Modifier.weight(1f),
+        )
+        TextButton(onClick = onOpenSettings) { Text(stringResource(R.string.home_schedule_enable)) }
+    }
+}
+
 @Composable
 private fun MicIndicator(visible: Boolean) {
     // Visible microphone-active indication (docs/PRIVACY_AND_REGULATORY.md §6 requirement).
-    val description = stringResource(R.string.home_mic_indicator)
+    // State-dependent description: TalkBack must announce off as well as active.
+    val description =
+        if (visible) stringResource(R.string.home_mic_indicator)
+        else stringResource(R.string.home_mic_indicator_inactive)
     Box(
         modifier = Modifier
             .size(16.dp)
@@ -372,20 +451,14 @@ private fun formatStorage(freeMb: Long): String =
     if (freeMb < 0) "?" else if (freeMb >= 1024) "%.1f GB".format(freeMb / 1024f) else "$freeMb MB"
 
 @Composable
-private fun CheckRow(label: String, ok: Boolean) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(label, style = MaterialTheme.typography.bodyMedium)
+private fun CheckRow(label: String, ok: Boolean) =
+    com.sleepanalysis.ui.components.LabeledRow(label) {
         Icon(
             if (ok) Icons.Filled.Check else Icons.Filled.Close,
             contentDescription = null,
             tint = if (ok) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
         )
     }
-}
 
 /** Interrupted-night banner: clearly shows what happened and offers the saved data (P0 hardening). */
 @Composable
@@ -393,6 +466,7 @@ private fun InterruptedCard(
     startedAt: Long,
     savedEvents: Int,
     onFinalize: () -> Unit,
+    onResume: () -> Unit,
 ) {
     Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)) {
         Column(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -408,13 +482,99 @@ private fun InterruptedCard(
             Button(onClick = onFinalize, modifier = Modifier.fillMaxWidth()) {
                 Text(stringResource(R.string.home_interrupted_action))
             }
+            // Text button text is its accessible name (same as the finalize button above).
+            TextButton(onClick = onResume, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)) {
+                Text(stringResource(R.string.home_interrupted_resume))
+            }
         }
+    }
+}
+
+/**
+ * Pure pairing behind the "Captured X – Y" line on the last-night card: capture start (after
+ * a start delay) to session end as formatted clock times, null while the night is still open.
+ * Window start honors the recorded capture start and falls back to the tap time — the same
+ * rule the report's SessionHealthCard applies. A non-positive capture_started_at (payload
+ * garbage) counts as absent: the epoch must never render as the start label.
+ */
+internal fun captureWindowLabel(
+    captureStatsJson: String?,
+    startedAt: Long,
+    endedAt: Long?,
+): Pair<String, String>? {
+    val end = endedAt ?: return null
+    val startMs = CaptureStats.parse(captureStatsJson)?.captureStartMs?.takeIf { it > 0 } ?: startedAt
+    return Formatting.time(startMs) to Formatting.time(end)
+}
+
+/**
+ * What the Home schedule row shows (design: recording controls). Hidden until the first
+ * schedule read completes — until then an off schedule and a not-yet-read one look alike, and
+ * an on-schedule user must never see the off-row flash — and hidden whenever recording is
+ * disabled. Otherwise the scheduler's answer decides: an armed start is shown, null (what it
+ * answers when the schedule is off) is the explicit off-state. 2026-11-23: a row that vanished
+ * without a trace read as the feature being removed, and a night went unrecorded.
+ */
+internal sealed interface ScheduleRowState {
+    data object Hidden : ScheduleRowState
+    data object Off : ScheduleRowState
+    data class Armed(val nextStart: ZonedDateTime) : ScheduleRowState
+}
+
+internal fun scheduleRowState(
+    scheduleResolved: Boolean,
+    recordingEnabled: Boolean,
+    armedStart: ZonedDateTime?,
+): ScheduleRowState = when {
+    !scheduleResolved -> ScheduleRowState.Hidden
+    !recordingEnabled -> ScheduleRowState.Hidden
+    else -> armedStart?.let(ScheduleRowState::Armed) ?: ScheduleRowState.Off
+}
+
+/**
+ * Calm banner above the last-night card: the night before today produced nothing usable
+ * (missed) or was cut short — absence made visible (P0 silent-failure discipline). Skipped
+ * and recorded nights render nothing on purpose: nothing went wrong.
+ */
+@Composable
+private fun MissedNightBanner(result: MissedNightResult?) {
+    when (result) {
+        is MissedNightResult.Missed -> Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+            Column(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(
+                    stringResource(R.string.home_missed_night_title),
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    stringResource(R.string.home_missed_night_body),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        is MissedNightResult.Short -> Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+            Column(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(
+                    stringResource(R.string.home_short_night_title, formatDuration(result.capturedInBedMs)),
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    stringResource(R.string.home_short_night_body),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        else -> Unit
     }
 }
 
 @Composable
 private fun LastNightCard(
     session: SleepSessionEntity?,
+    validityGrade: String?,
     statusLabel: (String) -> String,
     onOpen: (Long) -> Unit,
 ) {
@@ -425,6 +585,21 @@ private fun LastNightCard(
                 Text(stringResource(R.string.home_no_sessions), color = MaterialTheme.colorScheme.onSurfaceVariant)
             } else {
                 Text(formatDateTime(session.startedAt), style = MaterialTheme.typography.bodyLarge)
+                // The actual capture window once the night has ended (post-start-delay start),
+                // same fallback rule as the report's SessionHealthCard: capture_started_at from
+                // the stats JSON, else the tap time. Stats are parsed once per session row,
+                // not per recomposition; startedAt/endedAt are keys too so an open→finalized
+                // transition (endedAt set, captureStats unchanged) still recomputes.
+                val windowLabel = remember(session.id, session.captureStats, session.startedAt, session.endedAt) {
+                    captureWindowLabel(session.captureStats, session.startedAt, session.endedAt)
+                }
+                windowLabel?.let { (start, end) ->
+                    Text(
+                        stringResource(R.string.home_capture_window, start, end),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
                 Row {
                     Text(
                         session.endedAt?.let { formatDuration(it - session.startedAt) } ?: "…",
@@ -437,6 +612,21 @@ private fun LastNightCard(
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                    // The night's stored validity grade (A–D) — the "was this night solid?"
+                    // glance, same source as the report's badge (docs/NIGHT_REPORT.md).
+                    validityGrade?.let { grade ->
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            grade,
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = if (grade == "D") {
+                                MaterialTheme.colorScheme.error
+                            } else {
+                                MaterialTheme.colorScheme.primary
+                            },
+                        )
+                    }
                 }
             }
         }

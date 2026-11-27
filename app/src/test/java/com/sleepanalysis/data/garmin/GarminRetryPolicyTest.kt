@@ -18,6 +18,10 @@ class GarminRetryPolicyTest {
     fun `only rate-limit verdicts are retryable`() {
         assertTrue(GarminRetryPolicy.shouldRetry(429))
         assertTrue(GarminRetryPolicy.shouldRetry(503))
+        // 404 stays terminal at the HTTP layer: Garmin sends it when the night isn't processed
+        // server-side yet — the import turns that into a distinct not-ready outcome, the HTTP
+        // layer never re-tries it.
+        assertFalse(GarminRetryPolicy.shouldRetry(404))
         assertFalse(GarminRetryPolicy.shouldRetry(401))
         assertFalse(GarminRetryPolicy.shouldRetry(500))
         assertFalse(GarminRetryPolicy.shouldRetry(200))

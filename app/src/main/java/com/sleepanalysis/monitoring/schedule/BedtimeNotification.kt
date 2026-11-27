@@ -1,12 +1,11 @@
 package com.sleepanalysis.monitoring.schedule
 
-import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import androidx.core.app.NotificationCompat
-import com.sleepanalysis.MainActivity
+import com.sleepanalysis.monitoring.service.AppNotifications
 import com.sleepanalysis.R
 import com.sleepanalysis.monitoring.service.MonitorService
 
@@ -25,11 +24,7 @@ object BedtimeNotification {
 
     fun show(context: Context, occurrenceEpochDay: Long) {
         createChannel(context)
-        val contentIntent = PendingIntent.getActivity(
-            context, 0,
-            Intent(context, MainActivity::class.java),
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-        )
+        val contentIntent = AppNotifications.openAppPendingIntent(context)
         val startIntent = PendingIntent.getService(
             context, START_REQUEST_CODE,
             Intent(context, MonitorService::class.java)
@@ -59,15 +54,10 @@ object BedtimeNotification {
     }
 
     fun cancel(context: Context) {
-        context.getSystemService(NotificationManager::class.java).cancel(NOTIFICATION_ID)
+        AppNotifications.cancel(context, NOTIFICATION_ID)
     }
 
     private fun createChannel(context: Context) {
-        val channel = NotificationChannel(
-            CHANNEL_ID,
-            context.getString(R.string.notif_channel_scheduled),
-            NotificationManager.IMPORTANCE_HIGH,
-        )
-        context.getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
+        AppNotifications.ensureChannel(context, CHANNEL_ID, R.string.notif_channel_scheduled)
     }
 }

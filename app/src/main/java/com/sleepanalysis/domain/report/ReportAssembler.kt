@@ -2,7 +2,6 @@ package com.sleepanalysis.domain.report
 
 import com.sleepanalysis.data.db.entity.AcousticEventEntity
 import com.sleepanalysis.data.db.entity.AudioClipEntity
-import com.sleepanalysis.data.db.entity.ClinicalBaselineEntity
 import com.sleepanalysis.data.db.entity.EventType
 import com.sleepanalysis.data.db.entity.SessionStatus
 import com.sleepanalysis.data.db.entity.SleepSessionEntity
@@ -68,20 +67,35 @@ enum class GarminLinkStatus {
 
 /** Pure pick of the previous comparable night (COMPLETED/RECOVERED, strictly earlier). */
 object PreviousNight {
+    /**
+     * What makes a session a full night for comparison purposes: a stray short evening test
+     * session (e.g. a 1 h recording stopped at bedtime) must not become the anchor of the
+     * TL;DR "vs previous night" line when a real 7 h night exists just before it.
+     */
+    const val NIGHT_LIKE_MIN_IN_BED_MS: Long =
+        com.sleepanalysis.domain.policy.MissedNightPolicy.NIGHT_LIKE_MIN_IN_BED_MS
+
     fun isEligible(session: SleepSessionEntity): Boolean =
         session.endedAt != null && (session.status == SessionStatus.COMPLETED ||
             session.status == SessionStatus.RECOVERED)
 
     /**
-     * The latest eligible session strictly before [current]'s start; id tie-break keeps the
-     * pick deterministic when two sessions share a start timestamp.
+     * The latest eligible session strictly before [current]'s start, preferring NIGHT-LIKE
+     * ones ([NIGHT_LIKE_MIN_IN_BED_MS] in bed) — the comparison anchors on a full night when
+     * one exists and falls back to the latest eligible session otherwise, so a history of
+     * only short sessions still gets a comparison. The id tie-break keeps the pick
+     * deterministic when two sessions share a start timestamp.
      */
-    fun pick(sessions: List<SleepSessionEntity>, current: SleepSessionEntity): SleepSessionEntity? =
-        sessions.asSequence()
+    fun pick(sessions: List<SleepSessionEntity>, current: SleepSessionEntity): SleepSessionEntity? {
+        val candidates = sessions.asSequence()
             .filter { it.id != current.id && it.startedAt < current.startedAt }
             .filter(::isEligible)
             .sortedWith(compareByDescending<SleepSessionEntity> { it.startedAt }.thenByDescending { it.id })
-            .firstOrNull()
+        val nightLike = candidates.firstOrNull {
+            it.endedAt!! - it.startedAt >= NIGHT_LIKE_MIN_IN_BED_MS
+        }
+        return nightLike ?: candidates.firstOrNull()
+    }
 }
 
 /** The previous completed night, as its stored measurements recorded it — comparison input. */
@@ -118,8 +132,18 @@ data class ClipCoverage(
     val totalSeconds: Long,
 )
 
-/** One vendor stage span (epoch ms) — the sleepLevels timeline of a linked session. */
-data class StageSpan(val startMs: Long, val endMs: Long, val stage: String)
+/**
+ * One vendor stage span (epoch ms) — the sleepLevels timeline of a linked session. [source]
+ * is the writing importer's row source ("WEARABLE" = Health Connect import, "GARMIN" =
+ * Garmin import; null for rows written before the source column existed) — the report's
+ * stage section is labeled with it.
+ */
+data class StageSpan(
+    val startMs: Long,
+    val endMs: Long,
+    val stage: String,
+    val source: String? = null,
+)
 
 /** Which vendor stage a bout fell in, and how much of it that stage covered. */
 data class BoutStage(val stage: String, val coveredFraction: Double)
@@ -145,7 +169,6 @@ data class MorningReport(
     val sessionId: Long,
     val startedAt: Long,
     val endedAt: Long,
-    val status: String,
     val timeZone: String,
     val timeInBedSeconds: Long,
     val snoreSeconds: Long,
@@ -168,7 +191,6 @@ data class MorningReport(
     /** eventId → clip reference for playback. */
     val clips: Map<Long, ClipRef>,
     val integrityNotes: List<String>,
-    val baseline: List<ClinicalBaselineEntity>,
     val modelVersion: String?,
     /** Garmin device-reported metrics for the session's calendar day (may be empty). */
     val garmin: List<GarminMetric> = emptyList(),
@@ -178,6 +200,13 @@ data class MorningReport(
     val capture: CaptureStats? = null,
     /** Derived from capture stats — why a night might look incomplete. */
     val healthWarnings: List<String> = emptyList(),
+    /**
+     * The night's validity grade as the finalize-time NIGHT_VALIDITY row recorded it
+     * (domain/validity.NightValidity) — read back from the row's notes, never re-graded at
+     * report time, so the badge and the trend show the same stored verdict. Null for nights
+     * recorded before the row existed.
+     */
+    val validity: com.sleepanalysis.domain.validity.NightValidity.Result? = null,
     /** Short user note added after the night (user context, never a measurement). */
     val morningNotes: String? = null,
     /**
@@ -234,6 +263,11 @@ data class MorningReport(
     val garminStageMinutes: Map<String, Long> = emptyMap(),
     /** Garmin's own sleep score promoted from the vendor rows (null when not imported). */
     val garminSleepScore: Double? = null,
+    /**
+     * Which importer wrote the stage timeline rows ("WEARABLE" / "GARMIN", see
+     * ReportAssembler.STAGE_SOURCE_*); null without any stage rows.
+     */
+    val stageSource: String? = null,
 )
 
 object ReportAssembler {
@@ -253,11 +287,19 @@ object ReportAssembler {
      */
     const val DEFAULT_MIN_DISPLAYED_NOISE_CONFIDENCE = 0.5
 
+    /**
+     * Stage-row provenance values. "WEARABLE" must stay equal to
+     * HealthConnectImportManager.STAGE_SOURCE (the Health Connect writer); "GARMIN" is the
+     * Garmin import's value. Literals here keep the domain report decoupled from the manager
+     * classes — the UI branches on [STAGE_SOURCE_WEARABLE] when labeling the stage section.
+     */
+    const val STAGE_SOURCE_WEARABLE = "WEARABLE"
+    const val STAGE_SOURCE_GARMIN = "GARMIN"
+
     fun assemble(
         session: SleepSessionEntity,
         events: List<AcousticEventEntity>,
         clips: List<AudioClipEntity>,
-        baseline: List<ClinicalBaselineEntity>,
         garmin: List<GarminMetric> = emptyList(),
         factors: List<FactorEntry> = emptyList(),
         capture: CaptureStats? = null,
@@ -267,6 +309,8 @@ object ReportAssembler {
         noiseMinConfidence: Double = DEFAULT_MIN_DISPLAYED_NOISE_CONFIDENCE,
         /** Stored quiet gaps (schema v10) — replaces the report-time computation when present. */
         quietGapsOverride: List<QuietGap>? = null,
+        /** The stored NIGHT_VALIDITY grade (parsed notes) — passed through verbatim. */
+        validity: com.sleepanalysis.domain.validity.NightValidity.Result? = null,
     ): MorningReport? {
         val endedAt = session.endedAt ?: return null
         val timeInBedSeconds = ((endedAt - session.startedAt).coerceAtLeast(0)) / 1000
@@ -283,32 +327,26 @@ object ReportAssembler {
         }
         val excludedNoise = events.size - visibleEvents.size
 
-        val snoreEvents = visibleEvents.filter { it.type == EventType.SNORE }
-        // Union, not sum — the same math as the stored measurements (SnoreMath): merged
-        // overlapping event windows must count their audio once.
-        val snoreSeconds = com.sleepanalysis.domain.scoring.SnoreMath
-            .unionDurationMs(snoreEvents.map { it.startMs to it.endMs }) / 1000
-        // Same denominator as the measurements: mic-live captured analysis time, not
-        // tap-to-end time in bed (docs/DATA_MODEL.md §5.1). Falls back to time in bed only
-        // when the session has no capture stats at all.
-        val capturedSeconds = capture?.capturedAnalysisMs()?.div(1000)?.takeIf { it > 0 }
-            ?: timeInBedSeconds
-        val sharePercent = if (capturedSeconds > 0) snoreSeconds * 100.0 / capturedSeconds else 0.0
+        // Label-aware snore set (SnoreMath) — computed from ALL events, exactly like the
+        // finalize writer and the label-corrected rewrite (the low-confidence display filter
+        // above is presentation-only: a SNORE-labeled event must count toward the aggregates
+        // whether or not the display filter would hide its row, or the live recompute would
+        // contradict the stored rows the trend reads — docs/NIGHT_REPORT.md §Score). A user
+        // label re-weighs aggregates only: display (timeline, episodes, counts) still shows
+        // every visible event with its detector type.
+        // ONE shared math builder (plan T4a) — identical to finalize's measurement math, so
+        // the report's live recompute always reproduces the stored rows (docs/NIGHT_REPORT.md
+        // §Score). Input is ALL events: the low-confidence display filter above is
+        // presentation-only.
+        val math = snoreNightMath(session.startedAt, endedAt, session.status, capture, events)
+        val snoreEvents = math.snoreEvents
+        val snoreSeconds = math.snoreSeconds
+        val capturedSeconds = math.capturedSeconds
+        val sharePercent = math.sharePercent
 
         val tierCounts = snoreEvents.groupingBy { it.intensityTier }.eachCount()
-        // Score v2 weights intensity by per-tier snoring TIME (the per-tier unions partition
-        // snoreSeconds) — identical math to the finalize-time measurement, so the report's
-        // score always reproduces the stored one (docs/NIGHT_REPORT.md §Score).
-        val tierSeconds: Map<String, Long> = snoreEvents.groupBy { it.intensityTier }
-            .mapValues { (_, tierEvents) ->
-                com.sleepanalysis.domain.scoring.SnoreMath
-                    .unionDurationMs(tierEvents.map { it.startMs to it.endMs })
-            }
-        val score = SnoreScore.compute(
-            snoreSeconds = snoreSeconds,
-            nightSeconds = capturedSeconds,
-            tierSeconds = tierSeconds,
-        )
+        val tierSeconds = math.tierSeconds
+        val score = math.score
 
         val integrityNotes = buildList {
             // First note: a resumed night was not continuously captured — the headline numbers
@@ -367,6 +405,7 @@ object ReportAssembler {
                 windowEndMs = endedAt,
             ),
             capture?.ambientBuckets.orEmpty(),
+            clientSilencedSpans = capture?.clientSilencedSpans.orEmpty(),
         )
 
         // "Hear the worst moments": the longest single spell and the top retained clips
@@ -396,11 +435,14 @@ object ReportAssembler {
             else -> GarminLinkStatus.MISSING
         }
 
+        // One source per report (see singleSourceStages) — the timeline, the bout attribution
+        // and the provenance label all describe the same chosen set.
+        val stageTimeline = singleSourceStages(garminStages)
+
         return MorningReport(
             sessionId = session.id,
             startedAt = session.startedAt,
             endedAt = endedAt,
-            status = session.status,
             timeZone = session.timeZone,
             timeInBedSeconds = timeInBedSeconds,
             snoreSeconds = snoreSeconds,
@@ -418,12 +460,12 @@ object ReportAssembler {
                 .mapNotNull { event -> clipRefsById[event.id]?.let { event.id to it } }
                 .toMap(),
             integrityNotes = integrityNotes,
-            baseline = baseline,
             modelVersion = snoreEvents.firstOrNull()?.modelVersion,
             garmin = garmin,
             dailyFactors = factors,
             capture = capture,
             healthWarnings = healthWarnings,
+            validity = validity,
             morningNotes = session.morningNotes,
             loudestEpisodes = episodes,
             lowConfidenceNoiseExcluded = excludedNoise,
@@ -439,11 +481,12 @@ object ReportAssembler {
             clipCoverage = clipCoverage,
             previousNight = previousNight,
             longestBoutStage = bouts.maxByOrNull { it.endMs - it.startMs }
-                ?.let { longest -> stageForSpan(longest.startMs, longest.endMs, garminStages) },
-            snoreMinutesByStage = snoreMinutesPerStage(snoreEvents, garminStages),
+                ?.let { longest -> stageForSpan(longest.startMs, longest.endMs, stageTimeline) },
+            snoreMinutesByStage = snoreMinutesPerStage(snoreEvents, stageTimeline),
             worstBoutClip = worstBoutClip(bouts, clipRefsById),
             garminStageMinutes = garminStageMinutes(garmin),
             garminSleepScore = garminSleepScore(garmin),
+            stageSource = stageSource(stageTimeline),
         )
     }
 
@@ -470,6 +513,32 @@ object ReportAssembler {
     }
 
     /**
+     * One stage source per report: the per-source replaces ([STAGE_SOURCE_WEARABLE] via the
+     * Health Connect import, [STAGE_SOURCE_GARMIN] via the Garmin import) can leave BOTH
+     * timelines coexisting for one session, and summing overlaps across both double-counts
+     * every stage minute and mislabels provenance. WEARABLE wins when present — the fresher,
+     * span-labeled import — else the whole (Garmin or legacy null-source) set passes through.
+     */
+    internal fun singleSourceStages(stages: List<StageSpan>): List<StageSpan> =
+        if (stages.any { it.source == STAGE_SOURCE_WEARABLE }) {
+            stages.filter { it.source == STAGE_SOURCE_WEARABLE }
+        } else {
+            stages
+        }
+
+    /**
+     * Provenance of the stage timeline rows: "WEARABLE" when any row came from the Health
+     * Connect import, "GARMIN" when only Garmin-written rows exist (legacy rows predate the
+     * source column — they were all Garmin's), null without any stage rows. The report's
+     * stage section is labeled with this instead of assuming Garmin.
+     */
+    fun stageSource(stages: List<StageSpan>): String? = when {
+        stages.any { it.source == STAGE_SOURCE_WEARABLE } -> STAGE_SOURCE_WEARABLE
+        stages.isNotEmpty() -> STAGE_SOURCE_GARMIN
+        else -> null
+    }
+
+    /**
      * Derives human-readable health warnings from capture statistics. Never mentions clinical
      * concepts. The gap check compares processed windows against the CAPTURE window —
      * capture_started_at when persisted (delay-aware), tap-to-stop time in bed otherwise.
@@ -478,6 +547,11 @@ object ReportAssembler {
         val self = this ?: return listOf("Capture statistics unavailable for this session (recorded before health tracking or stats write failed).")
         return buildList {
             val processed = self.windowsProcessed
+            val skipped = self.windowsSkipped ?: 0L
+            // Accounted = processed + skipped: each captured hop increments exactly one
+            // counter (capture_stats schema v5), so thermal throttling reduces analysis
+            // coverage — reported separately below — without reading as a capture gap.
+            val accounted = processed?.plus(skipped)
             val windowSeconds = self.captureStartMs
                 ?.takeIf { endedAtMs > it }
                 ?.let { (endedAtMs - it) / 1000 }
@@ -485,13 +559,13 @@ object ReportAssembler {
             when {
                 // Recovered/interrupted sessions finalize without engine stats: unknown ≠ failed.
                 processed == null -> { /* stats unknown — no capture-quality warnings */ }
-                processed == 0L && windowSeconds > 30 -> {
+                processed == 0L && skipped == 0L && windowSeconds > 30 -> {
                     add("No analysis windows were processed — capture likely failed for most of the session.")
                 }
                 else -> {
                     val expected = windowSeconds * 2 // 0.5 s hop
-                    if (expected > 0 && processed < expected * 0.9) {
-                        add("Capture gaps suspected: $processed of ~$expected expected analysis windows were processed.")
+                    if (expected > 0 && accounted != null && accounted < expected * 0.9) {
+                        add("Capture gaps suspected: $accounted of ~$expected expected capture windows accounted for.")
                     }
                 }
             }
@@ -537,14 +611,11 @@ object ReportAssembler {
     }
 
     /**
-     * Overlap between the Garmin sleep window and the session's capture window, clamped at 0
-     * (a disjoint window — the "wrong night's data" signal — overlaps by exactly 0).
-     */
-    /**
      * Union snoring minutes inside each stage span of [stages] (bursts overlap-counted once
      * via SnoreMath; a burst straddling two stages contributes to both proportionally to its
      * overlap, so the per-stage sums can slightly exceed the night's union when timelines
-     * switch mid-burst). Stages with no snoring are omitted; sorted by minutes, loudest first.
+     * switch mid-burst). Minutes are floored to whole minutes; stages below one full minute of
+ * snoring are dropped after rounding. Sorted by minutes, loudest first.
      * [StageSnoreMinutes.stageMinutes] carries each stage's total span length for context.
      */
     fun snoreMinutesPerStage(
@@ -607,6 +678,10 @@ object ReportAssembler {
             .firstNotNullOfOrNull { clipsById[it.id] }
     }
 
+    /**
+     * Overlap between the Garmin sleep window and the session's capture window, clamped at 0
+     * (a disjoint window — the "wrong night's data" signal — overlaps by exactly 0).
+     */
     fun garminOverlapMs(
         captureStartMs: Long,
         captureEndMs: Long,
@@ -615,10 +690,91 @@ object ReportAssembler {
     ): Long =
         (minOf(captureEndMs, sleepEndMs) - maxOf(captureStartMs, sleepStartMs)).coerceAtLeast(0)
 
+    /**
+     * Coverage-normalized snore share for the TL;DR (docs/NIGHT_REPORT.md §Garmin): snoring
+     * time over the part of Garmin's sleep window the capture actually covers — the honest
+     * ratio when capture started late (dogfood 2026-11-18→19: capture from 01:02, Garmin's
+     * sleep from 22:14). Display-only: the stored snoreSharePercent keeps its finalize-time
+     * denominator, so this is never stored or compared. Null when there is no meaningful
+     * ratio: no overlap at all, or a ratio above 100% (Garmin's overlap is smaller than the
+     * snoring's own span) — omitted rather than clamped to a fabricated 100%.
+     */
+    fun garminNormalizedSharePercent(snoreSeconds: Long, overlapWithCaptureMs: Long): Double? {
+        if (overlapWithCaptureMs <= 0) return null
+        val share = snoreSeconds * 100.0 / (overlapWithCaptureMs / 1000.0)
+        return share.takeIf { it <= 100.0 }
+    }
+
     private fun tierRank(tier: String): Int = when (tier) {
         SnoreScore.IntensityTiers.EPIC -> 4
         SnoreScore.IntensityTiers.LOUD -> 3
         SnoreScore.IntensityTiers.LIGHT -> 2
         else -> 1
     }
+}
+
+
+/**
+ * ONE copy of the night's snore aggregates (plan T4a): the label-aware event set
+ * ([com.sleepanalysis.domain.scoring.SnoreMath.eventsCountingAsSnore]), the union snore
+ * seconds, the captured-analysis denominator (fallback: time in bed), the share percent,
+ * the per-tier unions and the score — shared verbatim by finalizeSession,
+ * reportSnapshotHeadline, labelCorrectedSnoreEstimates and [ReportAssembler.assemble].
+ * Denominators are pinned by ReportSnapshotRefreshTest / ReportAssemblerTest; do not tune
+ * them here.
+ *
+ * [capturedAnalysisSecondsOverride] lets a caller holding live engine stats (finalize,
+ * mid-session) supply the fresher denominator — else it is derived from [capture].
+ * [hasCaptureEvidenceOverride] likewise (finalize reads the engine's windowsProcessed
+ * before the stats are stored).
+ */
+internal data class SnoreNightMath(
+    val snoreEvents: List<com.sleepanalysis.data.db.entity.AcousticEventEntity>,
+    val snoreSeconds: Long,
+    val capturedSeconds: Long,
+    val sharePercent: Double,
+    val tierSeconds: Map<String, Long>,
+    val score: com.sleepanalysis.domain.scoring.SnoreScore.Result,
+    val hasCaptureEvidence: Boolean,
+    val recoveredWithNoEvents: Boolean,
+)
+
+internal fun snoreNightMath(
+    startedAt: Long,
+    endedAt: Long?,
+    status: String,
+    capture: com.sleepanalysis.domain.report.CaptureStats?,
+    events: List<com.sleepanalysis.data.db.entity.AcousticEventEntity>,
+    capturedAnalysisSecondsOverride: Long? = null,
+    hasCaptureEvidenceOverride: Boolean? = null,
+): SnoreNightMath {
+    val snoreEvents = com.sleepanalysis.domain.scoring.SnoreMath.eventsCountingAsSnore(events)
+    val timeInBedSeconds = if (endedAt == null) 0 else ((endedAt - startedAt).coerceAtLeast(0)) / 1000
+    val capturedSeconds = (
+        capturedAnalysisSecondsOverride ?: capture?.capturedAnalysisMs()?.div(1000)
+        )?.takeIf { it > 0 } ?: timeInBedSeconds
+    // Union, not sum — overlapping merged-window events must count their audio once
+    // (docs/DATA_MODEL.md §5.1; com.sleepanalysis.domain.scoring.SnoreMath).
+    val snoreSeconds = com.sleepanalysis.domain.scoring.SnoreMath
+        .unionDurationMs(snoreEvents.map { it.startMs to it.endMs }) / 1000
+    val sharePercent = if (capturedSeconds > 0) snoreSeconds * 100.0 / capturedSeconds else 0.0
+    // Score weights intensity by per-tier snoring TIME (the per-tier unions partition
+    // snoreSeconds) — docs/NIGHT_REPORT.md §Score.
+    val tierSeconds: Map<String, Long> = snoreEvents.groupBy { it.intensityTier }
+        .mapValues { (_, tierEvents) ->
+            com.sleepanalysis.domain.scoring.SnoreMath
+                .unionDurationMs(tierEvents.map { it.startMs to it.endMs })
+        }
+    val score = SnoreScore.compute(snoreSeconds, capturedSeconds, tierSeconds)
+    // P2-7: a night with no processed windows measured nothing — no share/score anywhere.
+    return SnoreNightMath(
+        snoreEvents = snoreEvents,
+        snoreSeconds = snoreSeconds,
+        capturedSeconds = capturedSeconds,
+        sharePercent = sharePercent,
+        tierSeconds = tierSeconds,
+        score = score,
+        hasCaptureEvidence = hasCaptureEvidenceOverride ?: (capture?.anyProcessedWindows() == true),
+        recoveredWithNoEvents = status == SessionStatus.RECOVERED && events.isEmpty(),
+    )
 }

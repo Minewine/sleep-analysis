@@ -18,6 +18,32 @@ object NightSummaryText {
     private val TIME: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm")
     private val DATE: DateTimeFormatter = DateTimeFormatter.ofPattern("EEE d MMM yyyy")
 
+    /**
+     * One derivation of the previous-night comparison (plan T4b): the version gates, the
+     * signed delta and the score comparability — computed ONCE here and consumed by both
+     * the share text ([build]) and the report screen's TL;DR card, which used to
+     * re-implement the gating and diverge (defect D-22's root pattern).
+     */
+    fun previousNightComparison(report: MorningReport): PreviousNightComparison? =
+        report.previousNight?.let { prev ->
+            if (prev.sameDetectorVersion && prev.snoreSeconds != null) {
+                PreviousNightComparison(
+                    compared = true,
+                    deltaSeconds = report.snoreSeconds - prev.snoreSeconds,
+                    scoreComparable = prev.sameScoreFormula && prev.snoreScore != null,
+                )
+            } else {
+                PreviousNightComparison(compared = false, deltaSeconds = 0, scoreComparable = false)
+            }
+        }
+
+    /** The shared previous-night comparison state — see [previousNightComparison]. */
+    data class PreviousNightComparison(
+        val compared: Boolean,
+        val deltaSeconds: Long,
+        val scoreComparable: Boolean,
+    )
+
     fun build(report: MorningReport): String {
         val zone = ZoneId.of(report.timeZone)
         fun time(ms: Long): String = TIME.format(Instant.ofEpochMilli(ms).atZone(zone))
@@ -52,24 +78,33 @@ object NightSummaryText {
             val startMs = report.startedAt + clip.offsetMs
             lines += "Loudest clip: ${time(startMs)} at ${String.format(java.util.Locale.US, "%.1f", clip.peakDbfs)} dBFS."
         }
-        if (report.quietGaps.isNotEmpty()) {
-            val longest = report.quietGaps.maxBy { it.durationMs }
-            lines += "Quiet stretches ≥10 min: ${report.quietGaps.size} (longest " +
-                "${hms(longest.durationMs / 1000)})."
+        // Only verifiable quiet counts as "quiet stretches" (P2-5); hours the mic never
+        // heard get their own line — a shared summary must not claim measured quiet for
+        // spans that were never captured.
+        val gapTotals = QuietStretchTotals.of(report.quietGaps)
+        if (gapTotals.quietCount > 0) {
+            lines += "Quiet stretches ≥10 min: ${gapTotals.quietCount} (longest " +
+                "${hms(gapTotals.quietLongestMs!! / 1000)})."
+        }
+        if (gapTotals.uncapturedCount > 0) {
+            lines += "Not captured ≥10 min: ${gapTotals.uncapturedCount} (longest " +
+                "${hms(gapTotals.uncapturedLongestMs!! / 1000)})."
         }
 
         report.previousNight?.let { prev ->
-            if (prev.sameDetectorVersion && prev.snoreSeconds != null) {
-                val delta = report.snoreSeconds - prev.snoreSeconds
+            val comparison = previousNightComparison(report)!!
+            if (comparison.compared) {
+                val delta = comparison.deltaSeconds
                 val sign = if (delta > 0) "+" else if (delta < 0) "−" else ""
                 // Score comparison gated on the formula version: stored scores from a
                 // different formula are not comparable (docs/NIGHT_REPORT.md §Score).
-                val scorePart = if (prev.sameScoreFormula && prev.snoreScore != null) {
+                val scorePart = if (comparison.scoreComparable) {
                     "score ${report.snoreScore} vs ${prev.snoreScore}"
                 } else {
                     "score ${report.snoreScore}"
                 }
-                lines += "vs previous night: ${hms(prev.snoreSeconds)} snoring " +
+                // compared=true implies prev.snoreSeconds != null (checked in the helper).
+                lines += "vs previous night: ${hms(prev.snoreSeconds!!)} snoring " +
                     "($sign${hms(abs(delta))}), $scorePart."
             } else {
                 lines += "Previous night not compared (different detector/score version)."

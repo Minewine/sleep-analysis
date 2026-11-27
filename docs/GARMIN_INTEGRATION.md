@@ -84,7 +84,8 @@ User taps "Import from Garmin" (Report: this night's date · Settings: any date)
 - **Core flows never block or depend on Garmin.** Recording and the acoustic report run identically with no key, no network, or a failed import; failures surface only in the import state (Settings + report card).
 - Network: `HttpURLConnection` only, 10 s connect / 20 s read timeouts, per-endpoint `try/catch` so one dead endpoint doesn't abort the others.
 - The morning report shows the Garmin section only when metrics exist for the session's calendar day, and offers the one-tap import when they don't.
-- **Morning backfill (auto-retry):** opening a night's report with no/metrics-only Garmin data silently triggers one import for the wake date — rate-limited to one attempt per date plus one more after a 6 h cooldown (`UserPreferences.garminAutoRetryAllowed`) — because the first sync often runs before Garmin's payload is ready. Silent no-op without a key; the manual button always works.
+- **Morning backfill (auto-retry):** opening a night's report with no/metrics-only Garmin data silently triggers one import for the wake date — rate-limited to one attempt per date plus one more after a 6 h cooldown (`UserPreferences.garminAutoRetryAllowed`) — because the first sync often runs before Garmin's payload is ready. Silent no-op without a key; the manual button always works. Every attempt, skip reason and outcome is logged (`GarminImport`/`GarminClient`/`ReportViewModel` tags — status codes and dates only, never key/token/body), and when the budget closes the report's refresh gate the status line says so instead of "not available".
+- **Manual import date (Settings):** the field is the **wake date** and defaults to *today* — the morning import targets last night, whose wake date is today's date. (Yesterday's pre-2026-11-23 default imported the night before the one wanted.)
 
 ## 7. UI labeling rules
 

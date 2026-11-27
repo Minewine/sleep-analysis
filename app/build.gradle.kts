@@ -8,7 +8,7 @@ plugins {
 
 android {
     namespace = "com.sleepanalysis"
-    compileSdk = 35
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.sleepanalysis"
@@ -62,7 +62,7 @@ android {
 
     sourceSets {
         // Exported Room schemas as androidTest assets: MigrationTestHelper replays the real
-        // 1.json…8.json history for the migration test (docs/DATA_MODEL.md §7).
+        // 1.json…14.json history for the migration test (docs/DATA_MODEL.md §7).
         getByName("androidTest").assets.srcDir("$projectDir/schemas")
     }
 }
@@ -90,16 +90,13 @@ tasks.register<Test>("evalFixtures") {
 dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.compose)
-    implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.androidx.activity.compose)
 
     implementation(platform(libs.compose.bom))
     implementation(libs.compose.ui)
     implementation(libs.compose.ui.graphics)
-    implementation(libs.compose.ui.tooling.preview)
     implementation(libs.compose.material3)
     implementation(libs.compose.material.icons)
-    debugImplementation(libs.compose.ui.tooling)
 
     implementation(libs.androidx.navigation.compose)
 
@@ -116,6 +113,8 @@ dependencies {
     implementation(libs.work.runtime.ktx)
     implementation(libs.datastore.preferences)
     implementation(libs.kotlinx.coroutines.android)
+
+    implementation(libs.androidx.health.connect.client)
 
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)
@@ -145,7 +144,9 @@ tasks.register("checkPermissionAllowlist") {
             .map { it.substringBefore('#').trim() }
             .filter { it.isNotEmpty() }
             .toSortedSet()
-        val mergedManifests = fileTree(layout.buildDirectory.dir("intermediates/merged_manifests"))
+        // AGP 8.9 renamed this intermediate dir: merged_manifests → merged_manifest
+        // (exec subdir processDebugManifest → processDebugMainManifest).
+        val mergedManifests = fileTree(layout.buildDirectory.dir("intermediates/merged_manifest"))
             .matching { include("**/debug/**/AndroidManifest.xml") }
             .sortedBy { it.path }
         val merged = mergedManifests.lastOrNull()

@@ -29,6 +29,11 @@ from pathlib import Path
 # export_fixtures.py. sys.path[0] is tools/ both as a script and under pytest.
 from export_fixtures import pull_clip, pull_db
 
+# Shared pure helpers live in analysis/tooling.py (single source for the
+# former per-tool copies); analysis/ is not a package, hence the insert.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "analysis"))
+from tooling import detect_serial, latest_session_id
+
 APP_PACKAGE = "com.sleepanalysis"
 
 
@@ -48,28 +53,6 @@ class Event:
     confidence: float
 
 
-def detect_serial() -> str | None:
-    """First attached device with the app installed; None if unambiguous (0-1 devices)."""
-    out = subprocess.run(
-        ["adb", "devices"], check=True, capture_output=True, text=True
-    ).stdout
-    serials = [
-        line.split()[0]
-        for line in out.splitlines()[1:]
-        if line.strip() and line.split()[1] == "device"
-    ]
-    if len(serials) <= 1:
-        return serials[0] if serials else None
-    for serial in serials:
-        installed = subprocess.run(
-            ["adb", "-s", serial, "shell", "pm", "list", "packages", APP_PACKAGE],
-            capture_output=True,
-            text=True,
-            check=False,  # non-zero is just "device lacks the package"
-        )
-        if APP_PACKAGE in installed.stdout:
-            return serial
-    return None
 
 
 def fetch_events(conn: sqlite3.Connection, session_id: int) -> list[Event]:
@@ -114,12 +97,6 @@ def fetch_session(
         (session_id,),
     ).fetchone()
     return (row[0], row[1], row[2]) if row else None
-
-
-def latest_session_id(conn: sqlite3.Connection) -> int:
-    return conn.execute(
-        "SELECT id FROM sleep_session ORDER BY startedAt DESC LIMIT 1"
-    ).fetchone()[0]
 
 
 def rank_loudest(events: list[Event], limit: int) -> list[Event]:

@@ -17,8 +17,7 @@
     </string>
     <string name="onboarding_what_we_record">What this app records</string>
     <string name="onboarding_what_body">
-        • Microphone audio is processed on this device only — nothing is uploaded (the app has no
-        internet permission at all).\n\n
+        • Microphone audio is processed on this device only — nothing is uploaded.\n\n
         • Full-night audio is never saved. Short clips (a few seconds) are kept for detected events
         so you can verify them, and are deleted automatically after your retention period.\n\n
         • All data stays in this app\'s private storage. You can delete a single night or everything
@@ -40,21 +39,29 @@
     <string name="home_status_recording">Recording… microphone active</string>
     <string name="home_status_starting">Starting…</string>
     <string name="home_status_delayed">Waiting — audio capture starts in %1$s</string>
+    <string name="home_start_capture_now">Start capture now</string>
+    <string name="home_stop_confirm_title">Still up?</string>
+    <string name="home_stop_confirm_text">Stopping ends tonight\'s capture. If you\'re going back to bed, keep recording — the scheduled end will stop it for you.</string>
+    <string name="home_stop_confirm_ok">Stop recording</string>
+    <string name="home_stop_confirm_cancel">Keep recording</string>
     <string name="home_mic_indicator">Microphone active</string>
+    <string name="home_mic_indicator_inactive">Microphone off</string>
     <string name="home_last_night">Last morning report</string>
     <string name="home_no_sessions">No recorded nights yet.</string>
-    <string name="home_view_report">Open report</string>
     <string name="home_history">History</string>
-    <string name="home_baseline">Clinical baseline</string>
     <string name="home_settings">Settings</string>
-    <string name="home_battery_hint_title">Battery optimization is on</string>
-    <string name="home_battery_hint_body">Android may stop overnight recording to save power. For reliable all-night capture, exclude SleepAnalysis from battery optimization.</string>
-    <string name="home_battery_hint_button">Open battery settings</string>
     <string name="home_error_prefix">Could not start: %1$s</string>
     <string name="home_recording_disabled_hint">Recording is disabled in Settings.</string>
     <string name="home_schedule_next_tonight">Scheduled start tonight at %1$s</string>
     <string name="home_schedule_next">Next scheduled start: %1$s</string>
     <string name="home_schedule_skip">Skip tonight</string>
+    <string name="home_schedule_enable">Turn on in Settings</string>
+    <string name="home_capture_window">Captured %1$s – %2$s</string>
+    <!-- Missed-night banner: calm absence made visible; skipped/recorded nights show nothing. -->
+    <string name="home_missed_night_title">No recording last night</string>
+    <string name="home_missed_night_body">Recording did not run between yesterday evening and this morning.</string>
+    <string name="home_short_night_title">Last night captured only %1$s of sleep</string>
+    <string name="home_short_night_body">Recording stopped early — the rest of the night was not captured.</string>
 
     <!-- Report -->
     <string name="report_title">Morning report</string>
@@ -64,7 +71,9 @@
     <string name="report_tldr_prev">vs previous night: %1$s snoring (%2$s) · score %3$s</string>
     <string name="report_tldr_prev_score_nc">score %1$s (previous night not comparable)</string>
     <string name="report_tldr_quiet">%1$d quiet stretches ≥ 10 min · total %2$s</string>
+    <string name="report_tldr_not_captured">%1$d stretches not captured ≥ 10 min · total %2$s</string>
     <string name="report_tldr_prev_hidden">Previous night not compared (missing data or different version)</string>
+    <string name="report_tldr_garmin_normalized">Snored %1$s%% of the captured part of Garmin\'s sleep window</string>
     <string name="report_disclaimer">Estimates from on-device microphone analysis. Not a diagnostic device. For sleep-health questions, talk to a clinician.</string>
     <string name="report_time_in_bed">Time in bed</string>
     <string name="report_snore_time">Snoring time</string>
@@ -81,9 +90,6 @@
     <string name="report_events_title">Acoustic events</string>
     <string name="report_tap_event">Tap the timeline or an event to play its clip.</string>
     <string name="report_no_events">No acoustic events were detected this night.</string>
-    <string name="report_baseline_section">Your clinical baseline (PSG, read-only)</string>
-    <string name="report_baseline_note">Values below were clinically measured during sleep studies and are never compared one-to-one with the phone estimates above — the two are different kinds of measurement.</string>
-    <string name="report_interrupted_note">This session was interrupted and recovered; the report covers only what was recorded.</string>
     <string name="report_no_clip">No clip stored for this event.</string>
     <string name="report_play">Play clip</string>
     <string name="report_stop_playback">Stop playback</string>
@@ -102,30 +108,45 @@
     <string name="report_quality_version_detector">Previous night is not comparable — detector version differs or is unknown.</string>
     <string name="report_quality_version_score">Previous night\'s score is not comparable — different or unknown score formula version.</string>
 
+    <!-- Night validity badge (grade A–D over capture integrity — docs/NIGHT_REPORT.md) -->
+    <string name="validity_summary_a">Good capture conditions</string>
+    <string name="validity_summary_b">Mostly solid data, a few caveats</string>
+    <string name="validity_summary_c">Several caveats — worth reading the notes</string>
+    <string name="validity_summary_d">This night\'s data is unreliable — treat numbers with care</string>
+    <string name="validity_expand_hint">Tap for the details</string>
+    <string name="validity_reason_capture_failed">No audio analysis happened — the capture likely failed.</string>
+    <string name="validity_reason_capture_gaps">Some of the night wasn\'t analyzed (small capture gaps).</string>
+    <string name="validity_reason_capture_gaps_severe">Large parts of the night weren\'t analyzed.</string>
+    <string name="validity_reason_thermal_throttle">The phone ran hot and slowed down analysis for a while.</string>
+    <string name="validity_reason_unexplained_gap">Part of the night has no recording evidence — the app may have been stopped overnight.</string>
+    <string name="validity_reason_clipped_clips">Some saved clips are distorted at the loudest moments.</string>
+    <string name="validity_reason_ambient_noise_high">The room was noticeably louder than in your recent nights.</string>
+    <string name="validity_reason_session_interrupted">Recording was interrupted or ended early.</string>
+    <string name="validity_reason_stats_missing">No capture statistics were stored for this night.</string>
+    <string name="validity_reason_low_snore_signal">Very little snoring was detected — a quiet night for the microphone.</string>
+    <string name="validity_reason_garmin_stale">Garmin data for this night arrived more than a day late.</string>
+    <string name="validity_reason_garmin_stage_mismatch">Garmin\'s stage minutes don\'t add up to its own reported sleep time.</string>
+    <string name="validity_reason_garmin_tst_mismatch">Garmin\'s reported sleep time differs from its sleep window by more than 45 minutes.</string>
+    <string name="validity_reason_garmin_span_overlap">Some of Garmin\'s stage timeline looked corrupted and was left out.</string>
+    <string name="validity_reason_garmin_implausible">Some Garmin values looked implausible and were not imported.</string>
+    <string name="validity_reason_garmin_spo2_distrust">Garmin showed SpO₂ below 90% — wrist readings that low are rough estimates.</string>
+
+    <!-- Report: Garmin validator warnings + stage estimate footnote -->
+    <string name="report_garmin_warning_stale">Imported more than a day after the night ended — the data may be incomplete.</string>
+    <string name="report_garmin_warning_implausible">Some values looked implausible for a wrist device and were not imported.</string>
+    <string name="report_garmin_warning_spo2_distrust">SpO₂ below 90% — wrist accuracy is limited (±2–3 points); treat as approximate.</string>
+    <string name="report_garmin_warning_stage_mismatch">Stage minutes don\'t add up to the reported sleep time.</string>
+    <string name="report_garmin_warning_tst_mismatch">Reported sleep time differs from Garmin\'s own sleep window by more than 45 minutes.</string>
+    <string name="report_garmin_warning_span_overlap">Part of the stage timeline looked corrupted and was left out.</string>
+    <string name="report_garmin_warning_no_overlap">No overlap between Garmin\'s window and this night.</string>
+    <string name="report_garmin_stages_estimate">Stage times are the watch\'s own estimates — research puts their agreement with sleep-lab stages in the fair-to-moderate range.</string>
+
     <!-- Report: top clips -->
     <string name="report_top_clips_title">Top clips</string>
     <string name="report_top_clips_worst_bout">Worst bout</string>
     <string name="report_top_clips_note">Loudest retained audio, highest peak first — tap the row for details.</string>
 
     <!-- Baseline -->
-    <string name="baseline_title">Clinical baseline</string>
-    <string name="baseline_note">Enter the summary numbers from your sleep study reports (e.g. HUG, January 2026). These are stored read-only as your reference: corrections are made by adding a new entry, never by editing.</string>
-    <string name="baseline_add">Add study night</string>
-    <string name="baseline_empty">No clinical baseline stored yet.</string>
-    <string name="baseline_dialog_title">Add clinical study night</string>
-    <string name="baseline_field_date">Study date (YYYY-MM-DD)</string>
-    <string name="baseline_field_lab">Lab</string>
-    <string name="baseline_field_night">Night label</string>
-    <string name="baseline_field_tst">Total sleep time (minutes)</string>
-    <string name="baseline_field_efficiency">Sleep efficiency (%)</string>
-    <string name="baseline_field_arousal">Arousal index (/h)</string>
-    <string name="baseline_field_n3">N3 deep sleep (%)</string>
-    <string name="baseline_field_ahi">AHI (/h)</string>
-    <string name="baseline_field_notes">Notes</string>
-    <string name="baseline_field_source_doc">Source document reference</string>
-    <string name="baseline_save">Save (permanent)</string>
-    <string name="baseline_invalid_date">Study date must be YYYY-MM-DD.</string>
-    <string name="baseline_clinically_measured">Clinically measured</string>
 
     <!-- History -->
     <string name="history_title">Recorded nights</string>
@@ -135,7 +156,7 @@
     <string name="history_delete_confirm_title">Delete this night?</string>
     <string name="history_delete_confirm_body">Deletes the session, its events and its audio clips. Derived measurements are kept for trends.</string>
     <string name="history_delete_all_confirm_title">Delete ALL data?</string>
-    <string name="history_delete_all_confirm_body">This removes every recording, event, clip, measurement AND your clinical baseline. This cannot be undone.</string>
+    <string name="history_delete_all_confirm_body">This removes every recording, event, clip, measurement and factor log entry. This cannot be undone.</string>
     <string name="history_in_progress">in progress</string>
     <string name="history_cancel">Cancel</string>
     <string name="history_deleted_toast">Night deleted</string>
@@ -151,6 +172,7 @@
     <string name="home_interrupted_title">Previous night was interrupted</string>
     <string name="home_interrupted_body">Recording stopped unexpectedly (session started %1$s). %2$d acoustic events were saved up to that point. You can finalize them into a report now.</string>
     <string name="home_interrupted_action">Finalize &amp; view report</string>
+    <string name="home_interrupted_resume">Resume</string>
 
     <!-- Notification -->
     <string name="notif_channel_name">Night recording</string>
@@ -175,7 +197,6 @@
     <string name="service_error_session_missing">Session row missing</string>
 
     <!-- Retention -->
-    <string name="retention_worker_note">Retention: clips are deleted after 7 days, sessions after 90 days (settings in a later phase).</string>
 
     <!-- Settings -->
     <string name="settings_title">Settings</string>
@@ -211,17 +232,33 @@
     <string name="settings_key_clear">Clear key</string>
     <string name="settings_key_store_error">Could not store key: %1$s</string>
     <string name="settings_import_title">Import data for one date</string>
-    <string name="settings_import_date">Date (YYYY-MM-DD)</string>
+    <string name="settings_import_date">Wake date (YYYY-MM-DD) — the morning the night ended</string>
     <string name="settings_import_action">Import from Garmin</string>
     <string name="settings_import_running">Importing %1$s…</string>
     <string name="settings_import_done">Imported %1$d metrics from %2$d endpoints. Raw responses stored.</string>
+    <string name="settings_import_not_ready">Garmin hasn\'t processed this night yet — retry later.</string>
+    <string name="settings_endpoint_status_ok">%1$s → ok (HTTP %2$d)</string>
+    <string name="settings_endpoint_status_not_ready">%1$s → not ready yet (HTTP %2$d)</string>
+    <string name="settings_endpoint_status_no_http">%1$s → no response (network)</string>
+    <string name="settings_endpoint_status_failed">%1$s → failed (HTTP %2$d)</string>
+    <!-- Settings: Health Connect import (manual counterpart of the report's silent backfill) -->
+    <string name="settings_hc_title">Import stage timeline from Health Connect</string>
+    <string name="settings_hc_date">Date (YYYY-MM-DD)</string>
+    <string name="settings_hc_action">Import from Health Connect</string>
+    <string name="settings_hc_unavailable">Health Connect is not available on this device — it needs Android 14 or newer, or the Health Connect app installed on the phone.</string>
+    <string name="settings_hc_running">Importing %1$s…</string>
+    <string name="settings_hc_done">Stored %1$d stage spans from Health Connect.</string>
+    <string name="settings_hc_skipped">%1$d minutes of unreadable stage data were skipped.</string>
+    <string name="settings_hc_not_ready_unavailable">Health Connect is not available right now — install or update it, then import again.</string>
+    <string name="settings_hc_not_ready_permission">Health Connect has not granted read access to this app yet.</string>
+    <string name="settings_hc_not_ready_no_session">No recorded night in this app overlaps that date — record the night here first.</string>
+    <string name="settings_hc_grant">Grant permission</string>
 
     <!-- Report: Garmin section -->
     <string name="report_garmin_section">Garmin (device-reported estimates)</string>
     <string name="report_garmin_note">Vendor algorithms, shown as context next to the acoustic estimates above — never compared numerically with clinical data.</string>
     <string name="report_garmin_empty">No Garmin data imported for this night yet.</string>
     <string name="report_garmin_import">Import from Garmin</string>
-    <string name="report_garmin_window">Garmin sleep window (%1$s)</string>
     <string name="report_garmin_overlap">Overlap with captured night</string>
     <string name="report_garmin_no_overlap">Garmin\'s window does not overlap the captured night — this may be the wrong night\'s data.</string>
     <string name="report_garmin_score">Garmin sleep score</string>
@@ -229,6 +266,19 @@
     <string name="report_garmin_linked">Linked to this night ✓</string>
     <string name="report_garmin_snore_vs_stages">Snoring %1$s this night · stage timeline unavailable (totals only)</string>
     <string name="report_garmin_bout_stage">Longest snore bout fell in %1$s (%2$s%% of it)</string>
+    <string name="report_garmin_refresh">Generate morning report</string>
+    <string name="report_garmin_refresh_syncing">Syncing Garmin &amp; Health Connect…</string>
+    <string name="report_garmin_refresh_updating">Updating report…</string>
+    <string name="report_garmin_refresh_not_available">Garmin data not available yet — showing the acoustic report only.</string>
+    <string name="report_garmin_refresh_retry_blocked">Garmin data not available — an earlier import attempt failed. “Import from Garmin” below retries immediately.</string>
+    <string name="report_garmin_refresh_stages_pending">Stage timeline not available yet — try again later.</string>
+    <string name="report_garmin_refresh_included">Garmin included · %1$s</string>
+
+    <!-- Report: stage timeline section — renders with or without a Garmin link, labeled by the
+         stage rows' provenance (Health Connect import or Garmin import) -->
+    <string name="report_stage_timeline_hc">Stage timeline (Health Connect)</string>
+    <string name="report_stage_timeline_garmin">Stage timeline (Garmin estimate)</string>
+    <string name="report_hc_stages">Stage times come from Health Connect (phone or wearable) — treat them as the device\'s own estimates.</string>
 
     <!-- 7-day trend -->
     <string name="trend_title">7-day trend</string>
@@ -244,6 +294,7 @@
     <string name="trend_row_coverage">clips %1$s%%</string>
     <string name="trend_row_quiet">quiet %1$s (%2$d gaps)</string>
     <string name="trend_row_uncaptured">%1$s no capture</string>
+    <string name="trend_row_missed">missed — no recording</string>
     <string name="trend_provenance_detector">%1$s</string>
     <string name="trend_provenance_score">score %1$s</string>
     <string name="history_trends">Trends</string>
@@ -280,12 +331,10 @@
     <string name="log_share">Export</string>
     <string name="log_empty">No log file exists for this session (recorded before health tracking, or logging failed silently).</string>
 
-    <!-- Settings: debug -->
+    <!-- Settings: noise filter -->
     <string name="settings_noise_filter_title">Low-confidence noise in reports</string>
     <string name="settings_noise_filter_subtitle">Hide noise events whose detector confidence falls below the threshold (kept in the database either way). Off shows everything.</string>
     <string name="settings_noise_filter_off">Off</string>
-    <string name="settings_debug_title">Debug: relax event opening</string>
-    <string name="settings_debug_body">Open an event after a single loud window instead of two consecutive ones. Debug aid for quiet testing only — takes effect on the next recording, which is marked \"dbg1\" in its data.</string>
 
     <!-- Report: event features (debug visibility) -->
     <string name="report_features_title">Detector inputs</string>
@@ -301,15 +350,67 @@
     <string name="report_notes_save">Save</string>
     <string name="report_notes_cancel">Cancel</string>
 
+    <!-- Report: morning rating + quick night tags (self-logged factors, never measurements) -->
+    <string name="report_morning_rating">Rate this night (1 = worst, 5 = best)</string>
+    <string name="report_morning_tags">Night tags</string>
+    <string name="report_morning_save">Save rating &amp; tags</string>
+
     <!-- Report: daily factors -->
     <string name="report_factors_section">Daily factors (self-logged)</string>
     <string name="report_factors_note">You logged these for the day of this recording. User-entered context, not measurements.</string>
 
     <!-- Daily factor log -->
-    <string name="factor_title">Daily log</string>
-    <string name="factor_date">Date (YYYY-MM-DD)</string>
-    <string name="factor_note">Log the day behind tonight\'s recording. Only what you set is stored; entries for a date are replaced when you save again.</string>
-    <string name="factor_alcohol_units">Units (optional)</string>
-    <string name="factor_save">Save</string>
-    <string name="factor_saved">Saved</string>
+
+    <!-- Insights (docs/INSIGHTS.md): tone is "your recordings suggest" — never clinical, never diagnosis. -->
+    <string name="insight_title">Insights</string>
+    <string name="insight_empty">No completed nights yet — insights appear once recordings are finalized.</string>
+    <string name="insight_no_eligible">Your recordings suggest nothing yet: no night passed the quality gate (validity grade A or B, same detector and score versions). Insights appear as eligible nights accumulate.</string>
+    <string name="insight_collecting">Collecting your baseline: %1$d eligible night(s) — 10 needed before patterns are worth showing.</string>
+    <string name="insight_baseline_title">Your baseline</string>
+    <string name="insight_baseline_ready">Median and usual range over your last %1$d eligible nights. Bands are personal, not clinical ranges.</string>
+    <string name="insight_baseline_metric">%1$s: median %2$s, usual range %3$s–%4$s</string>
+    <string name="insight_regularity_title">Sleep regularity (approximate)</string>
+    <string name="insight_regularity_sri">Regularity index %1$.0f — how steady your sleep timing is night to night (approximated from nightly Garmin windows; wrist-derived).</string>
+    <string name="insight_regularity_sjl">Social jetlag ≈ %1$.1f h between weekend and weekday midpoints (approximate — we don\'t know your work schedule).</string>
+    <string name="insight_regularity_collecting">Needs at least 5 nights with Garmin windows to estimate regularity.</string>
+    <string name="insight_confidence_low">low confidence</string>
+    <string name="insight_confidence_moderate">moderate confidence</string>
+    <string name="insight_evidence_link">Show the nights behind this</string>
+    <string name="insight_dismiss">Not useful</string>
+    <string name="insight_show_hidden">Show hidden (%1$d)</string>
+    <string name="insight_hide_hidden">Hide hidden (%1$d)</string>
+    <string name="insight_restore">Show again</string>
+    <string name="history_insights">Insights</string>
+
+    <!-- Insight metric display names -->
+    <string name="insight_metric_snore_share">Snoring share of night</string>
+    <string name="insight_metric_longest_bout_ms">Longest snore bout</string>
+    <string name="insight_metric_score">Snore score</string>
+    <string name="insight_metric_garmin_awake_min">Awake minutes (Garmin)</string>
+    <string name="insight_metric_rmssd_ms">rMSSD (Garmin)</string>
+    <string name="insight_metric_bedtime_std_min">Bedtime variability</string>
+    <string name="insight_metric_sri">Sleep regularity index</string>
+    <string name="insight_metric_social_jetlag_h">Social jetlag</string>
+    <string name="insight_metric_snore_share_second_half">Late-night snoring</string>
+
+    <!-- Insight rule copy (names drift-tested against docs/INSIGHTS.md) -->
+    <string name="insight_rule_bedtime_variability">Your recordings suggest your bedtime timing has been more scattered than usual lately. For context from large studies: ~1 h night-to-night variation looks stable, ~3 h looks erratic — this is a description, not a threshold and not advice.</string>
+    <string name="insight_rule_sri_dip">Your recordings suggest your sleep regularity has been lower than your recent norm. Research links steadier timing with feeling more rested; whether making it steadier improves anything for you is not established.</string>
+    <string name="insight_rule_social_jetlag">Your weekend nights are ending more than an hour later than your weekday nights — a \"social jetlag\" flag from observational research. Approximate by convention: the app doesn\'t know your work schedule.</string>
+    <string name="insight_rule_second_half_alcohol">On this alcohol-logged night, snoring concentrated in the second half. Alcohol research describes this pattern — deeper sleep early, more disturbed sleep later. Your recordings suggest; they don\'t diagnose.</string>
+    <string name="insight_rule_second_half_untagged">Snoring concentrated in the second half of this night. This can be entirely normal: late-night REM sleep brings irregular breathing and awakenings, and an untagged late-night wake does not mean something is wrong.</string>
+    <string name="insight_rule_baseline_excursion">%1$s was outside your usual range tonight. Your recordings suggest — a single night can always be chance, and the band is personal, not clinical.</string>
+    <string name="insight_rule_alcohol_nights">On nights you logged alcohol, your recordings suggest more awake time than on nights without. No amount or cutoff makes this safe or unsafe — the comparison is descriptive.</string>
+    <string name="insight_rule_caffeine_nights">On nights you logged caffeine after 14:00, your recordings suggest somewhat more awake time or shorter sleep than on other nights. Research reports small average effects; these numbers are yours.</string>
+    <string name="insight_rule_exercise_evening">On this exercise-logged night, awake time ran above your usual range. We can\'t tell when or how hard you exercised — the app records only the fact — so this is association, not a mechanism.</string>
+    <string name="insight_rule_stress_high">On nights you logged high stress, your wrist rMSSD ran lower and awake time higher than your usual range. Stress physiology and wrist sensors are both imperfect — your recordings suggest; they don\'t diagnose.</string>
+
+    <!-- Bulk clip labeling (LabelingScreen) -->
+    <string name="labeling_title">Label clips</string>
+    <string name="labeling_open">Label clips</string>
+    <string name="labeling_progress">%1$d / %2$d labeled</string>
+    <string name="labeling_hide_labeled">Hide labeled</string>
+    <string name="labeling_empty">No clips to label for this session.</string>
+    <string name="labeling_all_done">Every clip is labeled — thank you. Toggle "Hide labeled" off to review or change labels.</string>
+    <string name="labeling_labeled_as">Labeled: %1$s</string>
 </resources>

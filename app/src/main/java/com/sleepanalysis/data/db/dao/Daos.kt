@@ -6,9 +6,10 @@ import androidx.room.Query
 import androidx.room.Transaction
 import com.sleepanalysis.data.db.entity.AcousticEventEntity
 import com.sleepanalysis.data.db.entity.AudioClipEntity
-import com.sleepanalysis.data.db.entity.ClinicalBaselineEntity
 import com.sleepanalysis.data.db.entity.MeasurementEntity
+import com.sleepanalysis.data.db.entity.ModelRegistryEntity
 import com.sleepanalysis.data.db.entity.RawPayloadEntity
+import com.sleepanalysis.data.db.entity.ReportSnapshotEntity
 import com.sleepanalysis.data.db.entity.SleepSessionEntity
 import com.sleepanalysis.data.db.entity.QuietGapEntity
 import com.sleepanalysis.data.db.entity.SleepStageEntity
@@ -22,9 +23,9 @@ interface SleepSessionDao {
 
     @Query(
         "UPDATE sleep_session SET endedAt = :endedAt, status = :status, " +
-            "captureStats = :captureStats, audioBytesTotal = :audioBytes WHERE id = :id"
+            "captureStats = :captureStats WHERE id = :id"
     )
-    suspend fun finalize(id: Long, endedAt: Long, status: String, captureStats: String?, audioBytes: Long)
+    suspend fun finalize(id: Long, endedAt: Long, status: String, captureStats: String?)
 
     @Query("SELECT * FROM sleep_session WHERE endedAt IS NULL ORDER BY startedAt DESC LIMIT 1")
     suspend fun findOpen(): SleepSessionEntity?
@@ -41,9 +42,6 @@ interface SleepSessionDao {
 
     @Query("SELECT * FROM sleep_session ORDER BY startedAt DESC")
     fun observeAll(): Flow<List<SleepSessionEntity>>
-
-    @Query("SELECT startedAt FROM sleep_session ORDER BY startedAt DESC")
-    suspend fun allStartTimes(): List<Long>
 
     @Query("SELECT * FROM sleep_session")
     suspend fun all(): List<SleepSessionEntity>
@@ -69,13 +67,30 @@ interface SleepSessionDao {
     suspend fun deleteAll()
 }
 
+/** One clip-backed event with its clip's relative path — the labeling work set. */
+data class ClipBackedEventRow(
+    @androidx.room.Embedded val event: com.sleepanalysis.data.db.entity.AcousticEventEntity,
+    val clipPath: String,
+)
+
 @Dao
 interface AcousticEventDao {
     @Insert
     suspend fun insert(event: AcousticEventEntity): Long
 
+    @Query(
+        "SELECT e.*, c.filePath AS clipPath FROM acoustic_event e " +
+            "JOIN audio_clip c ON c.id = e.clipId " +
+            "WHERE e.sessionId = :sessionId ORDER BY e.startMs"
+    )
+    suspend fun clipBackedEvents(sessionId: Long): List<ClipBackedEventRow>
+
     @Query("SELECT * FROM acoustic_event WHERE sessionId = :sessionId ORDER BY startMs")
     suspend fun bySession(sessionId: Long): List<AcousticEventEntity>
+
+    /** The labeled event's session — the label recompute rewrites that session's measurements. */
+    @Query("SELECT * FROM acoustic_event WHERE id = :eventId")
+    suspend fun byId(eventId: Long): AcousticEventEntity?
 
     /** Detector version of the session's first snore event — cross-night comparison guard. */
     @Query(
@@ -87,13 +102,13 @@ interface AcousticEventDao {
     @Query("SELECT COUNT(*) FROM acoustic_event WHERE sessionId = :sessionId")
     suspend fun countForSession(sessionId: Long): Int
 
-    @Query("UPDATE acoustic_event SET userLabel = :label, labeledAt = :labeledAt WHERE id = :eventId")
-    suspend fun setUserLabel(eventId: Long, label: String?, labeledAt: Long?)
+    @Query("UPDATE acoustic_event SET userLabel = :label WHERE id = :eventId")
+    suspend fun setUserLabel(eventId: Long, label: String?)
 
     /**
      * Retention: clears the clip link of events whose clip rows are being deleted, in the
-     * same transaction as the row deletion (RetentionWorker) — belt-and-braces alongside the
-     * FK's ON DELETE SET_NULL, keeping the clip↔event invariant explicit (DATA_MODEL.md §3.5).
+     * same transaction as the row deletion (RetentionWorker) — acoustic_event.clipId has no
+     * foreign key (v14), so this query is the only thing that clears the link.
      */
     @Query("UPDATE acoustic_event SET clipId = NULL WHERE clipId IN (:clipIds)")
     suspend fun clearClipIds(clipIds: List<Long>)
@@ -176,22 +191,30 @@ interface MeasurementDao {
         deleteGarminForTypes(periodStart, rows.map { it.measurementType }.distinct())
         insertAll(rows)
     }
-}
 
-/** Clinical baseline is insert + read only — immutability is enforced (docs/DATA_MODEL.md §4). */
-@Dao
-interface ClinicalBaselineDao {
-    @Insert
-    suspend fun insert(baseline: ClinicalBaselineEntity): Long
+    /**
+     * Deletes the PHONE rows of one session for the given measurement types ONLY — the label
+     * recompute rewrites the snore aggregates (MeasurementRecorder.replacePhoneEstimates) and
+     * must never touch the session's other rows (docs/DATA_MODEL.md §3.2).
+     */
+    @Query(
+        "DELETE FROM measurement WHERE sourceType = 'PHONE' AND sessionId = :sessionId " +
+            "AND measurementType IN (:types)"
+    )
+    suspend fun deletePhoneForSession(sessionId: Long, types: List<String>)
 
-    @Query("SELECT * FROM clinical_baseline ORDER BY studyDate DESC, id DESC")
-    fun observeAll(): Flow<List<ClinicalBaselineEntity>>
-
-    @Query("SELECT * FROM clinical_baseline ORDER BY studyDate")
-    suspend fun all(): List<ClinicalBaselineEntity>
-
-    @Query("DELETE FROM clinical_baseline")
-    suspend fun deleteAll()
+    /**
+     * Atomic delete-then-insert so a label recompute can never duplicate a session's PHONE
+     * rows (mirrors [replaceGarminForDay]). The delete is scoped to [types] — the FULL set of
+     * types being rewritten, not just the incoming rows': a recompute that stops producing a
+     * row (intensity rows when no snoring remains) must delete it, never leave a stale value.
+     * Unlike [replaceGarminForDay], empty [rows] with a non-empty [types] delete-only.
+     */
+    @Transaction
+    suspend fun replacePhoneForSession(sessionId: Long, types: List<String>, rows: List<MeasurementEntity>) {
+        deletePhoneForSession(sessionId, types)
+        insertAll(rows)
+    }
 }
 
 /** Raw vendor payloads (docs/GARMIN_INTEGRATION.md). Upsert per (source, endpoint, date). */
@@ -210,7 +233,7 @@ interface RawPayloadDao {
     suspend fun deleteAll()
 }
 
-/** Vendor sleep-stage timeline of one session (schema v9). Device-reported context only. */
+/** Vendor sleep-stage timeline of one session (schema v9; per-source since v14). Device-reported context only. */
 @Dao
 interface SleepStageDao {
     @Insert
@@ -219,16 +242,22 @@ interface SleepStageDao {
     @Query("SELECT * FROM sleep_stage WHERE sessionId = :sessionId ORDER BY startMs")
     suspend fun bySession(sessionId: Long): List<SleepStageEntity>
 
-    @Query("DELETE FROM sleep_stage WHERE sessionId = :sessionId")
-    suspend fun deleteForSession(sessionId: Long)
+    /** Deletes ONE source's rows only — the GARMIN and WEARABLE timelines coexist (schema v14). */
+    @Query("DELETE FROM sleep_stage WHERE sessionId = :sessionId AND source = :source")
+    suspend fun deleteForSession(sessionId: Long, source: String)
 
+    /** Device purge — deliberately unscoped, wipes every source (docs/DATA_MODEL.md §6). */
     @Query("DELETE FROM sleep_stage")
     suspend fun deleteAll()
 
-    /** Atomic replace so a re-import can never duplicate a night's stage timeline. */
+    /** True (=0) when the session carries no timeline from [source] — the needs-import gate. */
+    @Query("SELECT COUNT(*) FROM sleep_stage WHERE sessionId = :sessionId AND source = :source")
+    suspend fun countForSession(sessionId: Long, source: String): Int
+
+    /** Atomic replace so a re-import can never duplicate a session's stage timeline. */
     @Transaction
-    suspend fun replaceForSession(sessionId: Long, stages: List<SleepStageEntity>) {
-        deleteForSession(sessionId)
+    suspend fun replaceForSession(sessionId: Long, source: String, stages: List<SleepStageEntity>) {
+        deleteForSession(sessionId, source)
         insertAll(stages)
     }
 }
@@ -277,4 +306,49 @@ interface UserFactorDao {
         deleteForDate(date)
         insertAll(factors)
     }
+}
+
+/**
+ * Finalize-time report snapshots (schema v12, docs/DATA_MODEL.md §3.7). Upsert per session
+ * (unique index) — a re-write replaces, never duplicates; rows follow session retention via
+ * the FK CASCADE and delete-all purges the rest.
+ */
+@Dao
+interface ReportDao {
+    @Insert(onConflict = androidx.room.OnConflictStrategy.REPLACE)
+    suspend fun upsert(report: ReportSnapshotEntity): Long
+
+    @Query("SELECT * FROM report WHERE sessionId = :sessionId")
+    suspend fun bySession(sessionId: Long): ReportSnapshotEntity?
+
+    @Query("DELETE FROM report")
+    suspend fun deleteAll()
+}
+
+/**
+ * Temporal model-version registry (schema v12, docs/DATA_MODEL.md §3.8): which DETECTOR /
+ * SCORE versions produced which nights. Reads for the eligibility gates: the current row
+ * per kind, the full history, and the version(s) valid at a given instant (range query).
+ */
+@Dao
+interface ModelRegistryDao {
+    @Insert
+    suspend fun insert(row: ModelRegistryEntity): Long
+
+    /** Closes every still-open row of [kind] except the just-inserted [exceptId] (validTo = now). */
+    @Query(
+        "UPDATE model_registry SET validToUtc = :validToUtc " +
+            "WHERE kind = :kind AND validToUtc IS NULL AND id != :exceptId"
+    )
+    suspend fun closeOpenRows(kind: String, validToUtc: Long, exceptId: Long)
+
+    /** The current version of [kind] — null when no finalize has registered one yet. */
+    @Query(
+        "SELECT * FROM model_registry WHERE kind = :kind AND validToUtc IS NULL " +
+            "ORDER BY validFromUtc DESC LIMIT 1"
+    )
+    suspend fun currentForKind(kind: String): ModelRegistryEntity?
+
+    @Query("DELETE FROM model_registry")
+    suspend fun deleteAll()
 }

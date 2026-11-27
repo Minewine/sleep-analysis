@@ -15,7 +15,7 @@ import javax.inject.Singleton
  * Arms/cancels the two nightly alarms (bedtime start, end time). Start and end are computed
  * independently from "now" so that after the start fires, tonight's end and tomorrow's start
  * both still get armed. Exact when the exact-alarm permission is granted, otherwise an inexact
- * ~10-minute window (surface the fallback in Settings). Re-armed on boot, on every settings
+ * ~10-minute window (surface the fallback in Settings). Re-armed on boot, on every HomeViewModel creation, on every settings
  * change, and at the end of every start/stop receiver run.
  */
 @Singleton
@@ -33,7 +33,9 @@ class RecordingScheduler @Inject constructor(
             return
         }
         val now = ZonedDateTime.now()
-        val start = ScheduleTimes.nextStart(now, prefs.scheduleStartMinutesNow(), prefs.scheduleSkipEpochDayNow())
+        val start = ScheduleTimes.nextStart(
+            now, prefs.scheduleStartMinutesNow(), prefs.scheduleEndMinutesNow(), prefs.scheduleSkipEpochDayNow(),
+        )
         val end = ScheduleTimes.nextOccurrence(now, prefs.scheduleEndMinutesNow())
         val startPi = PendingIntent.getBroadcast(
             context, START_REQUEST_CODE,
@@ -72,15 +74,32 @@ class RecordingScheduler @Inject constructor(
     /** Null when the master switch or the schedule is off — for UI notes. */
     suspend fun nextStartOrNull(now: ZonedDateTime): ZonedDateTime? {
         if (!prefs.recordingEnabledNow() || !prefs.scheduleEnabledNow()) return null
-        return ScheduleTimes.nextStart(now, prefs.scheduleStartMinutesNow(), prefs.scheduleSkipEpochDayNow())
+        return ScheduleTimes.nextStart(
+            now, prefs.scheduleStartMinutesNow(), prefs.scheduleEndMinutesNow(), prefs.scheduleSkipEpochDayNow(),
+        )
     }
 
-    /** Marks the next scheduled start as skipped for one night and re-arms. */
+    /**
+     * Marks the next scheduled start as skipped for one night and re-arms. The marker keys
+     * the night's INTENDED WAKE date (P2-6) — the wake date the skipped night would have had
+     * — so every reader (banner, trends, this scheduler's own filter) agrees even when the
+     * schedule starts after midnight.
+     */
     suspend fun skipNextStart(): ZonedDateTime? {
         val next = nextStartOrNull(ZonedDateTime.now()) ?: return null
-        prefs.setScheduleSkipEpochDay(next.toLocalDate().toEpochDay())
+        prefs.setScheduleSkipEpochDay(ScheduleTimes.intendedWakeDay(next, prefs.scheduleEndMinutesNow()))
         arm()
         return next
+    }
+
+    /**
+     * The ONE skip+refresh path (plan T4c): skips tonight's armed start, re-arms, and
+     * returns the REFRESHED next start (null = schedule off) — Home and Settings both
+     * publish this into their next-start state.
+     */
+    suspend fun skipTonight(): ZonedDateTime? {
+        skipNextStart()
+        return nextStartOrNull(ZonedDateTime.now())
     }
 
     private companion object {

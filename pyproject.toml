@@ -7,13 +7,20 @@ description = "Python tooling for the sleep-analysis Android app (tools/)"
 requires-python = ">=3.12"
 dependencies = []
 
+# analysis/night_report.py (matplotlib charts + numpy stats), invoked by
+# tools/morning_report.sh step 5; `uv sync --extra analysis` provides them
+# without the per-call `uv run --with matplotlib --with numpy` flags.
+[project.optional-dependencies]
+analysis = ["matplotlib>=3.8", "numpy>=1.26"]
+
 [dependency-groups]
 dev = ["pytest>=9", "ruff>=0.8"]
 
 [tool.pytest.ini_options]
 # tools/ has no __init__.py and tests `import export_fixtures` — pytest's default
 # "prepend" import mode inserts tools/ on sys.path, which that relies on.
-testpaths = ["tools"]
+# analysis/ carries its own tests too (night_validity mirror; same sys.path pattern).
+testpaths = ["tools", "analysis"]
 addopts = "-q"
 
 [tool.ruff]

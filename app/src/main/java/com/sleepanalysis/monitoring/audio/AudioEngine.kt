@@ -2,11 +2,16 @@ package com.sleepanalysis.monitoring.audio
 
 import android.annotation.SuppressLint
 import android.media.AudioFormat
+import android.media.AudioManager
 import android.media.AudioRecord
+import android.media.AudioRecordingConfiguration
 import android.media.MediaRecorder
 import android.media.audiofx.AutomaticGainControl
+import android.os.Handler
+import android.os.Looper
 import android.os.Process
 import com.sleepanalysis.data.files.ClipStore
+import com.sleepanalysis.domain.report.ClientSilencedSpan
 import com.sleepanalysis.domain.report.SkippedHopSpan
 import com.sleepanalysis.monitoring.detection.AudioFeatures
 import com.sleepanalysis.monitoring.detection.DetectorConfig
@@ -21,7 +26,9 @@ import kotlin.math.sqrt
  * Overnight capture pipeline (docs/ARCHITECTURE.md §5). Runs entirely on one capture thread:
  *
  *   AudioRecord (16 kHz mono PCM16) → 1 s windows @ 0.5 s hop → features (dBFS, low-band ratio,
- *   rolling noise floor) → [SnoreDetector] → [EventDetector] → finalized events →
+ *   cached rolling noise floor) → pre-spectral level gate ([SpectralGatePolicy]: quiet windows
+ *   with a fully idle detector skip the spectral compute) → [SnoreDetector] → [EventDetector] →
+ *   finalized events →
  *   clip flush from the in-memory ring buffer (RAW, pre-gain samples) → [ClipPolicy] gates →
  *   [ClipStore] (float mic gain + −1 dBFS block peak-limit at write time).
  *
@@ -39,6 +46,14 @@ class AudioEngine(
     private val clipStore: ClipStore,
     private val listener: Listener,
     private val config: Config = Config(),
+    /**
+     * System AudioManager, used to register an [AudioManager.AudioRecordingCallback] that
+     * records spans where the OS silenced this client (mic privacy toggle, a call, another
+     * app holding the mic — the OS delivers zeros without any error, P2-4). Null on the
+     * unit-test JVM, which has no audio service; capture then simply has no silenced-client
+     * evidence beyond the digital-silence bucket rule.
+     */
+    private val audioManager: AudioManager? = null,
 ) {
 
     data class Config(
@@ -70,6 +85,12 @@ class AudioEngine(
          * count the whole session, not just the current engine run.
          */
         val initialClipCount: Int = 0,
+        /**
+         * No ring-buffer progress for this long means the mic is not delivering samples
+         * (wedged AudioRecord.read, or reads returning nothing forever): onCaptureError →
+         * the session finalizes INTERRUPTED instead of "recording" silence (P2-4).
+         */
+        val stallTimeoutMs: Long = CaptureStallWatchdog.DEFAULT_STALL_LIMIT_MS,
     )
 
     interface Listener {
@@ -106,10 +127,14 @@ class AudioEngine(
         val thermalThrottleEvents: Int,
         /** Events dropped by the relative level gate (DetectorConfig.gateThresholdDbfs). */
         val levelGateSkipped: Int = 0,
+        /** Analyzed windows whose spectral compute the pre-spectral level gate skipped ([SpectralGatePolicy]). */
+        val spectralSkipped: Long = 0,
         /** Thermally skipped analysis hops as merged epoch spans — analysis-correctable coverage. */
         val skippedHopSpans: List<SkippedHopSpan> = emptyList(),
         /** Mean window dBFS per 5-minute epoch bucket — quiet-sleep vs no-capture evidence. */
         val ambientBuckets: List<com.sleepanalysis.domain.report.AmbientLevelBucket> = emptyList(),
+        /** Spans where the OS silenced this capture client — the mic delivered zeros (P2-4). */
+        val clientSilencedSpans: List<ClientSilencedSpan> = emptyList(),
     )
 
     private val windowSamples = (config.sampleRate * config.windowMs / 1000).toInt()
@@ -134,7 +159,36 @@ class AudioEngine(
      */
     private val rawWindowBuf = ShortArray(windowSamples)
     private val rawHopBuf = ShortArray(hopSamples)
-    private val ambientBuckets = AmbientLevelBuckets()
+    private val ambientBuckets = AmbientLevelBuckets(windowSpanMs = config.hopMs)
+
+    /**
+     * Stall watchdog (P2-4): armed when audio capture begins, reported once per hop read.
+     * Shared by [readBlocking]'s `got == 0` retry bound (bounds the previously unbounded
+     * sleep-retry loop) and a watchdog thread that catches a read that never returns at all.
+     */
+    private val stallWatchdog = CaptureStallWatchdog(stallLimitMs = config.stallTimeoutMs)
+    private var watchdogThread: Thread? = null
+
+    /**
+     * Silenced-client state (P2-4): spans where the OS silenced this capture client. The
+     * recording callback fires on the main-looper handler while the capture thread reads —
+     * all access holds [silencedLock].
+     */
+    private val silencedLock = Any()
+    private val clientSilencedSpanList = mutableListOf<ClientSilencedSpan>()
+    private var silencedSinceMs = 0L
+
+    @Volatile private var activeAudioSessionId = 0
+
+    private val recordingCallback = object : AudioManager.AudioRecordingCallback() {
+        override fun onRecordingConfigChanged(configs: MutableList<AudioRecordingConfiguration>) {
+            // Our session absent from the list is not evidence of silence — only an explicit
+            // isClientSilenced flag on the matching config marks the span as unheard.
+            val silenced = configs.firstOrNull { it.clientAudioSessionId == activeAudioSessionId }
+                ?.isClientSilenced == true
+            onClientSilenceChanged(silenced, System.currentTimeMillis())
+        }
+    }
     private val eventDetector = EventDetector(
         enterWindows = config.enterWindows,
         windowMs = config.windowMs,
@@ -153,6 +207,17 @@ class AudioEngine(
     private val noiseFloorRing = DoubleArray(DetectorConfig.NOISE_FLOOR_WINDOW_COUNT)
     private var noiseFloorCount = 0
     private var noiseFloorIndex = 0
+
+    /**
+     * Cached rolling noise floor ([NoiseFloorCache]): same percentile over the same 240-sample
+     * ring as the per-window copy+sort it replaced, recomputed per push while the ring fills
+     * and every 8 pushes (4 s) once full — the old per-window copy+sort dropped ~100 MB of
+     * transient arrays per night on the capture thread.
+     */
+    private val noiseFloorCache = NoiseFloorCache(
+        ringSize = DetectorConfig.NOISE_FLOOR_WINDOW_COUNT,
+        percentile = DetectorConfig.NOISE_FLOOR_PERCENTILE,
+    )
 
     /**
      * Ambient levels for session statistics. Mutated by the capture thread, iterated by
@@ -179,10 +244,15 @@ class AudioEngine(
     private var agc: AutomaticGainControl? = null
 
     // Capture-thread-only counters. @Volatile because stats() reads them from other threads.
+    // Disjoint since capture_stats schema v5: each captured hop increments exactly one —
+    // windowsProcessed counts classified windows, windowsSkipped thermally skipped hops
+    // (docs/DATA_MODEL.md §5.1); their sum × hop is the captured analysis time.
     @Volatile private var windowsProcessed = 0L
     @Volatile private var windowsSkipped = 0L
     @Volatile private var thermalThrottleEvents = 0
     @Volatile private var levelGateSkipped = 0
+    /** Own counter — windowsSkipped reports thermal skips and feeds validity/stats semantics. */
+    @Volatile private var spectralSkipped = 0L
     @Volatile private var clipBytes = 0L
     /** Hour bucket of the last clip_budget_skipped log — rate-limits the session log. Capture-thread-only. */
     private var lastBudgetLogBucket = Long.MIN_VALUE
@@ -195,16 +265,27 @@ class AudioEngine(
         eventDetector.reset()
         noiseFloorCount = 0
         noiseFloorIndex = 0
+        noiseFloorCache.reset()
         synchronized(statsLock) { ambientDbfs.clear() }
+        synchronized(silencedLock) {
+            clientSilencedSpanList.clear()
+            silencedSinceMs = 0L
+        }
         windowsProcessed = 0
         windowsSkipped = 0
         thermalThrottleEvents = 0
         levelGateSkipped = 0
+        spectralSkipped = 0
         lastBudgetLogBucket = Long.MIN_VALUE
+        lastCooldownLogBucket = Long.MIN_VALUE
         clipBytes = 0
         skippedHops.reset()
         captureStartEpochMs = 0L
         thread = Thread({ captureLoop() }, "SleepAudioCapture").apply { start() }
+        watchdogThread = Thread({ watchdogLoop() }, "SleepAudioWatchdog").apply {
+            isDaemon = true
+            start()
+        }
     }
 
     /** Signals the loop to finish; still-open events are flushed. Blocks until stopped. */
@@ -218,6 +299,8 @@ class AudioEngine(
             }
         }
         thread = null
+        watchdogThread?.interrupt()
+        watchdogThread = null
     }
 
     /** Thermal response (docs/ARCHITECTURE.md §5): analyze every 2nd hop while throttled. */
@@ -240,10 +323,10 @@ class AudioEngine(
             clipBytesTotal = clipBytes,
             thermalThrottleEvents = thermalThrottleEvents,
             levelGateSkipped = levelGateSkipped,
+            spectralSkipped = spectralSkipped,
             skippedHopSpans = skippedHops.spans(),
-            ambientBuckets = ambientBuckets.snapshot().map {
-                com.sleepanalysis.domain.report.AmbientLevelBucket(it.startMs, it.endMs, it.meanDbfs)
-            },
+            ambientBuckets = ambientBuckets.snapshot().map { it.toDomainBucket() },
+            clientSilencedSpans = synchronized(silencedLock) { clientSilencedSpanList.toList() },
         )
     }
 
@@ -254,6 +337,54 @@ class AudioEngine(
      * callers must fall back to the session start.
      */
     fun captureStartEpochMs(): Long = captureStartEpochMs
+
+    /**
+     * Watchdog thread body: while running, tick every [CaptureStallWatchdog.TICK_MS] and call
+     * [Listener.onCaptureError] when the clip ring has made no progress for the stall limit —
+     * catches a wedged native read that never returns, which the in-loop bound below cannot
+     * reach. Errors at most once; the capture thread's own exit paths report the rest.
+     */
+    private fun watchdogLoop() {
+        var reported = false
+        while (running) {
+            try {
+                Thread.sleep(CaptureStallWatchdog.TICK_MS)
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+                return
+            }
+            if (!reported && stallWatchdog.isStalled()) {
+                reported = true
+                listener.onCaptureError(
+                    IllegalStateException(
+                        "capture_stalled: clip ring made no progress for ${config.stallTimeoutMs} ms",
+                    ),
+                )
+            }
+        }
+    }
+
+    /** Seam for [recordingCallback] and its tests: client-silence state changed at [epochMs]. */
+    internal fun onClientSilenceChanged(silenced: Boolean, epochMs: Long) {
+        synchronized(silencedLock) {
+            if (silenced) {
+                if (silencedSinceMs == 0L) silencedSinceMs = epochMs
+            } else if (silencedSinceMs != 0L) {
+                clientSilencedSpanList += ClientSilencedSpan(silencedSinceMs, epochMs)
+                silencedSinceMs = 0L
+            }
+        }
+    }
+
+    /** Closes a still-open silenced span at capture end — the engine stops hearing "now". */
+    private fun closeOpenSilencedSpan(epochMs: Long) {
+        synchronized(silencedLock) {
+            if (silencedSinceMs != 0L) {
+                clientSilencedSpanList += ClientSilencedSpan(silencedSinceMs, epochMs)
+                silencedSinceMs = 0L
+            }
+        }
+    }
 
     @SuppressLint("MissingPermission") // MonitorService verifies RECORD_AUDIO before start().
     private fun captureLoop() {
@@ -302,6 +433,17 @@ class AudioEngine(
 
             opened.startRecording()
             captureStartEpochMs = System.currentTimeMillis()
+            // The stall watchdog counts from the first blocking read: silence the watchdog
+            // (never armed) during the OEM-flaky init above, start accounting now.
+            stallWatchdog.arm()
+            // Silenced-client detection (P2-4): while the OS delivers zeros (mic privacy
+            // toggle, a call, another app holding the mic) there is no error to react to —
+            // record the exact spans so the report can show them as NOT captured.
+            activeAudioSessionId = opened.audioSessionId
+            audioManager?.registerAudioRecordingCallback(
+                recordingCallback,
+                Handler(Looper.getMainLooper()),
+            )
             // Prime the first full window. A failed priming read (device error or a stop
             // mid-fill) must not feed a stale/zero-filled window into the detector and the
             // noise floor — bail out exactly like a failed loop read below.
@@ -320,10 +462,13 @@ class AudioEngine(
                 System.arraycopy(windowBuf, hopSamples, windowBuf, 0, windowSamples - hopSamples)
                 System.arraycopy(hopBuf, 0, windowBuf, windowSamples - hopSamples, hopSamples)
                 clipRing.write(rawHopBuf)
+                stallWatchdog.onProgress()
             }
         } catch (t: Throwable) {
             listener.onCaptureError(t)
         } finally {
+            runCatching { audioManager?.unregisterAudioRecordingCallback(recordingCallback) }
+            closeOpenSilencedSpan(System.currentTimeMillis())
             record?.let { r ->
                 try {
                     r.stop()
@@ -337,8 +482,12 @@ class AudioEngine(
         }
     }
 
-    /** Features + detection for the window currently held in [windowBuf] (ends "now"). */
-    private fun analyzeWindow(windowBuf: ShortArray, hopCounter: Long) {
+    /**
+     * Features + detection for the window currently held in [windowBuf] (ends "now"). internal
+     * for AudioEngineThrottleAccountingTest — the unit-test JVM has no audio hardware, so the
+     * hop accounting is driven through this path directly.
+     */
+    internal fun analyzeWindow(windowBuf: ShortArray, hopCounter: Long) {
         var sum = 0.0
         var lp = 0.0
         var lpSum = 0.0
@@ -356,6 +505,9 @@ class AudioEngine(
         noiseFloorRing[noiseFloorIndex] = dbfs
         noiseFloorIndex = (noiseFloorIndex + 1) % noiseFloorRing.size
         noiseFloorCount = minOf(noiseFloorCount + 1, noiseFloorRing.size)
+        // The floor is always read with the current window included — refresh the cache right
+        // after the push (per push while the ring fills, every 8 pushes once full).
+        noiseFloorCache.onWindowPushed(noiseFloorRing, noiseFloorCount)
         synchronized(statsLock) {
             if (ambientDbfs.size < 100_000) ambientDbfs.add(dbfs)
         }
@@ -366,8 +518,6 @@ class AudioEngine(
         if (bucketBase > 0L) {
             ambientBuckets.add(bucketBase + clipRing.totalWritten * 1000 / config.sampleRate, dbfs)
         }
-        windowsProcessed++
-
         // Thermal throttle: skip classification, keep the ring buffer advancing. Record the
         // skipped hop (epoch-anchored span) so analysis can correct for the reduced rate.
         // Sits BEFORE any spectral work: a skipped window must do no FFT (allocation-free path).
@@ -379,19 +529,35 @@ class AudioEngine(
             }
             return
         }
+        // Classified window. Counts AFTER the throttle return so a throttled hop increments
+        // exactly one of the two counters (capture_stats schema v5): pre-v5 the skipped hop
+        // was counted in both, inflating the captured-analysis-time denominator ~1.5× under
+        // sustained throttling (docs/DATA_MODEL.md §5.1).
+        windowsProcessed++
 
-        // Stage 2 spectral features, once per ANALYZED window (31 frames x 1024-pt FFT +
-        // one full-window autocorrelation, ~3.2M multiply-adds — fine within the 500 ms hop
-        // budget, never per hop; scratch comes from the preallocated workspace, allocation-free).
-        val spectral = spectralWorkspace.compute(windowBuf)
+        // Stage 2 spectral features, once per ANALYZED window that needs them (31 frames x
+        // 1024-pt FFT + one full-window autocorrelation, ~3.2M multiply-adds — fine within the
+        // 500 ms hop budget, never per hop; scratch comes from the preallocated workspace,
+        // allocation-free). Quiet windows with a fully idle detector skip the compute and
+        // classify on the detector's documented null-feature path — SpectralGatePolicy carries
+        // the proof that such windows classify byte-identically and never contribute to a
+        // persisted event's features. Thermal-skipped windows return above, before this.
+        val noiseFloor = noiseFloorCache.floor()
+        val computeSpectral = SpectralGatePolicy.shouldComputeSpectral(
+            windowDbfs = dbfs,
+            noiseFloorDbfs = noiseFloor,
+            detectorBusy = !eventDetector.isIdle(),
+        )
+        if (!computeSpectral) spectralSkipped++
+        val spectral = if (computeSpectral) spectralWorkspace.compute(windowBuf) else null
 
         val features = AudioFeatures(
             windowDbfs = dbfs,
-            noiseFloorDbfs = currentNoiseFloor(),
+            noiseFloorDbfs = noiseFloor,
             lowBandRatio = lowRatio,
             timestampMs = clipRing.totalWritten * 1000 / config.sampleRate,
-            spectralFlatness = spectral.flatness,
-            harmonicRatio = spectral.harmonicRatio,
+            spectralFlatness = spectral?.flatness,
+            harmonicRatio = spectral?.harmonicRatio,
         )
         val result = detector.classify(features)
         val drafts = eventDetector.update(
@@ -400,14 +566,6 @@ class AudioEngine(
             result = result,
         )
         deliver(drafts)
-    }
-
-    private fun currentNoiseFloor(): Double {
-        if (noiseFloorCount == 0) return -70.0
-        val copy = DoubleArray(noiseFloorCount)
-        System.arraycopy(noiseFloorRing, 0, copy, 0, noiseFloorCount)
-        copy.sort()
-        return copy[((noiseFloorCount - 1) * DetectorConfig.NOISE_FLOOR_PERCENTILE).toInt().coerceAtLeast(0)]
     }
 
     /**
@@ -449,6 +607,7 @@ class AudioEngine(
                         // endMs + 5 s + one hop when a machine is busy), so the 8 s snapshot
                         // covers ≥ 2.5 s of the event head plus its full tail — comfortably
                         // inside the ring (the v1 2 s gap capped at 7.5 s, 0.5 s inside).
+
                         // Horizon guard (defense in depth): if the event's tail has slid past
                         // the ring horizon anyway (thermally-delayed emission, or a config
                         // whose hold bounds exceed clipMs), the snapshot would hold zero
@@ -485,6 +644,10 @@ class AudioEngine(
                                     // A failed clip write must never break the capture loop or drop the event.
                                     listener.onLog("clip_write_failed", "${it.javaClass.simpleName}: ${it.message}")
                                 }
+                            } else {
+                                // Empty snapshot (horizon-passed but ring held nothing writable):
+                                // log it — no budget is booked on this path.
+                                listener.onLog("clip_snapshot_empty", "type=${draft.type} endMs=${draft.endMs}")
                             }
                         } else {
                             listener.onLog(
@@ -579,6 +742,17 @@ class AudioEngine(
                 return -1
             }
             if (got == 0) {
+                // Bound the previously unbounded sleep-retry loop (P2-4): a reader that keeps
+                // returning nothing for the stall limit means the mic is not delivering
+                // samples — report and stop, never spin here all night "recording" silence.
+                if (stallWatchdog.isStalled()) {
+                    listener.onCaptureError(
+                        IllegalStateException(
+                            "audio_read_stalled: no samples for ${config.stallTimeoutMs} ms",
+                        ),
+                    )
+                    return -1
+                }
                 try {
                     Thread.sleep(10)
                 } catch (_: InterruptedException) {
@@ -605,7 +779,10 @@ class AudioEngine(
      */
     private fun fillBlocking(record: AudioRecord, buf: ShortArray, n: Int): Boolean {
         val got = readBlocking(record, buf, n, rawWindowBuf)
-        if (got > 0) clipRing.write(rawWindowBuf, got)
+        if (got > 0) {
+            clipRing.write(rawWindowBuf, got)
+            stallWatchdog.onProgress()
+        }
         return got == n
     }
 }

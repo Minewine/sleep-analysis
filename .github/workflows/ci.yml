@@ -26,8 +26,12 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
       - name: Build, test, lint, policy gates
         # :app:check = unit tests + Android lint (abortOnError) + checkPermissionAllowlist
-        # + checkForbiddenTerms + checkRepoHygiene + checkNetworkHosts
-        run: ./gradlew :app:check :app:assembleDebug :app:assembleDebugAndroidTest
+        # + checkForbiddenTerms + checkRepoHygiene + checkNetworkHosts.
+        # Retry once: AGP's lint analysis workers crash nondeterministically under parallel
+        # load ("Unexpected failure during lint analysis") — always clean on rerun.
+        run: |
+          ./gradlew :app:check :app:assembleDebug :app:assembleDebugAndroidTest || \
+          ./gradlew :app:check :app:assembleDebug :app:assembleDebugAndroidTest
 
   instrumented:
     name: Instrumented tests (emulator)

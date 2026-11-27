@@ -19,7 +19,6 @@ class NightSummaryTextTest {
         sessionId = 3,
         startedAt = t0,
         endedAt = t0 + 6 * 3_600_000 + 104_000,
-        status = "COMPLETED",
         timeZone = "Europe/Zurich",
         timeInBedSeconds = 25_303,
         snoreSeconds = snoreSeconds,
@@ -35,7 +34,6 @@ class NightSummaryTextTest {
         events = emptyList(),
         clips = emptyMap(),
         integrityNotes = emptyList(),
-        baseline = emptyList(),
         modelVersion = "energy-heuristic-v1-spectral",
         boutStats = BoutStats(
             burstCount = 220, boutCount = 118, longestBurstMs = 313_000, medianBurstMs = 8_500,
@@ -59,7 +57,7 @@ class NightSummaryTextTest {
         assertTrue(text, text.contains("Snored 1h 45m — 29% of the 6h 1m captured"))
         assertTrue(text, text.contains("Worst stretch: 21m (03:05–03:26)"))
         assertTrue(text, text.contains("Longest burst: 5m from 01:43"))
-        assertTrue(text, text.contains("Score 53/100 (share 44 + intensity 10; snore-score-v2)"))
+        assertTrue(text, text.contains("Score 53/100 (share 44 + intensity 10; snore-score-v4)"))
         assertFalse(text, text.contains("vs previous night")) // no previous night supplied
     }
 
@@ -101,11 +99,37 @@ class NightSummaryTextTest {
     fun `quiet gaps appear with the longest one`() {
         val withGaps = report().copy(
             quietGaps = listOf(
-                QuietGap(t0 + 10 * 60_000, t0 + 21 * 60_000, 11 * 60_000),
-                QuietGap(t0 + 60 * 60_000, t0 + 87 * 60_000, 27 * 60_000),
+                QuietGap(t0 + 10 * 60_000, t0 + 21 * 60_000, 11 * 60_000, kind = QuietGapKind.QUIET),
+                QuietGap(t0 + 60 * 60_000, t0 + 87 * 60_000, 27 * 60_000, kind = QuietGapKind.QUIET),
             ),
         )
         val text = NightSummaryText.build(withGaps)
         assertTrue(text, text.contains("Quiet stretches ≥10 min: 2 (longest 27m)"))
+    }
+
+    @Test
+    fun `uncaptured gaps are not quiet stretches and get their own line`() {
+        val withGaps = report().copy(
+            quietGaps = listOf(
+                QuietGap(t0 + 10 * 60_000, t0 + 21 * 60_000, 11 * 60_000, kind = QuietGapKind.QUIET),
+                QuietGap(t0 + 60 * 60_000, t0 + 87 * 60_000, 27 * 60_000, kind = QuietGapKind.UNCAPTURED),
+            ),
+        )
+        val text = NightSummaryText.build(withGaps)
+        // Only verifiable quiet counts as quiet (P2-5) — the unheard hour is a separate line.
+        assertTrue(text, text.contains("Quiet stretches ≥10 min: 1 (longest 11m)"))
+        assertTrue(text, text.contains("Not captured ≥10 min: 1 (longest 27m)"))
+    }
+
+    @Test
+    fun `unclassified gaps count as neither quiet nor not captured`() {
+        val withGaps = report().copy(
+            quietGaps = listOf(
+                QuietGap(t0 + 10 * 60_000, t0 + 21 * 60_000, 11 * 60_000, kind = null),
+            ),
+        )
+        val text = NightSummaryText.build(withGaps)
+        assertFalse(text, text.contains("Quiet stretches"))
+        assertFalse(text, text.contains("Not captured"))
     }
 }

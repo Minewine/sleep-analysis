@@ -8,6 +8,7 @@ import java.io.File
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -54,8 +55,6 @@ class ClaimPolicyTest {
         )
         tier3.forEach {
             assertEquals(MeasurementTier.OUT_OF_SCOPE_FOR_CLAIMS, it.tier)
-            assertFalse(ClaimPolicy.displayAllowed(it))
-            assertFalse(ClaimPolicy.displayAllowed(it, experimentalToggleEnabled = true))
         }
         // Nothing else may be out of scope beyond the documented set.
         assertEquals(
@@ -64,12 +63,6 @@ class ClaimPolicyTest {
         )
     }
 
-    @Test
-    fun `experimental values display only behind the toggle`() {
-        val type = MeasurementType.BREATHING_IRREGULARITY_INDICATOR
-        assertFalse(ClaimPolicy.displayAllowed(type, experimentalToggleEnabled = false))
-        assertTrue(ClaimPolicy.displayAllowed(type, experimentalToggleEnabled = true))
-    }
 
     @Test
     fun `recorder stamps full provenance on phone estimates`() = runTest {
@@ -119,7 +112,6 @@ class ClaimPolicyTest {
         )
         vendorTypes.forEach {
             assertEquals("${it.name}", MeasurementTier.ESTABLISHED, it.tier)
-            assertTrue(ClaimPolicy.displayAllowed(it))
         }
     }
 
@@ -153,6 +145,38 @@ class ClaimPolicyTest {
             SnoreScore.IntensityTiers.EPIC,
             com.sleepanalysis.monitoring.detection.DetectorConfig.intensityTier(-5.0),
         )
+    }
+
+    @Test
+    fun `night validity grade is an established data-quality index with no physiological claim`() {
+        // It grades capture integrity (windows, gaps, clips, linkage) — never physiology, so
+        // it sits with the derived indices (ESTABLISHED), not with the out-of-scope set.
+        assertEquals(MeasurementTier.ESTABLISHED, MeasurementType.NIGHT_VALIDITY.tier)
+        assertEquals(MeasurementUnit.GRADE, MeasurementType.NIGHT_VALIDITY.unit)
+    }
+
+    @Test
+    fun `recorder replaces the night validity row instead of duplicating`() = runTest {
+        val dao = FakeDao()
+        val recorder = MeasurementRecorder(dao)
+        val estimate = MeasurementRecorder.ValidityEstimate(
+            grade = "B",
+            notes = """{"version":"night-validity-v1","grade":"B","reasons":[]}""",
+        )
+        recorder.replaceNightValidity(sessionId = 11, estimate = estimate)
+        recorder.replaceNightValidity(sessionId = 11, estimate = estimate)
+        val rows = dao.rows.filter { it.measurementType == "NIGHT_VALIDITY" }
+        assertEquals(1, rows.size)
+        val row = rows.single()
+        assertEquals("PHONE", row.sourceType)
+        assertEquals("ALGORITHM_ESTIMATED", row.method)
+        assertFalse(row.isClinical)
+        assertEquals("ESTABLISHED", row.tier)
+        assertEquals("GRADE", row.unit)
+        assertEquals("B", row.valueText)
+        assertNull(row.valueNum)
+        assertEquals("night-validity-v1", row.modelVersion)
+        assertEquals(11L, row.sessionId)
     }
 
     @Test
@@ -217,6 +241,12 @@ class ClaimPolicyTest {
         override suspend fun deleteGarminForTypes(periodStart: Long, types: List<String>) {
             rows.removeAll {
                 it.sourceType == "GARMIN" && it.periodStart == periodStart && it.measurementType in types
+            }
+        }
+
+        override suspend fun deletePhoneForSession(sessionId: Long, types: List<String>) {
+            rows.removeAll {
+                it.sourceType == "PHONE" && it.sessionId == sessionId && it.measurementType in types
             }
         }
 

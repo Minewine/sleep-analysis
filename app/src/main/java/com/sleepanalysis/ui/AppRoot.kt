@@ -20,15 +20,15 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 
 @HiltViewModel
 class MainViewModel @Inject constructor(prefs: UserPreferences) : ViewModel() {
     /** null = still loading, false = onboarding needed, true = accepted. */
-    val accepted: StateFlow<Boolean?> = prefs.disclaimerAcceptedAt
-        .map { it != null }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+    // No WhileSubscribed timeout: after 5 s away the flow reverted to null and flashed the
+    // loading spinner on return. DataStore stays hot — acceptable here.
+    val accepted: StateFlow<Boolean?> = prefs.disclaimerAccepted
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(), null)
 }
 
 @Composable

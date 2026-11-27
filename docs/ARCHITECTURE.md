@@ -38,21 +38,23 @@ Pin exact versions in `gradle/libs.versions.toml` at scaffold time.
 ```
 ┌────────────────────────────────────────────────────────────┐
 │ UI (Compose)      Onboarding · Home · Report (+ Timeline,  │
-│                   Session log) · History · Baseline ·      │
-│                   Daily log · Settings                     │
+│                   Session log) · History · Insights ·      │
+│                   Trends · Settings                        │
 │                   ── ViewModels (state, one per screen) ── │
 ├────────────────────────────────────────────────────────────┤
 │ DOMAIN            ClaimPolicy (tier gating) · Scoring      │
 │                   (snore score, indices) · InsightRules ·  │
-│                   ReportAssembler · UseCases               │
+│                   PersonalBaseline · SleepRegularity ·     │
+│                   ReportAssembler · TrendAssembler         │
 ├────────────────────────────────────────────────────────────┤
 │ DATA              Repositories · Room DAOs/entities ·      │
 │                   MeasurementRecorder · ModelRegistry ·    │
 │                   DataStore settings                       │
 ├────────────────────────────────────────────────────────────┤
 │ PLATFORM          MonitorService (FGS) · AudioEngine ·     │
-│                   FeatureExtractor · ClassifierEngine ·    │
 │                   EventDetector · RetentionWorker          │
+│                   (FeatureExtractor/ClassifierEngine:      │
+│                   planned, Phase 2 — see §4)               │
 └────────────────────────────────────────────────────────────┘
 ```
 
@@ -66,22 +68,22 @@ app/src/main/java/com/sleepanalysis/
 │   ├── detection/   # EventDetector (hysteresis, merging, tiers) + EventFeatures (decision record)
 │   ├── schedule/    # RecordingScheduler (AlarmManager) + bedtime notification + start/stop/boot receivers
 │   ├── features/    # FFT + spectral features (flatness, harmonicity) feeding the v1 detector (see §4)
-│   ├── replay/      # offline clip replay, feature-for-feature identical to the live capture loop
-│   ├── eval/        # FixtureEvaluator: labeled clips → per-class precision/recall (detector tuning)
-│   └── ml/          # ClassifierEngine interface, TFLite impl, ModelRegistry — planned, Phase 2 (see §4)
+│   └── ml/          # planned, Phase 2 — no ml package exists yet (ClassifierEngine/TFLite are design-not-code, see §4)
 ├── domain/
 │   ├── policy/      # ClaimPolicy, MeasurementTier — single source of claim rules
 │   ├── scoring/     # SnoreScore, derived indices (pure functions)
-│   └── report/      # ReportAssembler, CaptureStats parsing (+ InsightRules later)
+│   ├── insights/    # InsightRules, PersonalBaseline, SleepRegularity
+│   └── report/      # ReportAssembler, TrendAssembler, CaptureStats parsing
 ├── data/
-│   ├── db/          # Room entities, DAOs, migrations (schema v8)
+│   ├── db/          # Room entities, DAOs, migrations (schema v16)
 │   ├── files/       # ClipStore (app-private clip files)
 │   ├── logs/        # SessionLogger (per-session text logs)
 │   ├── garmin/      # GarminClient, parsers, import manager (Phase 3 slice)
+│   ├── healthconnect/ # HealthConnectImportManager (on-device stage import, shipped)
 │   ├── secure/      # GarminKeyStore (Keystore-encrypted API key)
 │   ├── prefs/       # UserPreferences (DataStore: disclaimer, retention, debug toggle)
 │   ├── recorder/    # MeasurementRecorder — the ONLY measurement write path
-│   └── repo/        # SessionRepository, BaselineRepository, FactorLogRepository
+│   └── repo/        # SessionRepository, FactorLogRepository (BaselineRepository removed in the 2026-11-22 consolidation)
 ├── ui/              # Screens, ViewModels, components (timeline, charts, player, session log)
 └── work/            # RetentionWorker, (later) export/analysis workers
 ```
@@ -90,13 +92,13 @@ app/src/main/java/com/sleepanalysis/
 
 | Component | Responsibility | Threading |
 |---|---|---|
-| **MonitorService** | Foreground service, `foregroundServiceType="microphone"`. Owns the session state machine `Idle → Starting → Recording (or Delayed during the start delay) → Finished`, with `StartError` and `Interrupted` states (exposed via `MonitorStateHolder`); pre-flight checks; ongoing notification; heartbeat watchdog; binds to AudioEngine. Started only from user action | Main + service scope |
-| **AudioEngine** | AudioRecord lifecycle, 16 kHz mono PCM into an 8 s ring buffer on a dedicated thread. Two consumers: window slicing for detection, clip flush (last ≤ 8 s) when the EventDetector marks an event. Raw audio outside events is discarded. Accumulates per-night `NightStats` (windows processed/skipped, ambient dBFS median/P95, clip count, thermal events) surfaced as session `capture_stats` | Capture thread + buffered channels |
-| **FeatureExtractor** | Window → log-mel spectrogram (model-spec driven: window 1 s, hop 0.5 s, 64 mel bins for the v0 model) | Inference dispatcher |
-| **ClassifierEngine** | Interface; TFLite implementation loads the active model from ModelRegistry. Outputs per-window class probabilities. Windows are queued and **coalesced** — if inference falls behind, drop oldest, never backlog | Single-threaded dispatcher |
-| **EventDetector** | Per-window snore/loud decisions → discrete events: window-count hysteresis (2 consecutive active 0.5 s hops to open, 4 consecutive quiet hops to close; the debug toggle relaxes the open count) → min duration 2 s → **no cross-draft merging (v2-burst): any internal silence > 2 s splits the chain, so one event = one burst; train-level grouping lives in report-time bouts (≤5/≤10 s)** → intensity tiering (relative dBFS bands) | Same dispatcher |
+| **MonitorService** | Foreground service, `foregroundServiceType="microphone"`. Owns the session state machine `Idle → Starting → Recording (or Delayed during the start delay) → Finished`, with `StartError` and `Interrupted` states (exposed via `MonitorStateHolder`); pre-flight checks; ongoing notification; refuses to start a new session while an open (interrupted) night awaits its Resume/Finalize decision — never silently finalizes it RECOVERED; binds to AudioEngine. Started only from user action | Main + service scope |
+| **AudioEngine** | AudioRecord lifecycle, 16 kHz mono PCM into an 8 s ring buffer on a dedicated thread. Two consumers: window slicing for detection, clip flush (last ≤ 8 s) when the EventDetector marks an event. Raw audio outside events is discarded. Accumulates per-night `NightStats` (windows processed/skipped, ambient dBFS median/P95, 5-min level buckets with real covered time + variance, client-silenced spans, clip count, thermal events) surfaced as session `capture_stats`; `CaptureStallWatchdog` fires `onCaptureError` when the clip ring makes no progress for 60 s (bounds the read-retry loop), and an `AudioManager.AudioRecordingCallback` records spans where the OS silenced the client (P2-4) | Capture thread + buffered channels |
+| **FeatureExtractor** *(planned, not built)* | Window → log-mel spectrogram (model-spec driven: window 1 s, hop 0.5 s, 64 mel bins for the v0 model). Design-only until the Phase 2 model — there is no `ml` package today | Inference dispatcher |
+| **ClassifierEngine** *(planned, not built)* | Interface; TFLite implementation loads the active model from ModelRegistry. Outputs per-window class probabilities. Windows are queued and **coalesced** — if inference falls behind, drop oldest, never backlog. Design-only: the shipped detector is `energy-heuristic-v3-peakgate` behind the `SnoreDetector` interface | Single-threaded dispatcher |
+| **EventDetector** | Per-window snore/loud decisions → discrete events: window-count hysteresis (2 consecutive active 0.5 s hops to open, 4 consecutive quiet hops to close; the debug toggle relaxes the open count) → min duration 2 s → short-gap merge exists but **ships disabled** (`DetectorConfig.MERGE_GAP_MS = 0`): any internal silence > 2 s splits the chain, so one event = one burst; train-level grouping lives in report-time bouts (≤5/≤10 s) → intensity tiering (relative dBFS bands) | Same dispatcher |
 | **MeasurementRecorder** | The only component allowed to write Measurement rows; stamps full provenance (see §6) | Caller scope |
-| **ReportAssembler** | Session + events + measurements → `MorningReport` (computed live; the §3.7 snapshot table is deferred) via Scoring and ClaimPolicy. Pure domain logic | Any |
+| **ReportAssembler** | Session + events + measurements → `MorningReport` (assembled live on open; the per-night headline snapshot persists to the `report` table via `SessionRepository.upsertReportSnapshot`, since schema v12) via Scoring and ClaimPolicy. Pure domain logic | Any |
 | **SessionLogger** | Append-only, no-throw text log per session (`filesDir/logs/session_<id>.log`) written from the service and engine; viewable in the report's Session log screen; purged by RetentionWorker with session retention | Caller scope (background dispatchers) |
 | **RetentionWorker** | Daily WorkManager job: delete expired clips, then expired sessions/events per DataStore retention settings; purge session logs past session retention; orphan-file sweep | WorkManager |
 | **RecordingScheduler** | Arms/cancels the two nightly alarms (bedtime start, end time) via AlarmManager — exact (`setExactAndAllowWhileIdle`) when the exact-alarm permission is granted, inexact `setWindow` (~10 min) otherwise; start and end computed independently so both stay armed after the start fires; honors the one-night skip marker; re-armed on settings changes, boot, and after every start/stop receiver run | Caller scope (coroutines) |
@@ -109,10 +111,10 @@ app/src/main/java/com/sleepanalysis/
 
 1. User taps Start → pre-flight checks (storage, permissions) → session row created (`ended_at = null`) → service promotes to foreground with notification.
 2. AudioEngine streams PCM into the ring buffer. Nothing here touches disk for full-night audio — only clip slices ever persist.
-3. Every 0.5 s hop, a 1 s window is sliced → features → per-window snore probability. With the shipped `energy-heuristic-v2-burst` the features (RMS, low-band ratio, rolling noise floor, plus spectral flatness and harmonic ratio from `monitoring/features/`) are computed inline (`EventFeatures`, persisted per event as `features_json`) and the "classifier" is the `SnoreDetector` interface; Phase 2 swaps in log-mel + TFLite (`ClassifierEngine`) without touching steps 2 or 4.
+3. Every 0.5 s hop, a 1 s window is sliced → features → per-window snore probability. With the shipped `energy-heuristic-v3-peakgate` the features (RMS, low-band ratio, rolling noise floor, plus spectral flatness and harmonic ratio from `monitoring/features/`) are computed inline (`EventFeatures`, persisted per event as `features_json`) and the "classifier" is the `SnoreDetector` interface; Phase 2 swaps in log-mel + TFLite (`ClassifierEngine`) without touching steps 2 or 4.
 4. EventDetector turns probability streams into discrete AcousticEvents with intensity and confidence; qualifying events trigger a clip flush from the ring buffer to `filesDir/clips/<session>/`. Clip persistence is gated by `ClipPolicy`: events below the relative level gate (mean under the event's own rolling noise floor + `DetectorConfig.GATE_MARGIN_DB`, 10 dB — never below the hard floor `MIN_GATE_DBFS`, −60 dBFS, so near-silence stays gated; unverifiable by playback) never persist a clip; for the first 30 min of capture the margin is +6 dB stricter (settling window — bedtime noise is the night's loudest period); a per-hour budget (`MAX_CLIPS_PER_HOUR`) stops bedtime noise from spending the whole night's clips (night 1 wrote all 50 in the first 42 min); and `MAX_CLIPS_PER_NIGHT` remains the backstop. Sub-gate SNORE detections are downgraded to OTHER_NOISE at finalization, so the SNORE label only ever applies to clearly audible events.
 5. Events are written immediately per finalized event (one transaction covering the event row and its clip row, so process death can never leave one without the other).
-6. On stop: session finalized — Measurement rows written through MeasurementRecorder, the engine's `NightStats` persisted as session `capture_stats`, per-session log closed. The morning report is assembled live on open (no snapshot table yet). Notification clears.
+6. On stop: session finalized — Measurement rows written through MeasurementRecorder, the engine's `NightStats` persisted as session `capture_stats`, per-session log closed, and the per-night report headline snapshot upserted to the `report` table (`SessionRepository.upsertReportSnapshot`, since schema v12) with the detector/score versions registered in `model_registry`. The full report body is assembled live on open. Notification clears.
 
 **Recovery flow:** process death or reboot mid-night → next launch, the Home screen finds the open session and shows an explicit **interrupted-night banner** (with the saved-event count) → the user confirms "Finalize & view report" → `finalizeOpenAsRecovered()` finalizes every open session as RECOVERED (guard: a new recording can never start while one is open) → report generated from whatever events were durably written, with `ended_at` bounded by the later of the last saved event or the last heartbeat (+1 min grace) so the dead gap doesn't inflate time in bed. If the system restarts the killed service (START_STICKY), capture does **not** auto-resume — on Android 11+ a background restart has no while-in-use microphone access, so `StartIntentPolicy` ignores the null-intent restart and a high-priority interrupted notification offers a **Resume** action; when the user taps it (the interaction that grants mic access), capture restarts into the same session, the row is marked `resumed_after_interruption` (schema v7), and the morning report leads its integrity notes with the discontinuity — the night was never continuously captured.
 
@@ -128,22 +130,22 @@ Every Measurement row carries (see [DATA_MODEL.md](DATA_MODEL.md) for the full s
 
 Enforcement mechanisms:
 
-1. **Single write path.** `MeasurementRecorder.record(spec)` takes a constructor that requires every provenance field; the Room DAO for measurements is `internal` to the data layer. No screen, worker, or service touches it directly.
+1. **Single write path.** `MeasurementRecorder` exposes provenance-complete helpers (`recordPhoneEstimate`, `replacePhoneEstimates`, `replaceNightValidity`, `recordGarminEstimate`, `replaceGarminEstimates`); every write stamps source/method/tier/model_version. The measurement DAO is public and is read directly by `SessionRepository` and `GarminImportManager` — but only the recorder writes.
 2. **Tier comes from ClaimPolicy.** `ClaimPolicy.tierFor(measurementType)` is the code mirror of [MEASUREMENT_RELIABILITY.md](MEASUREMENT_RELIABILITY.md) §2; a unit test asserts the two tables are identical. The recorder refuses to write a measurement whose type is Tier 3 (which is also why Tier 3 has no code path).
-3. **Clinical immutability.** Baseline entries are insert-only (no update/delete DAO methods for clinical rows) plus a SQL trigger that aborts `UPDATE`/`DELETE` on `method = 'CLINICAL_MEASURED'` rows outside the explicit delete-all maintenance path ([DATA_MODEL.md](DATA_MODEL.md) §4).
-4. **Model binding.** Every algorithmic event/measurements stores `model_id`/`model_version` resolved from ModelRegistry at write time, so reprocessing or recalibration can be traced and re-run later.
+3. **Clinical immutability — retired.** The `clinical_baseline` table and its two immutability triggers (`trg_clinical_baseline_no_update`/`_no_delete`) were dropped in migration 15→16 (2026-11-22 consolidation); there are no clinical rows left to guard. Measurement-level claim discipline now rests entirely on `MeasurementRecorder`/`ClaimPolicy`.
+4. **Model binding.** Every algorithmic event/measurement stores its `modelVersion` string (there is no `model_id`/registry-FK column on the rows); the temporal `model_registry` is written at finalize via `SessionRepository.registerModelVersion`, so reprocessing or recalibration can be traced and re-run later. The active detector version is the compile-time constant `SessionRepository.MODEL_VERSION` (`energy-heuristic-v3-peakgate`).
 5. **Report gating.** ReportAssembler includes a measurement in the report payload only if `ClaimPolicy` allows that tier in the current UI mode; Tier-2 values additionally require the experimental toggle. Exports inherit the same filter.
-6. **CI checks — shipped** (GitHub Actions, `.github/workflows/ci.yml`; the same four gates run locally as Gradle tasks in `:app:check`): (a) **`checkPermissionAllowlist`** — the merged debug manifest must match `ci/permission-allowlist.txt` exactly; (b) **`checkForbiddenTerms`** — forbidden clinical terms ("AHI", "apnea", "arousal index", "sleep stage", "desaturation") fail the build outside the approved disclaimer and clinical-baseline label strings; (c) **`checkRepoHygiene`** — no tracked file matches the personal-data patterns (mirrors `.githooks/pre-commit`); (d) **`checkNetworkHosts`** — URL hosts in main sources are limited to the single Garmin host.
+6. **CI checks — shipped** (GitHub Actions, `.github/workflows/ci.yml`; the same four gates run locally as Gradle tasks in `:app:check`): (a) **`checkPermissionAllowlist`** — the merged debug manifest must match `ci/permission-allowlist.txt` exactly; (b) **`checkForbiddenTerms`** — forbidden clinical terms ("AHI", "apnea", "arousal index", "sleep stage", "desaturation") fail the build outside the approved disclaimer string (the retired clinical-baseline label entries linger in the allowlist harmlessly); (c) **`checkRepoHygiene`** — no tracked file matches the personal-data patterns (mirrors `.githooks/pre-commit`); (d) **`checkNetworkHosts`** — URL hosts in main sources are limited to the single Garmin host.
 
 ## 7. Separation of raw audio, features, and derived summaries
 
 | Layer | What | Persisted? | Why |
 |---|---|---|---|
-| **Raw audio** | 16 kHz PCM stream | **Never in full.** Ring buffer in memory; only event-triggered clips (WAV, ≤ 8 s, top ~50/night) written to app-private storage | Continuous 16 kHz PCM is ~115 MB/h — persisting nights is neither private-proportionate nor useful |
+| **Raw audio** | 16 kHz PCM stream | **Never in full.** Ring buffer in memory; only event-triggered clips (WAV, ≤ 8 s, top ~150/night) written to app-private storage | Continuous 16 kHz PCM is ~115 MB/h — persisting nights is neither private-proportionate nor useful |
 | **Features** | Log-mel spectrograms | **Not persisted in Phase 1** (recomputable from clips/model spec; optional cache in Phase 5 for retraining experiments) | Storage vs. recomputability tradeoff favors recompute |
 | **Events** | AcousticEvent rows (type, timing, intensity, confidence, model id, clip ref) | Yes — session-scoped, cascade-deleted with session | The verifiable substrate; user can replay every event |
 | **Measurements** | Normalized, provenance-stamped values (per-session or per-period metrics) | Yes — **survive session deletion** (session_id nulled) so longitudinal history outlives heavy raw data | The analytic substrate for trends/comparisons |
-| **Reports** | Morning report (`MorningReport`, assembled under ClaimPolicy) | Computed live on open; the persisted snapshot table (DATA_MODEL §3.7) is deferred to Phase 4 | Stable, exportable, auditable rendering of a night |
+| **Reports** | Morning report (`MorningReport`, assembled under ClaimPolicy) | Assembled live on open; the per-night headline snapshot persists to the `report` table since schema v12 (`upsertReportSnapshot`) | Stable, exportable, auditable rendering of a night |
 
 This layering is deliberate: raw data is ephemeral and heavy; events are the audit trail; measurements are the durable analysis substrate; reports are presentation snapshots. Later ML models can re-run over persisted clips + measurements without ever needing full-night audio.
 
@@ -151,10 +153,10 @@ This layering is deliberate: raw data is ephemeral and heavy; events are the aud
 
 | Extension | Interface | Notes |
 |---|---|---|
-| Swap/upgrade ML model | `ClassifierEngine` + `ModelRegistry` | New model = new registry entry (input spec, classes, thresholds); detection/storage untouched. Old sessions keep their original `model_id` |
+| Swap/upgrade ML model | `ClassifierEngine` + `ModelRegistry` *(ClassifierEngine: planned, not built — ModelRegistry shipped)* | New model = new registry entry (input spec, classes, thresholds); detection/storage untouched. Old sessions keep their original `modelVersion` string |
 | Accelerometer movement (Phase 2) | `SensorEngine` sibling of `AudioEngine` inside MonitorService | Same event/measurement write paths; enables Tier 1 sleep/wake estimation |
-| Wearable import (Phase 3) | `WearableSource` → implementations: `GarminPersonalApiSource` (**shipped**: `GarminImportManager` via Personal API key — see [GARMIN_INTEGRATION.md](GARMIN_INTEGRATION.md)), `HealthConnectSource`, `GarminFileImportSource` | All imports land as Measurement rows with `source_type = GARMIN/WEARABLE`, `method = DEVICE_REPORTED`; raw JSON kept in `raw_payload` |
-| Lifestyle factors (Phase 3) | `FactorLogRepository` | **Shipped** (Phase 3 slice): schema, repository, Daily log screen, report card. Mirroring into `measurement` rows stays deferred to Phase 4 |
+| Wearable import (Phase 3) | `WearableSource` → implementations: `GarminPersonalApiSource` (**shipped**: `GarminImportManager` via Personal API key — see [GARMIN_INTEGRATION.md](GARMIN_INTEGRATION.md)), Health Connect stage import (**shipped**: `HealthConnectImportManager.importForDate`, on-device IPC), `GarminFileImportSource` | Imports land as Measurement rows (`source_type = GARMIN/WEARABLE`, `method = DEVICE_REPORTED`) or `sleep_stage` rows (Health Connect); raw JSON kept in `raw_payload` |
+| Lifestyle factors (Phase 3) | `FactorLogRepository` | **Shipped** (Phase 3 slice): schema, repository, report card (the Daily log screen was removed in the 2026-11-22 consolidation). Mirroring into `measurement` rows stays deferred to Phase 4 |
 | Longitudinal analysis (Phase 4) | `AnalysisEngine` consuming Measurement rows only | Never reads events/audio; keeps analysis honest about provenance |
 | Export (Phase 3) | `ExportSink` (local share sheet; CSV/JSON/PDF) | Same ClaimPolicy filter as the report |
 | Experimental indicators (Phase 2) | `ExperimentalIndicator` behind Settings toggle | Tier 2 from day one, per [MEASUREMENT_RELIABILITY.md](MEASUREMENT_RELIABILITY.md) §7 |
@@ -164,7 +166,7 @@ This layering is deliberate: raw data is ephemeral and heavy; events are the aud
 - **Unit (pure Kotlin):** EventDetector on synthetic probability streams; Scoring; ReportAssembler + ClaimPolicy gating; retention logic. No Robolectric needed.
 - **Claim-policy sync test:** asserts `ClaimPolicy` == measurement table in [MEASUREMENT_RELIABILITY.md](MEASUREMENT_RELIABILITY.md) §2 (fails the build on drift).
 - **Fixture ML eval:** labeled WAV fixtures (real nights + augmented noise beds) → per-class precision/recall; thresholds asserted as unit tests on release candidates.
-- **DB:** schema exports verified in `app/schemas/`; migration SQL hand-reviewed, and the instrumented `MigrationTest` (androidTest, `MigrationTestHelper`) replays 1→latest against exported schemas, checks seeded rows survive, and asserts the clinical-immutability triggers exist and enforce.
+- **DB:** schema exports verified in `app/schemas/`; migration SQL hand-reviewed, and the instrumented `MigrationTest` (androidTest, `MigrationTestHelper`) replays 1→latest against exported schemas, checks seeded rows survive, and asserts the 15→16 consolidation cuts (clinical_baseline + triggers gone, write-only columns dropped with data preserved).
 - **Robolectric:** service state machine, permission-denied paths, recovery flow.
 - **Instrumented (real devices):** overnight soak runs with battery/thermal logging before each phase release.
 

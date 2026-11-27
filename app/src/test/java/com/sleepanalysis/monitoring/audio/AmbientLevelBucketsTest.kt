@@ -35,4 +35,39 @@ class AmbientLevelBucketsTest {
         assertEquals(2, buckets.snapshot().size)
         assertEquals(1, snap.size)
     }
+
+    // ---- honest coverage (P3-16) and variance (P2-4) ----
+
+    @Test
+    fun `a partly filled bucket reports its real covered time not the full 5 minutes`() {
+        val buckets = AmbientLevelBuckets()
+        buckets.add(0, -90.0)
+        buckets.add(500, -89.0)
+        buckets.add(1_000, -91.0)
+        val snap = buckets.snapshot()
+        assertEquals(1, snap.size)
+        // 3 windows × 500 ms hop = 1.5 s of evidence, never the bucket's whole 5 minutes.
+        assertEquals(1_500L, snap[0].coveredMs)
+    }
+
+    @Test
+    fun `a fully filled bucket covers its span`() {
+        val buckets = AmbientLevelBuckets()
+        val windows = (bucketMs / 500).toInt()
+        repeat(windows) { i -> buckets.add(i * 500L, -85.0) }
+        assertEquals(bucketMs.toLong(), buckets.snapshot().single().coveredMs)
+    }
+
+    @Test
+    fun `bucket variance is tracked for digital-silence detection`() {
+        val buckets = AmbientLevelBuckets()
+        buckets.add(0, -90.0)
+        buckets.add(500, -80.0)
+        assertEquals(25.0, buckets.snapshot().single().dbfsVariance!!, 0.0001)
+        // A silenced client delivers exact zeros: constant −100 dBFS, variance exactly 0.
+        val silent = AmbientLevelBuckets()
+        silent.add(0, -100.0)
+        silent.add(500, -100.0)
+        assertEquals(0.0, silent.snapshot().single().dbfsVariance!!, 0.0001)
+    }
 }

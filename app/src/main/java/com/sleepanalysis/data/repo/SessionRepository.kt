@@ -6,12 +6,10 @@ import androidx.room.withTransaction
 import com.sleepanalysis.data.db.AppDatabase
 import com.sleepanalysis.data.db.dao.AcousticEventDao
 import com.sleepanalysis.data.db.dao.AudioClipDao
-import com.sleepanalysis.data.db.dao.ClinicalBaselineDao
 import com.sleepanalysis.data.db.dao.MeasurementDao
 import com.sleepanalysis.data.db.dao.SleepSessionDao
 import com.sleepanalysis.data.db.entity.AcousticEventEntity
 import com.sleepanalysis.data.db.entity.AudioClipEntity
-import com.sleepanalysis.data.db.entity.EventType
 import com.sleepanalysis.data.db.entity.SessionStatus
 import com.sleepanalysis.data.db.entity.SleepSessionEntity
 import com.sleepanalysis.data.files.ClipStore
@@ -43,10 +41,10 @@ class SessionRepository @Inject constructor(
     private val sessionDao: SleepSessionDao,
     private val eventDao: AcousticEventDao,
     private val clipDao: AudioClipDao,
-    private val baselineDao: ClinicalBaselineDao,
     private val measurementDao: MeasurementDao,
     private val recorder: MeasurementRecorder,
     private val clipStore: ClipStore,
+    private val validityCalculator: ValidityCalculator,
     private val logger: SessionLogger,
     private val userPreferences: UserPreferences,
     @ApplicationContext private val context: Context,
@@ -58,16 +56,17 @@ class SessionRepository @Inject constructor(
                 startedAt = System.currentTimeMillis(),
                 status = SessionStatus.RECORDING,
                 timeZone = java.time.ZoneId.systemDefault().id,
-                deviceModel = Build.MODEL ?: "unknown",
-                osVersion = Build.VERSION.RELEASE ?: "unknown",
-                appVersion = versionName(),
             )
         )
     }
 
     suspend fun session(sessionId: Long): SleepSessionEntity? = sessionDao.byId(sessionId)
 
-    suspend fun findOpenSession(): SleepSessionEntity? = sessionDao.findOpen()
+    /** Every event of [sessionId] that has a clip — the bulk-labeling work set (§3.5). */
+    suspend fun clipBackedEventsForLabeling(sessionId: Long): List<com.sleepanalysis.data.db.dao.ClipBackedEventRow> =
+        eventDao.clipBackedEvents(sessionId)
+
+    suspend fun findOpenSession(): SleepSessionEntity? = withContext(Dispatchers.IO) { sessionDao.findOpen() }
 
     suspend fun latestSession(): SleepSessionEntity? = sessionDao.latest()
 
@@ -180,36 +179,45 @@ class SessionRepository @Inject constructor(
             // Clip counts/bytes come from the table, not the engine counters: the table spans all
             // engines of the session (resumed recordings) and clips written before a process death.
             val dbClipCount = clipDao.countForSession(sessionId)
-            val dbClipBytes = clipDao.sumBytesForSession(sessionId)
 
             val timeInBedSeconds = ((endedAt - session.startedAt).coerceAtLeast(0)) / 1000
 
             // Denominator: mic-live captured time (processed + thermally-skipped 0.5 s hops,
             // cumulative across engine restarts) — NOT tap-to-end time in bed, which counts
             // the start delay, dead gaps and pre-capture wall time as "night". Falls back to
-            // time-in-bed only when the session has no capture stats at all.
-            val capturedSeconds = (
+            // time-in-bed only when the session has no capture stats at all. The captured-
+            // analysis value stays separate: the validity share input requires it (null on
+            // the fallback — a time-in-bed share is not a share of captured audio).
+            val capturedAnalysisSeconds = (
                 nightStats?.let {
                     (it.windowsProcessed + it.windowsSkipped) *
                         com.sleepanalysis.domain.report.CaptureStats.HOP_MS / 1000
                 }
                     ?: capture?.capturedAnalysisMs()?.div(1000)
-                )?.takeIf { it > 0 } ?: timeInBedSeconds
+                )?.takeIf { it > 0 }
+            // P2-7: a night with no capture stats or zero processed windows measured nothing
+            // (a stop during the start delay) — no snore-time, share or score rows; zeros
+            // would be fabricated Tier-1 data in Trends and baselines.
+            val hasCaptureEvidence = (nightStats?.windowsProcessed ?: capture?.windowsProcessed ?: 0L) > 0L
 
-            val snoreEvents = events.filter { it.type == EventType.SNORE }
-            // Union, not sum: overlapping merged-window events must count their audio once
-            // (docs/DATA_MODEL.md §5.1; com.sleepanalysis.domain.scoring.SnoreMath).
-            val snoreSeconds = com.sleepanalysis.domain.scoring.SnoreMath
-                .unionDurationMs(snoreEvents.map { it.startMs to it.endMs }) / 1000
-            val sharePercent = if (capturedSeconds > 0) snoreSeconds * 100.0 / capturedSeconds else 0.0
-            // Score v2 weights intensity by per-tier snoring TIME (the per-tier unions
-            // partition snoreSeconds), not event counts — docs/NIGHT_REPORT.md §Score.
-            val tierSeconds: Map<String, Long> = snoreEvents.groupBy { it.intensityTier }
-                .mapValues { (_, tierEvents) ->
-                    com.sleepanalysis.domain.scoring.SnoreMath
-                        .unionDurationMs(tierEvents.map { it.startMs to it.endMs })
-                }
-            val score = SnoreScore.compute(snoreSeconds, capturedSeconds, tierSeconds)
+            // ONE shared math builder (plan T4a): label-aware snore set, union, captured-
+            // analysis denominator, share, per-tier unions and score — identical to
+            // reportSnapshotHeadline and labelCorrectedSnoreEstimates, so stored rows,
+            // snapshot and share text can never drift (pinned by ReportSnapshotRefreshTest).
+            val math = com.sleepanalysis.domain.report.snoreNightMath(
+                startedAt = session.startedAt,
+                endedAt = endedAt,
+                status = status,
+                capture = capture,
+                events = events,
+                capturedAnalysisSecondsOverride = capturedAnalysisSeconds,
+                hasCaptureEvidenceOverride = hasCaptureEvidence,
+            )
+            val snoreEvents = math.snoreEvents
+            val snoreSeconds = math.snoreSeconds
+            val capturedSeconds = math.capturedSeconds
+            val sharePercent = math.sharePercent
+            val score = math.score
 
             // A recovered session with no events has no verifiable capture: recording time in
             // bed, share or score would present tap-to-stop wall time as sleep data.
@@ -218,23 +226,20 @@ class SessionRepository @Inject constructor(
                 recorder.recordPhoneEstimate(sessionId, MeasurementType.TIME_IN_BED, timeInBedSeconds.toDouble())
             }
             recorder.recordPhoneEstimate(sessionId, MeasurementType.SNORE_EVENT_COUNT, snoreEvents.size.toDouble())
-            recorder.recordPhoneEstimate(sessionId, MeasurementType.SNORE_TIME, snoreSeconds.toDouble())
-            if (!recoveredWithNoEvents && capturedSeconds > 0) {
+            if (hasCaptureEvidence) {
+                recorder.recordPhoneEstimate(sessionId, MeasurementType.SNORE_TIME, snoreSeconds.toDouble())
+            }
+            if (!recoveredWithNoEvents && capturedSeconds > 0 && hasCaptureEvidence) {
                 recorder.recordPhoneEstimate(sessionId, MeasurementType.SNORE_SHARE_OF_NIGHT, sharePercent)
             }
-            if (!recoveredWithNoEvents) {
+            if (!recoveredWithNoEvents && hasCaptureEvidence) {
                 // The score row carries the SCORE FORMULA version, never the detector's model
                 // version: the two change independently and trend comparability keys on this
                 // field (docs/NIGHT_REPORT.md §Score). The notes hold the reproducible breakdown.
                 recorder.recordPhoneEstimate(
                     sessionId, MeasurementType.SNORE_SCORE, score.score.toDouble(),
                     modelVersion = SnoreScore.FORMULA_VERSION,
-                    notes = String.format(
-                        java.util.Locale.US,
-                        "%s: share %.1f/60 + intensity %.1f/40 (tier weight %.3f)",
-                        SnoreScore.FORMULA_VERSION,
-                        score.sharePoints, score.intensityPoints, score.meanTierWeight,
-                    ),
+                    notes = SnoreScore.breakdownNotes(score),
                 )
             }
             snoreEvents.maxOfOrNull { it.peakDbfs }?.let {
@@ -260,10 +265,12 @@ class SessionRepository @Inject constructor(
             // the merged night stats (all engines' buckets, carried across restarts), falling
             // back to the heartbeat-persisted capture stats.
             val levelBuckets = nightStats?.ambientBuckets ?: capture?.ambientBuckets.orEmpty()
+            val silencedSpans = nightStats?.clientSilencedSpans ?: capture?.clientSilencedSpans.orEmpty()
             val gapWindowStart = capture?.captureStartMs ?: session.startedAt
             val classifiedGaps = com.sleepanalysis.domain.report.classifyQuietGaps(
                 com.sleepanalysis.domain.report.quietGaps(events, gapWindowStart, endedAt),
                 levelBuckets,
+                clientSilencedSpans = silencedSpans,
             )
             db.quietGapDao().replaceForSession(
                 sessionId,
@@ -277,6 +284,36 @@ class SessionRepository @Inject constructor(
                         meanDbfs = it.meanDbfs,
                     )
                 },
+            )
+
+            // Night validity grade (docs/NIGHT_REPORT.md §Night validity): a pure function of the night's
+            // capture evidence — windows, gaps, clips, interruptions, ambient — stored as the
+            // NIGHT_VALIDITY row (replace path: recompute paths rewrite it, never duplicate).
+            // Garmin is not an input here: the import usually lands after finalize and
+            // recomputes this row itself (ValidityCalculator.computeAndRecord).
+            val clipQuality = validityCalculator.clipQualityForSession(sessionId)
+            val uncapturedMinutes = classifiedGaps
+                .filter { it.kind == com.sleepanalysis.domain.report.QuietGapKind.UNCAPTURED }
+                .sumOf { it.durationMs } / 60_000.0
+            val validity = com.sleepanalysis.domain.validity.NightValidity.compute(
+                com.sleepanalysis.domain.validity.NightValidity.Input(
+                    capture = com.sleepanalysis.domain.validity.NightValidity.captureSummary(
+                        capture, endedAt, timeInBedSeconds,
+                    ),
+                    clips = clipQuality,
+                    uncapturedGapMinutes = uncapturedMinutes,
+                    sessionStatus = status,
+                    resumedAfterInterruption = session.resumedAfterInterruption,
+                    snoreShareOfCapture = capturedAnalysisSeconds?.let { snoreSeconds.toDouble() / it },
+                    ambient = validityCalculator.ambientNoiseSummary(session),
+                ),
+            )
+            recorder.replaceNightValidity(
+                sessionId,
+                MeasurementRecorder.ValidityEstimate(
+                    grade = validity.grade,
+                    notes = com.sleepanalysis.domain.validity.NightValidity.notes(validity),
+                ),
             )
 
             // captureStartMs is re-persisted here: the heartbeat write recorded it, and
@@ -298,10 +335,105 @@ class SessionRepository @Inject constructor(
                 endedAt = endedAt,
                 status = status,
                 captureStats = statsJson,
-                audioBytes = dbClipBytes,
             )
+
+            // Report snapshot (schema v12, docs/DATA_MODEL.md §3.7) + model registry (§3.8),
+            // built from the STORED rows via the shared [upsertReportSnapshot] builder so the
+            // label-recompute refresh (labelEvent) can never disagree with finalize. The
+            // registry keeps exactly one open row per kind (validFrom = now; old row validTo =
+            // now) — the comparability record the baseline eligibility gates read.
+            val detectorVersion = upsertReportSnapshot(
+                session = sessionDao.byId(sessionId) ?: session,
+                validityGrade = validity.grade,
+                generatedAt = now,
+            )
+            registerModelVersion(com.sleepanalysis.data.db.entity.ModelRegistryKind.DETECTOR, detectorVersion, now)
+            registerModelVersion(com.sleepanalysis.data.db.entity.ModelRegistryKind.SCORE, SnoreScore.FORMULA_VERSION, now)
             true
         }
+    }
+
+    /**
+     * Builds and upserts the session's report snapshot (schema v12, docs/DATA_MODEL.md §3.7)
+     * from STORED state: [reportSnapshotHeadline] supplies the aggregates (label-aware, the
+     * same math and row-conditions as finalize's measurement rows), the Garmin fields come
+     * from the wake-date raw payload, and the detector version is RESOLVED — the label-aware
+     * first snore event's version, else the detector version current at finalize
+     * ([MODEL_VERSION] fallback). ONE resolved value serves the snapshot, the registry and the
+     * eligibility gate, so a zero-snore night stays comparable instead of silently dropping
+     * out of every baseline (docs/INSIGHTS.md §Eligibility). Returns the resolved detector
+     * version — the registry registration uses it at finalize; the label-recompute refresh
+     * ignores the return (a label never changes versions). No-op for a still-recording session.
+     */
+    private suspend fun upsertReportSnapshot(
+        session: SleepSessionEntity,
+        validityGrade: String?,
+        generatedAt: Long,
+    ): String {
+        if (session.endedAt == null) return MODEL_VERSION
+        val events = eventDao.bySession(session.id)
+        val resolvedDetector = com.sleepanalysis.domain.scoring.SnoreMath
+            .eventsCountingAsSnore(events)
+            .firstOrNull()?.modelVersion ?: MODEL_VERSION
+        val capture = com.sleepanalysis.domain.report.CaptureStats.parse(session.captureStats)
+        val garminSleep = garminSleepSummaryForSession(session, capture)
+        val headline = reportSnapshotHeadline(session, events, validityGrade)
+        db.reportDao().upsert(
+            com.sleepanalysis.data.db.entity.ReportSnapshotEntity(
+                sessionId = session.id,
+                generatedAt = generatedAt,
+                appVersion = versionName(),
+                detectorVersion = resolvedDetector,
+                scoreVersion = SnoreScore.FORMULA_VERSION,
+                payload = com.sleepanalysis.domain.report.ReportSnapshot.payload(
+                    headline.copy(
+                        garminSleepStartMs = garminSleep?.sleepStartMs,
+                        garminSleepEndMs = garminSleep?.sleepEndMs,
+                        garminSleepScore = garminSleep?.sleepScore?.toInt(),
+                        garminOverlapWithCaptureMs = garminSleep?.overlapWithCaptureMs,
+                    ),
+                ),
+            ),
+        )
+        return resolvedDetector
+    }
+
+    /**
+     * Registry write (schema v12, docs/DATA_MODEL.md §3.8): a version its kind has not seen
+     * opens a new validity range starting [now]; the previously open row (if any) is closed at
+     * the same instant, leaving exactly one open row per kind. Null versions (a night with no
+     * snoring cannot name a detector) register nothing — a registry row always names a real
+     * version. Runs inside the caller's transaction.
+     */
+    private suspend fun registerModelVersion(kind: String, version: String?, now: Long) {
+        if (version == null) return
+        val registry = db.modelRegistryDao()
+        if (registry.currentForKind(kind)?.version == version) return
+        val id = registry.insert(
+            com.sleepanalysis.data.db.entity.ModelRegistryEntity(
+                kind = kind,
+                version = version,
+                validFromUtc = now,
+            ),
+        )
+        registry.closeOpenRows(kind, now, id)
+    }
+
+    /**
+     * Current detector + score versions from the registry (schema v12) — the versions personal
+     * baselines compare every night against. Falls back to the shipped constants when no
+     * finalize has registered rows yet (pre-v12 nights were produced by exactly those
+     * constants, so they stay comparable under the fallback).
+     */
+    private suspend fun currentModelVersions(): Pair<String, String> = withContext(Dispatchers.IO) {
+        Pair(
+            db.modelRegistryDao()
+                .currentForKind(com.sleepanalysis.data.db.entity.ModelRegistryKind.DETECTOR)?.version
+                ?: MODEL_VERSION,
+            db.modelRegistryDao()
+                .currentForKind(com.sleepanalysis.data.db.entity.ModelRegistryKind.SCORE)?.version
+                ?: SnoreScore.FORMULA_VERSION,
+        )
     }
 
     /**
@@ -331,9 +463,55 @@ class SessionRepository @Inject constructor(
         clipDao.countForSession(sessionId)
     }
 
-    /** User-corrected class for an event (docs/DATA_MODEL.md §3.5) — dataset input, never alters scores. */
+    /**
+     * User-corrected class for an event (docs/DATA_MODEL.md §3.5). A label also re-weighs the
+     * night (docs/MEASUREMENT_RELIABILITY.md §7.1, snore-score-v3): a non-SNORE label excludes
+     * the event from every snore aggregate, SNORE includes it, no label keeps the detector's
+     * class ([SnoreMath.eventsCountingAsSnore]) — the session's snore-aggregate PHONE rows are
+     * recomputed and REWRITTEN in the same transaction, flagged `label_corrected`. The event's
+     * stored type is never changed; a session still recording has no measurement rows yet, so
+     * finalize computes with the labels as they stand when it runs.
+     */
     suspend fun labelEvent(eventId: Long, label: String?) = withContext(Dispatchers.IO) {
-        eventDao.setUserLabel(eventId, label, label?.let { System.currentTimeMillis() })
+        db.withTransaction {
+            val event = eventDao.byId(eventId) ?: return@withTransaction
+            eventDao.setUserLabel(eventId, label)
+            rewriteSnoreAggregates(event.sessionId)
+            // A label re-weighs the night — including the validity inputs (the snore share):
+            // recompute + replace the NIGHT_VALIDITY row in the same transaction. The Garmin
+            // side is revalidated from the stored raw payloads (the import is long gone).
+            sessionDao.byId(event.sessionId)?.let { session ->
+                if (session.endedAt != null) {
+                    validityCalculator.computeAndRecord(session, validityCalculator.garminValidityFor(session))
+                    // A label re-weighs the night — the stored snapshot must keep mirroring
+                    // exactly what the (rewritten) measurement rows say, in this same
+                    // transaction (docs/DATA_MODEL.md §3.7). The grade comes back from the
+                    // rewritten NIGHT_VALIDITY row.
+                    upsertReportSnapshot(
+                        session,
+                        validityGradeFor(session.id),
+                        System.currentTimeMillis(),
+                    )
+                }
+            }
+        }
+    }
+
+    /**
+     * Recomputes the session's snore aggregates from its current events and rewrites the
+     * stored PHONE rows inside the caller's transaction — the morning report and the trends
+     * read stored rows, so they must carry what the label-aware math produces. Works for
+     * COMPLETED sessions (labeling happens in the morning report); the denominator comes from
+     * the STORED capture stats, since the engine's live NightStats are gone by labeling time
+     * (finalize persisted them, and ReportAssembler recomputes from the same source).
+     */
+    private suspend fun rewriteSnoreAggregates(sessionId: Long) {
+        val session = sessionDao.byId(sessionId) ?: return
+        if (session.endedAt == null) return // still recording — finalize writes the rows
+        recorder.replacePhoneEstimates(
+            sessionId,
+            labelCorrectedSnoreEstimates(session, eventDao.bySession(sessionId)),
+        )
     }
 
     /** Morning notes: short user context about the night; blank text clears the note. */
@@ -352,8 +530,9 @@ class SessionRepository @Inject constructor(
 
     /**
      * Finalizes EVERY open session as RECOVERED (nightStats unknown — the engine died with the
-     * process). Used when the user explicitly confirms an interrupted night, and as a guard
-     * before a new recording starts so two sessions can never be open at once. Counts only
+     * process). Used when the user explicitly confirms an interrupted night (Home);
+     * beginRecording refuses a start while a session is open, so this is not a start-time
+     * guard. Counts only
      * sessions actually finalized (a finalize that lost a race reports no success).
      */
     suspend fun finalizeOpenAsRecovered(): Int = withContext(Dispatchers.IO) {
@@ -377,7 +556,7 @@ class SessionRepository @Inject constructor(
         logger.deleteSessionLog(sessionId) // the per-session log never outlives the night
     }
 
-    /** Removes everything, including the clinical baseline (docs/PRIVACY_AND_REGULATORY.md §4). */
+    /** Removes everything (docs/PRIVACY_AND_REGULATORY.md §4). */
     suspend fun deleteAllData() = withContext(Dispatchers.IO) {
         db.purgeEverythingIncludingClinical()
         clipStore.deleteAll()
@@ -388,14 +567,15 @@ class SessionRepository @Inject constructor(
         val session = sessionDao.byId(sessionId) ?: return@withContext null
         val events = eventDao.bySession(sessionId)
         val clips = clipDao.bySession(sessionId)
-        val baseline = baselineDao.all()
         val garmin = garminMetricsForSessionDay(session)
         val factors = factorsForSessionDay(session)
         val capture = com.sleepanalysis.domain.report.CaptureStats.parse(session.captureStats)
         val garminSleep = garminSleepSummaryForSession(session, capture)
         val previousNight = previousNightSummaryFor(session)
+        // Every stage row regardless of source — the source-scoped replaces mean GARMIN and
+        // WEARABLE timelines can coexist for one session; the assembler picks one source.
         val garminStages = db.sleepStageDao().bySession(sessionId).map {
-            com.sleepanalysis.domain.report.StageSpan(it.startMs, it.endMs, it.stage)
+            com.sleepanalysis.domain.report.StageSpan(it.startMs, it.endMs, it.stage, it.source)
         }
         val noiseMinConfidence = userPreferences.noiseDisplayMinConfidenceNow()
         // Stored gaps (schema v10) win; legacy nights fall back to report-time computation
@@ -403,11 +583,24 @@ class SessionRepository @Inject constructor(
         val storedGaps = db.quietGapDao().bySession(sessionId).map {
             com.sleepanalysis.domain.report.QuietGap(it.startMs, it.endMs, it.durationMs, it.kind, it.meanDbfs)
         }  // (already domain-typed rows)
+        // The finalize-time validity grade read back from its notes — the report never
+        // re-grades the night, it shows what the row said (docs/NIGHT_REPORT.md).
+        val validity = com.sleepanalysis.domain.validity.NightValidity.parseNotes(
+            measurementDao.bySession(sessionId)
+                .firstOrNull { it.measurementType == MeasurementType.NIGHT_VALIDITY.name }?.notes,
+        )
         ReportAssembler.assemble(
-            session, events, clips, baseline, garmin, factors, capture, garminSleep, previousNight,
+            session, events, clips, garmin, factors, capture, garminSleep, previousNight,
             garminStages, noiseMinConfidence,
             quietGapsOverride = storedGaps.ifEmpty { null },
+            validity = validity,
         )
+    }
+
+    /** Stored NIGHT_VALIDITY grade letter for a session (null = no row yet). */
+    suspend fun validityGradeFor(sessionId: Long): String? = withContext(Dispatchers.IO) {
+        measurementDao.bySession(sessionId)
+            .firstOrNull { it.measurementType == MeasurementType.NIGHT_VALIDITY.name }?.valueText
     }
 
     /**
@@ -507,14 +700,22 @@ class SessionRepository @Inject constructor(
      * its morning (calendarDate = wake date), not by the evening it started — a 21:52→07:10
      * session is Garmin's "tomorrow" (docs/DATA_MODEL.md §5.3, [NightDates]).
      */
-    private suspend fun garminMetricsForSessionDay(
-        session: SleepSessionEntity,
-    ): List<com.sleepanalysis.domain.report.GarminMetric> {
+    /** The night's WAKE calendar day [from, to) epoch-ms window in the session's zone — the
+     *  one Garmin wake-date join (docs/DATA_MODEL.md §5.3) shared by report and trends. */
+    private fun garminWakeDayWindow(session: SleepSessionEntity): Pair<Long, Long> {
         val zone = java.time.ZoneId.of(session.timeZone)
         val day = com.sleepanalysis.domain.report.NightDates
             .garminWakeDate(session.startedAt, session.endedAt, session.timeZone)
-        val from = day.atStartOfDay(zone).toInstant().toEpochMilli()
-        val to = day.plusDays(1).atStartOfDay(zone).toInstant().toEpochMilli()
+        return Pair(
+            day.atStartOfDay(zone).toInstant().toEpochMilli(),
+            day.plusDays(1).atStartOfDay(zone).toInstant().toEpochMilli(),
+        )
+    }
+
+    private suspend fun garminMetricsForSessionDay(
+        session: SleepSessionEntity,
+    ): List<com.sleepanalysis.domain.report.GarminMetric> {
+        val (from, to) = garminWakeDayWindow(session)
         return measurementDao.garminBetween(from, to).map {
             com.sleepanalysis.domain.report.GarminMetric(
                 measurementType = it.measurementType,
@@ -525,19 +726,18 @@ class SessionRepository @Inject constructor(
         }.filterNotNull()
     }
 
-    suspend fun sessionsOlderThan(cutoff: Long): List<Long> =
-        sessionDao.allStartTimes().filter { it < cutoff } // small table; filter in memory
-
     /**
      * The last [maxNights] trend-eligible nights as trend rows (docs/NIGHT_REPORT.md §Trends).
      * Stored measurements supply the report-reproducible numbers; the per-night structure
      * numbers (longest bout, mean peak, clip coverage) come from the night's events/clips
      * with the report's own math. Candidates are narrowed here so the per-night reads stay
-     * bounded (≤ 7 nights × 3 small queries).
+     * bounded (≤ 7 nights × 3 small queries). [skippedDays] (the persisted skip history)
+     * suppresses synthetic missed-night rows for nights skipped on purpose.
      */
-    suspend fun buildTrends(maxNights: Int = 7): List<com.sleepanalysis.domain.report.NightTrend> =
+    suspend fun buildTrends(maxNights: Int = 7, skippedDays: Set<Long> = emptySet()): List<com.sleepanalysis.domain.report.NightTrend> =
         withContext(Dispatchers.IO) {
-            val candidates = sessionDao.observeAll().first()
+            val all = sessionDao.observeAll().first()
+            val candidates = all
                 .filter(com.sleepanalysis.domain.report.TrendAssembler::isTrendNight)
                 .sortedBy { it.startedAt }
                 .takeLast(maxNights)
@@ -552,17 +752,189 @@ class SessionRepository @Inject constructor(
             // Garmin rows joined by WAKE-DATE window — works for linked and legacy date-only
             // rows alike (the query keys on sourceType+periodStart, not sessionId).
             val garmin = candidates.associate { s ->
-                val zone = java.time.ZoneId.of(s.timeZone)
-                val day = com.sleepanalysis.domain.report.NightDates
-                    .garminWakeDate(s.startedAt, s.endedAt, s.timeZone)
-                val from = day.atStartOfDay(zone).toInstant().toEpochMilli()
-                val to = day.plusDays(1).atStartOfDay(zone).toInstant().toEpochMilli()
+                val (from, to) = garminWakeDayWindow(s)
                 s.id to measurementDao.garminBetween(from, to)
             }
-            com.sleepanalysis.domain.report.TrendAssembler.assemble(
+            val rows = com.sleepanalysis.domain.report.TrendAssembler.assemble(
                 candidates, measurements, events, clips, quietGaps, garmin, maxNights,
             )
+            // Synthetic missed-night rows: nights in the last-7 span with neither a real row
+            // nor an in-progress session surface as "missed" (absence made visible), unless
+            // they were skipped on purpose. Zone/day anchoring matches buildInsights' idiom.
+            val zone = candidates.lastOrNull()?.timeZone
+                ?.let { runCatching { java.time.ZoneId.of(it) }.getOrNull() }
+                ?: java.time.ZoneId.systemDefault()
+            com.sleepanalysis.domain.report.TrendAssembler.injectMissedNights(
+                rows = rows,
+                openSessions = all.filter { it.endedAt == null },
+                skippedDays = skippedDays,
+                // P2-6: "today" anchors in the same zone as the wake-date coverage — the most
+                // recent night's zone — never the device zone (travel consistency).
+                today = java.time.LocalDate.now(zone),
+                zone = zone,
+                maxNights = maxNights,
+            )
         }
+
+    /**
+     * The personal insights bundle (docs/INSIGHTS.md): the last ~[maxNights] finalized nights'
+     * summaries → one eligibility gate ([PersonalBaseline.eligibleNights]: validity grade ≥ B +
+     * registry-matched detector/score versions) → baseline bands → SRI/SJL → deterministic
+     * rules. All judgment lives in the pure domain objects (docs/INSIGHTS.md §Guardrails);
+     * this method only gathers stored evidence — same discipline as [buildTrends]. The
+     * regularity windows and the rules run on the SAME eligible set, so no card can disagree
+     * about eligibility.
+     */
+    suspend fun buildInsights(maxNights: Int = 14): com.sleepanalysis.domain.insights.InsightsReport =
+        withContext(Dispatchers.IO) {
+            val candidates = sessionDao.observeAll().first()
+                .filter(com.sleepanalysis.domain.report.TrendAssembler::isTrendNight)
+                .sortedBy { it.startedAt }
+                .takeLast(maxNights)
+            val records = candidates.map { nightRecordFor(it) }
+            val (currentDetector, currentScore) = currentModelVersions()
+            fun baselineInput(record: com.sleepanalysis.domain.insights.InsightRules.NightRecord) =
+                com.sleepanalysis.domain.insights.PersonalBaseline.Input(
+                    nightDate = record.nightDate,
+                    sessionId = record.sessionId,
+                    grade = record.grade,
+                    detectorVersion = record.detectorVersion,
+                    scoreVersion = record.scoreVersion,
+                    snoreShare = record.snoreShare,
+                    longestBoutMs = record.longestBoutMs,
+                    score = record.score,
+                    garminAwakeMinutes = record.garminAwakeMinutes,
+                    rMssdMs = record.rMssdMs,
+                )
+            val baselineInputs = records.map(::baselineInput)
+            val eligibleIds = com.sleepanalysis.domain.insights.PersonalBaseline
+                .eligibleNights(baselineInputs, currentDetector, currentScore)
+                .map { it.sessionId }
+                .toSet()
+            val eligibleRecords = records.filter { it.sessionId in eligibleIds }
+            val baseline = com.sleepanalysis.domain.insights.PersonalBaseline.compute(
+                baselineInputs,
+                currentDetector,
+                currentScore,
+            )
+            // Regularity runs on the eligible nights' Garmin windows (same analysis set); the
+            // zone classifies weekend/weekday by the local morning a window ends on.
+            val zone = candidates.lastOrNull()?.timeZone
+                ?.let { runCatching { java.time.ZoneId.of(it) }.getOrNull() }
+                ?: java.time.ZoneId.systemDefault()
+            val windows = eligibleRecords.mapNotNull { record ->
+                record.garminWindow?.let {
+                    com.sleepanalysis.domain.insights.SleepRegularity.NightWindow(
+                        record.nightDate, it.first, it.second,
+                    )
+                }
+            }
+            val regularity = com.sleepanalysis.domain.insights.SleepRegularity.compute(windows, zone)
+            val insights = if (eligibleRecords.isEmpty()) {
+                emptyList()
+            } else {
+                com.sleepanalysis.domain.insights.InsightRules.evaluate(
+                    com.sleepanalysis.domain.insights.InsightRules.EvalContext(
+                        nights = eligibleRecords,
+                        baseline = baseline,
+                        regularity = regularity,
+                    ),
+                )
+            }
+            com.sleepanalysis.domain.insights.InsightsReport(
+                baseline = baseline,
+                regularity = regularity,
+                insights = insights,
+                eligibleCount = eligibleRecords.size,
+                nightCount = candidates.size,
+                eligibleRecords = eligibleRecords,
+            )
+        }
+
+    /**
+     * Gathers one finalized night's stored evidence into the rules' record (docs/INSIGHTS.md).
+     * Stored measurement rows win over recomputation (report-reproducible numbers); Garmin
+     * values come from the wake-date raw payloads via the import's own parsers; factors come
+     * from the START-date factor log (docs/DATA_MODEL.md §5.3) — the logged FLAG only.
+     */
+    private suspend fun nightRecordFor(
+        session: SleepSessionEntity,
+    ): com.sleepanalysis.domain.insights.InsightRules.NightRecord {
+        val endedAt = session.endedAt ?: return com.sleepanalysis.domain.insights.InsightRules.NightRecord(
+            sessionId = session.id,
+            startedAtMs = session.startedAt,
+            endedAtMs = session.startedAt,
+            nightDate = com.sleepanalysis.domain.report.NightDates.factorDay(session.startedAt, session.timeZone).toString(),
+            zoneId = session.timeZone,
+            grade = null,
+            detectorVersion = null,
+            scoreVersion = null,
+            snoreSpans = emptyList(),
+            snoreShare = null,
+            longestBoutMs = null,
+            score = null,
+            garminAwakeMinutes = null,
+            garminSleepMinutes = null,
+            rMssdMs = null,
+            garminWindow = null,
+            alcoholLogged = false,
+            caffeineAfter14Logged = false,
+            exerciseLogged = false,
+            stressLevel = null,
+        )
+        val measurements = measurementDao.bySession(session.id)
+        fun stored(type: MeasurementType) = measurements.firstOrNull { it.measurementType == type.name }
+        val snoreEvents = com.sleepanalysis.domain.scoring.SnoreMath.eventsCountingAsSnore(
+            eventDao.bySession(session.id),
+        )
+        val zone = java.time.ZoneId.of(session.timeZone)
+        val wakeDay = com.sleepanalysis.domain.report.NightDates
+            .garminWakeDate(session.startedAt, endedAt, session.timeZone)
+        val dayStart = wakeDay.atStartOfDay(zone).toInstant().toEpochMilli()
+        val parsed = com.sleepanalysis.data.garmin.GarminImportManager.parseNightData(
+            jsonByEndpoint = db.rawPayloadDao()
+                .forDate(com.sleepanalysis.data.garmin.GarminImportManager.SOURCE, wakeDay.toString())
+                .associate { it.endpoint to it.payload },
+            dayStartMs = dayStart,
+        )
+        fun garmin(type: MeasurementType): Double? =
+            parsed.metrics.firstOrNull { it.type == type }?.value
+        val factors = db.userFactorDao()
+            .forDate(com.sleepanalysis.domain.report.NightDates.factorDay(session.startedAt, session.timeZone).toString())
+        fun factor(key: String) = factors.firstOrNull { it.factorKey == key }
+        return com.sleepanalysis.domain.insights.InsightRules.NightRecord(
+            sessionId = session.id,
+            startedAtMs = session.startedAt,
+            endedAtMs = endedAt,
+            nightDate = com.sleepanalysis.domain.report.NightDates.factorDay(session.startedAt, session.timeZone).toString(),
+            zoneId = session.timeZone,
+            grade = stored(MeasurementType.NIGHT_VALIDITY)?.valueText,
+            // The night's RESOLVED detector version (docs/INSIGHTS.md §Eligibility): what the
+            // snapshot stored at finalize — the label-aware first snore event's version, or on
+            // a zero-snore night the detector current at finalize. Pre-v12 nights (no snapshot
+            // row) fall back to the event (or the shipped constant, matching the registry's
+            // own fallback, so legacy nights stay comparable).
+            detectorVersion = db.reportDao().bySession(session.id)?.detectorVersion
+                ?: snoreEvents.firstOrNull()?.modelVersion
+                ?: MODEL_VERSION,
+            scoreVersion = stored(MeasurementType.SNORE_SCORE)?.modelVersion,
+            snoreSpans = snoreEvents.map { it.startMs to it.endMs },
+            snoreShare = stored(MeasurementType.SNORE_SHARE_OF_NIGHT)?.valueNum?.div(100.0),
+            longestBoutMs = com.sleepanalysis.domain.report.boutStats(
+                com.sleepanalysis.domain.report.groupBouts(snoreEvents),
+            )?.longestBoutMs,
+            score = stored(MeasurementType.SNORE_SCORE)?.valueNum?.toInt(),
+            garminAwakeMinutes = garmin(MeasurementType.VENDOR_AWAKE_SLEEP)?.div(60.0),
+            garminSleepMinutes = garmin(MeasurementType.VENDOR_SLEEP_DURATION)?.div(60.0),
+            rMssdMs = garmin(MeasurementType.VENDOR_HRV_RMSSD),
+            garminWindow = parsed.sleepWindow?.let { it.startMs to it.endMs },
+            alcoholLogged = factor(com.sleepanalysis.domain.factors.DailyFactor.ALCOHOL.key) != null,
+            caffeineAfter14Logged = factor(com.sleepanalysis.domain.factors.DailyFactor.CAFFEINE_AFTER_14.key) != null,
+            exerciseLogged = factor(com.sleepanalysis.domain.factors.DailyFactor.EXERCISE.key) != null,
+            stressLevel = factor(com.sleepanalysis.domain.factors.DailyFactor.STRESS.key)?.valueNum?.toInt(),
+            factorKeys = factors.map { it.factorKey }.toSet(),
+        )
+    }
 
     private fun versionName(): String = try {
         context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "?"
@@ -572,9 +944,124 @@ class SessionRepository @Inject constructor(
 
     companion object {
         /** Detector identity — stored on every event/estimate for traceability. */
-        const val MODEL_VERSION = "energy-heuristic-v2-burst"
+        const val MODEL_VERSION = "energy-heuristic-v3-peakgate"
 
         /** Grace added after the last verifiably-alive moment when bounding a recovered night. */
         const val RECOVERY_END_GRACE_MS = 60_000L
+    }
+}
+
+/**
+ * The report snapshot's headline aggregates from STORED state — one pure builder for the
+ * finalize write AND the label-recompute refresh (both go through
+ * [SessionRepository.upsertReportSnapshot]) so neither can drift from the stored measurement
+ * rows: the label-aware snore set ([SnoreMath.eventsCountingAsSnore]), the captured-analysis
+ * denominator, and the same row-conditions as finalize (a RECOVERED night with no events
+ * carries no share/score — exactly like its measurement rows). Garmin fields are added by the
+ * caller (report-time payload join). Pure so the label-refresh math is unit-testable without
+ * a database (docs/DATA_MODEL.md §3.7).
+ */
+internal fun reportSnapshotHeadline(
+    session: SleepSessionEntity,
+    events: List<AcousticEventEntity>,
+    validityGrade: String?,
+): com.sleepanalysis.domain.report.ReportSnapshot.Headline {
+    val capture = com.sleepanalysis.domain.report.CaptureStats.parse(session.captureStats)
+    // ONE shared math builder (plan T4a) — see [snoreNightMath].
+    val math = com.sleepanalysis.domain.report.snoreNightMath(
+        startedAt = session.startedAt,
+        endedAt = session.endedAt,
+        status = session.status,
+        capture = capture,
+        events = events,
+    )
+    // Same row conditions as finalize (P2-7): zero processed windows measured nothing —
+    // no score/share headline, and never a fabricated "0% snore, score 0".
+    return com.sleepanalysis.domain.report.ReportSnapshot.Headline(
+        validityGrade = validityGrade,
+        snoreScore = if (!math.hasCaptureEvidence || math.recoveredWithNoEvents) null else math.score.score,
+        snoreSharePercent = if (math.hasCaptureEvidence && !math.recoveredWithNoEvents && math.capturedSeconds > 0) {
+            math.sharePercent
+        } else null,
+        snoreSeconds = math.snoreSeconds,
+        longestBoutMs = com.sleepanalysis.domain.report.boutStats(
+            com.sleepanalysis.domain.report.groupBouts(math.snoreEvents),
+        )?.longestBoutMs,
+    )
+}
+
+/**
+ * The snore-aggregate PHONE rows a label-corrected night must carry: the rows finalizeSession
+ * would have written for [events] under the label-aware rule (SnoreMath.eventsCountingAsSnore),
+ * with the same row conditions. Pure so the recompute math is testable without a database (the
+ * Nov-8 dogfood scenario: labeling the night's loudest snore COUGH must change the stored share
+ * and score). The recorder flags the rows `label_corrected`; the score row carries
+ * [SnoreScore.FORMULA_VERSION] exactly as finalize stamps it (docs/MEASUREMENT_RELIABILITY.md §7.1).
+ */
+internal fun labelCorrectedSnoreEstimates(
+    session: SleepSessionEntity,
+    events: List<AcousticEventEntity>,
+): List<MeasurementRecorder.PhoneEstimate> {
+    if (session.endedAt == null) return emptyList() // still recording — finalize writes the rows
+    // ONE shared math builder (plan T4a) — identical math to finalizeSession; only the
+    // caller's row conditions differ (docs/NIGHT_REPORT.md §Score).
+    val math = com.sleepanalysis.domain.report.snoreNightMath(
+        startedAt = session.startedAt,
+        endedAt = session.endedAt,
+        status = session.status,
+        capture = com.sleepanalysis.domain.report.CaptureStats.parse(session.captureStats),
+        events = events,
+    )
+    val snoreEvents = math.snoreEvents
+    val snoreSeconds = math.snoreSeconds
+    val capturedSeconds = math.capturedSeconds
+    val sharePercent = math.sharePercent
+    val score = math.score
+    val recoveredWithNoEvents = math.recoveredWithNoEvents
+    val hasCaptureEvidence = math.hasCaptureEvidence
+    val formulaVersion = SnoreScore.FORMULA_VERSION
+    return buildList {
+        add(
+            MeasurementRecorder.PhoneEstimate(
+                MeasurementType.SNORE_EVENT_COUNT, snoreEvents.size.toDouble(),
+            ),
+        )
+        if (hasCaptureEvidence) {
+            add(
+                MeasurementRecorder.PhoneEstimate(
+                    MeasurementType.SNORE_TIME, snoreSeconds.toDouble(),
+                ),
+            )
+        }
+        if (!recoveredWithNoEvents && capturedSeconds > 0 && hasCaptureEvidence) {
+            add(
+                MeasurementRecorder.PhoneEstimate(
+                    MeasurementType.SNORE_SHARE_OF_NIGHT, sharePercent,
+                ),
+            )
+        }
+        if (!recoveredWithNoEvents && hasCaptureEvidence) {
+            add(
+                MeasurementRecorder.PhoneEstimate(
+                    MeasurementType.SNORE_SCORE, score.score.toDouble(),
+                    modelVersion = formulaVersion,
+                    notes = SnoreScore.breakdownNotes(score),
+                ),
+            )
+        }
+        snoreEvents.maxOfOrNull { it.peakDbfs }?.let {
+            add(
+                MeasurementRecorder.PhoneEstimate(
+                    MeasurementType.SNORE_INTENSITY_PEAK, it,
+                ),
+            )
+        }
+        snoreEvents.map { it.meanDbfs }.takeIf { it.isNotEmpty() }?.average()?.let {
+            add(
+                MeasurementRecorder.PhoneEstimate(
+                    MeasurementType.SNORE_INTENSITY_MEAN, it,
+                ),
+            )
+        }
     }
 }

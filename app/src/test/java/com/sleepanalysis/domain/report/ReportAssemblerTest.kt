@@ -2,7 +2,6 @@ package com.sleepanalysis.domain.report
 
 import com.sleepanalysis.data.db.entity.AcousticEventEntity
 import com.sleepanalysis.data.db.entity.AudioClipEntity
-import com.sleepanalysis.data.db.entity.ClinicalBaselineEntity
 import com.sleepanalysis.data.db.entity.EventType
 import com.sleepanalysis.data.db.entity.SessionStatus
 import com.sleepanalysis.data.db.entity.SleepSessionEntity
@@ -27,9 +26,9 @@ class ReportAssemblerTest {
             endedAt = endedAt,
             status = status,
             timeZone = "Europe/Zurich",
-            deviceModel = "Test",
-            osVersion = "30",
-            appVersion = "0.1.0",
+            
+            
+            
         )
 
     private fun snoreEvent(id: Long, offsetMs: Long, durationMs: Long, tier: String) =
@@ -138,7 +137,7 @@ class ReportAssemblerTest {
         assertTrue(report.integrityNotes.first().contains("Resumed after an interruption"))
         assertEquals(2, report.integrityNotes.size)
 
-        val fresh = ReportAssembler.assemble(session(), emptyList(), emptyList(), emptyList())!!
+        val fresh = ReportAssembler.assemble(session(), emptyList(), emptyList())!!
         assertTrue(fresh.integrityNotes.isEmpty())
     }
 
@@ -153,7 +152,7 @@ class ReportAssemblerTest {
             GarminMetric("VENDOR_HRV_RMSSD", 45.0, "MS", t0),
             GarminMetric("VENDOR_SLEEP_DURATION", 26460.0, "SECONDS", t0),
         )
-        val report = ReportAssembler.assemble(session(), emptyList(), emptyList(), emptyList(), garmin)!!
+        val report = ReportAssembler.assemble(session(), emptyList(), emptyList(), garmin = garmin)!!
         assertEquals(2, report.garmin.size)
         assertEquals("VENDOR_HRV_RMSSD", report.garmin[0].measurementType)
         // Garmin metrics never feed the acoustic snore score.
@@ -215,6 +214,18 @@ class ReportAssemblerTest {
             .healthWarnings
         assertTrue(hopWarnings.any { it.contains("4 analysis hops") && it.contains("coverage") })
 
+        // capture_stats v5 semantics: a throttled night accounts every one of the 57_600
+        // expected hops once (28_800 classified + 28_800 thermally skipped) — reduced analysis
+        // coverage is the thermal warning's job, never a capture-gap warning.
+        val throttledHalf = healthy.copy(windowsProcessed = 28_800, windowsSkipped = 28_800)
+        val throttledHalfWarnings =
+            ReportAssembler.assemble(session(), emptyList(), emptyList(), emptyList(), capture = throttledHalf)!!
+                .healthWarnings
+        assertTrue(
+            "throttled coverage must not read as capture gaps: $throttledHalfWarnings",
+            throttledHalfWarnings.none { it.contains("Capture gaps suspected") },
+        )
+
         val dead = healthy.copy(windowsProcessed = 0)
         assertTrue(
             ReportAssembler.assemble(session(), emptyList(), emptyList(), emptyList(), capture = dead)!!
@@ -262,19 +273,6 @@ class ReportAssemblerTest {
         assertEquals(1L, report.loudestEpisodes[0].clip!!.eventId)
         assertEquals(-25.0, report.loudestEpisodes[1].peakDbfs, 0.0001)
         assertEquals(null, report.loudestEpisodes[1].clip)
-    }
-
-    @Test
-    fun `clinical baseline rides along as context`() {
-        val baseline = listOf(
-            ClinicalBaselineEntity(
-                id = 1, studyDate = "2026-01-12", lab = "HUG", studyType = "PSG",
-                ahiPerHour = 17.6, totalSleepTimeMinutes = 334,
-            ),
-        )
-        val report = ReportAssembler.assemble(session(), emptyList(), emptyList(), baseline)!!
-        assertEquals(1, report.baseline.size)
-        assertEquals(17.6, report.baseline[0].ahiPerHour!!, 0.0001)
     }
 
     // ---- display filtering: low-confidence OTHER_NOISE (docs/NIGHT_REPORT.md) ----
@@ -473,16 +471,16 @@ class ReportAssemblerTest {
     @Test
     fun `garmin status reflects payload presence`() {
         val metricsOnly = ReportAssembler.assemble(
-            session(), emptyList(), emptyList(), emptyList(),
+            session(), emptyList(), emptyList(),
             garmin = listOf(GarminMetric("VENDOR_HRV_RMSSD", 45.0, "MS", t0)),
         )!!
         assertEquals(GarminLinkStatus.METRICS_ONLY, metricsOnly.garminStatus)
 
-        val missing = ReportAssembler.assemble(session(), emptyList(), emptyList(), emptyList())!!
+        val missing = ReportAssembler.assemble(session(), emptyList(), emptyList())!!
         assertEquals(GarminLinkStatus.MISSING, missing.garminStatus)
 
         val linked = ReportAssembler.assemble(
-            session(), emptyList(), emptyList(), emptyList(),
+            session(), emptyList(), emptyList(),
             garmin = listOf(GarminMetric("VENDOR_HRV_RMSSD", 45.0, "MS", t0)),
             garminSleep = GarminSleepSummary("2026-11-06", t0, t0 + 1, 71.0, 1, t0, t0 + 1),
         )!!
@@ -537,6 +535,34 @@ class ReportAssemblerTest {
     }
 
     @Test
+    fun `overlapping garmin and wearable timelines report one source only`() {
+        // Source-scoped replaces (schema v14) mean both timelines can coexist for one session;
+        // summing overlaps across both double-counts every stage minute and mislabels
+        // provenance. The report builds from ONE source — WEARABLE when present, else GARMIN.
+        val garmin = listOf(
+            StageSpan(t0 + 3_600_000, t0 + 3_900_000, "REM", ReportAssembler.STAGE_SOURCE_GARMIN),
+            StageSpan(t0 + 3_900_000, t0 + 4_200_000, "LIGHT", ReportAssembler.STAGE_SOURCE_GARMIN),
+        )
+        val wearable = listOf(
+            StageSpan(t0 + 3_600_000, t0 + 3_900_000, "DEEP", ReportAssembler.STAGE_SOURCE_WEARABLE),
+            StageSpan(t0 + 3_900_000, t0 + 4_200_000, "LIGHT", ReportAssembler.STAGE_SOURCE_WEARABLE),
+        )
+        val burst = snoreEvent(80, offsetMs = 3_600_000, durationMs = 60_000, tier = "LIGHT")
+
+        assertEquals(wearable, ReportAssembler.singleSourceStages(garmin + wearable))
+        assertEquals(garmin, ReportAssembler.singleSourceStages(garmin))
+
+        val report = ReportAssembler.assemble(
+            session(), listOf(burst), emptyList(), emptyList(), garminStages = garmin + wearable,
+        )!!
+        assertEquals(ReportAssembler.STAGE_SOURCE_WEARABLE, report.stageSource)
+        // The burst sits in REM per Garmin, DEEP per Health Connect — the HC label wins.
+        val byStage = report.snoreMinutesByStage
+        assertEquals(1, byStage.size)
+        assertEquals("DEEP", byStage[0].stage)
+    }
+
+    @Test
     fun `snore minutes per stage omit silent stages and sort by volume`() {
         val burst1 = snoreEvent(71, offsetMs = 60_000, durationMs = 120_000, tier = "LIGHT")
         val stages = listOf(
@@ -587,5 +613,106 @@ class ReportAssemblerTest {
         // no reported gap covers the hidden event's span.
         assertTrue(report.quietGaps.none { it.startMs <= t0 + 630_000 && it.endMs >= t0 + 634_000 })
         assertTrue(report.quietGaps.none { it.endMs <= t0 + 1_200_000 })
+    }
+
+    // ---- coverage-normalized Garmin TLDR share (docs/NIGHT_REPORT.md §Garmin) ----
+
+    @Test
+    fun `normalized share divides snoring by the overlap`() {
+        // 90 s of snoring against a 1 h overlap → 2.5%.
+        assertEquals(
+            2.5,
+            ReportAssembler.garminNormalizedSharePercent(snoreSeconds = 90, overlapWithCaptureMs = 3_600_000L)!!,
+            0.0001,
+        )
+    }
+
+    @Test
+    fun `linked night with positive overlap exposes the normalization inputs`() {
+        // The TLDR gate: LINKED + overlap > 0. Capture 8 h, Garmin window 9 h, overlap 6 h,
+        // 36 min of snoring → 10% of the captured part of Garmin's window.
+        val sleep = GarminSleepSummary(
+            date = "2026-11-19", sleepStartMs = t0 - 3_600_000, sleepEndMs = t0 + 9 * 3_600_000,
+            sleepScore = 71.0, overlapWithCaptureMs = 6 * 3_600_000,
+            captureWindowStartMs = t0, captureWindowEndMs = t0 + 8 * 3_600_000,
+        )
+        val events = listOf(snoreEvent(1, offsetMs = 3_600_000, durationMs = 2_160_000, tier = "LIGHT"))
+        val report = ReportAssembler.assemble(session(), events, emptyList(), emptyList(), garminSleep = sleep)!!
+        assertEquals(GarminLinkStatus.LINKED, report.garminStatus)
+        assertEquals(2_160L, report.snoreSeconds)
+        assertEquals(
+            10.0,
+            ReportAssembler.garminNormalizedSharePercent(report.snoreSeconds, report.garminSleep!!.overlapWithCaptureMs)!!,
+            0.0001,
+        )
+    }
+
+    @Test
+    fun `zero overlap normalizes to nothing so the line is omitted`() {
+        // The disjoint-window case — the UI's "wrong night's data" signal: no line, never 0%.
+        assertNull(ReportAssembler.garminNormalizedSharePercent(snoreSeconds = 90, overlapWithCaptureMs = 0L))
+    }
+
+    @Test
+    fun `metrics-only nights have no sleep summary to normalize (line absent)`() {
+        val report = ReportAssembler.assemble(
+            session(), emptyList(), emptyList(),
+            garmin = listOf(GarminMetric("VENDOR_HRV_RMSSD", 45.0, "MS", t0)),
+        )!!
+        assertEquals(GarminLinkStatus.METRICS_ONLY, report.garminStatus)
+        // No GarminSleepSummary → the TLDR gate (LINKED + summary + overlap) can never fire.
+        assertNull(report.garminSleep)
+    }
+
+    @Test
+    fun `share above 100 percent is omitted, not clamped`() {
+        // Garmin's overlap (2 h) smaller than the snoring's own span (3 h): the ratio stops
+        // being interpretable — omitted rather than clamped to a fabricated 100%.
+        assertNull(
+            ReportAssembler.garminNormalizedSharePercent(
+                snoreSeconds = 3 * 3_600L,
+                overlapWithCaptureMs = 2 * 3_600_000L,
+            ),
+        )
+        // Exactly 100% (snoring fills the overlap) still renders.
+        assertEquals(
+            100.0,
+            ReportAssembler.garminNormalizedSharePercent(snoreSeconds = 7_200L, overlapWithCaptureMs = 2 * 3_600_000L)!!,
+            0.0001,
+        )
+    }
+
+    @Test
+    fun `zero snoring over a covered overlap renders a truthful 0 percent`() {
+        // A silent night inside a real overlap is data, not absence: the line renders "0%",
+        // only a MISSING ratio (null) omits it.
+        assertEquals(
+            0.0,
+            ReportAssembler.garminNormalizedSharePercent(snoreSeconds = 0, overlapWithCaptureMs = 3_600_000L)!!,
+            0.0001,
+        )
+    }
+
+    @Test
+    fun `a sub-second overlap inflates the ratio past 100 and is omitted`() {
+        // The divisor is overlap/1000.0, so 999 ms → 0.999: 90 s of snoring reads as 9009%.
+        // Anything the inflation pushes above 100 is omitted like any other absurd ratio.
+        assertNull(ReportAssembler.garminNormalizedSharePercent(snoreSeconds = 90, overlapWithCaptureMs = 999L))
+        assertNull(ReportAssembler.garminNormalizedSharePercent(snoreSeconds = 90, overlapWithCaptureMs = 1_000L))
+        // Negative overlap is no overlap at all.
+        assertNull(ReportAssembler.garminNormalizedSharePercent(snoreSeconds = 90, overlapWithCaptureMs = -1L))
+    }
+
+    @Test
+    fun `a negative snore time flows through unguarded (caller contract keeps it non-negative)`() {
+        // The pure function has no non-negativity guard: a caller that passed a negative
+        // snore time would render a negative share. Callers are safe — snoreSeconds comes
+        // from the union of event spans (never negative) — so this pins the contract
+        // instead of asserting a clamp that does not exist.
+        assertEquals(
+            -2.5,
+            ReportAssembler.garminNormalizedSharePercent(snoreSeconds = -90, overlapWithCaptureMs = 3_600_000L)!!,
+            0.0001,
+        )
     }
 }

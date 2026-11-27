@@ -2,7 +2,7 @@ package com.sleepanalysis.monitoring.detection
 
 /**
  * Swappable detection interface (docs/MVP_SCOPE.md F4). Phase 1 ships the
- * energy-heuristic-v2-burst heuristic (see DetectorConfig); Phase 2 swaps in a TFLite model (e.g. YAMNet-mapped or a custom log-mel CNN) without touching
+ * energy-heuristic-v3-peakgate heuristic (see DetectorConfig); Phase 2 swaps in a TFLite model (e.g. YAMNet-mapped or a custom log-mel CNN) without touching
  * the capture pipeline, storage, or report logic.
  */
 interface SnoreDetector {
@@ -49,7 +49,7 @@ data class DetectionResult(
 
 /**
  * Stage 2 v1 detector: v0 energy + band-ratio heuristic plus two spectral gates and a
- * breath-cycle rhythm gate. Thresholds were tuned via the offline FixtureEvaluator on dogfood
+ * breath-cycle rhythm gate. Thresholds were tuned via the offline fixture-eval harness (test source set) on dogfood
  * clips (docs/NEXT_STEPS.md P2); real labels do not exist yet, so they are a starting point.
  *
  * Logic (all thresholds relative to a rolling noise floor, never absolute SPL):
@@ -89,10 +89,6 @@ class EnergySnoreDetector(
         val loudDeltaDb: Double = DetectorConfig.LOUD_DELTA_DB,
         val snoreMinSnrDb: Double = DetectorConfig.SNORE_MIN_SNR_DB,
         val lowBandRatioMin: Double = DetectorConfig.LOW_BAND_RATIO_MIN,
-        /** A/B toggle for the flatness/harmonicity gate (fixture eval). */
-        val spectralGatingEnabled: Boolean = true,
-        /** A/B toggle for the breath-cycle rhythm gate (fixture eval). */
-        val rhythmEnabled: Boolean = DetectorConfig.RHYTHM_ENABLED,
     )
 
     /**
@@ -123,7 +119,7 @@ class EnergySnoreDetector(
 
         val flatness = features.spectralFlatness
         // Null spectral features => exact v0 path: no spectral gate, no rhythm gate, no state.
-        val spectralGateActive = flatness != null && config.spectralGatingEnabled
+        val spectralGateActive = flatness != null
 
         pruneRhythmMemory(features.timestampMs)
 
@@ -137,7 +133,7 @@ class EnergySnoreDetector(
             true
         }
 
-        val rhythmOk = if (spectralGateActive && config.rhythmEnabled) {
+        val rhythmOk = if (spectralGateActive) {
             // STRONG_SNR_DB margin bypasses the gate: an unambiguous snore needs no corroboration.
             snr >= DetectorConfig.STRONG_SNR_DB || snoreWindowTimestamps.isNotEmpty()
         } else {
@@ -154,9 +150,7 @@ class EnergySnoreDetector(
         } else {
             val snrMargin = ((snr - config.snoreMinSnrDb) / 12.0).coerceIn(0.0, 1.0)
             val bandMargin = ((features.lowBandRatio - config.lowBandRatioMin) / 0.45).coerceIn(0.0, 1.0)
-            // The blend keys on whether the spectral gate is ACTIVE, not merely on feature
-            // presence: with spectralGatingEnabled = false (the A/B arm) passing windows must
-            // score on the exact v0 scale so A/B confidence distributions stay comparable.
+            // The blend keys on whether the spectral gate is ACTIVE (i.e. on feature presence).
             val confidence = if (spectralGateActive && flatness != null) {
                 // Weights sum to 1 (see class KDoc): base 0.5 + 0.25 + 0.15 + 0.10.
                 val flatnessMargin =
